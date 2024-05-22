@@ -1,0 +1,11 @@
+# Copyright 2024 IBM Inc. All rights reserved
+# SPDX-License-Identifier: Apache-2.0
+
+FROM quay.io/pypa/manylinux2014_x86_64
+
+RUN yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel7/x86_64/cuda-rhel7.repo && \
+    yum clean all && yum install -y cuda-libraries-devel-12-4 cuda-compiler-12-4 numactl-devel && rm -rf /var/cache/yum/* && yum clean all
+RUN curl -L https://download.pytorch.org/libtorch/cu121/libtorch-cxx11-abi-shared-without-deps-2.1.0%2Bcu121.zip -o /tmp/libtorch.zip && \
+    unzip /tmp/libtorch.zip -d / && rm /tmp/libtorch.zip
+
+RUN python3.11 -m pip install setuptools==69.5.1

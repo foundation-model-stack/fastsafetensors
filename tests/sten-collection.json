@@ -1,0 +1,253 @@
+{
+    "bigscience/bloom": {
+      "world_size_8": {
+        "rank_0": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00001-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00009-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00017-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00025-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00033-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00041-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00049-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00057-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00065-of-00072.safetensors"
+        ],
+        "rank_1": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00002-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00010-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00018-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00026-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00034-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00042-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00050-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00058-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00066-of-00072.safetensors"
+        ],
+        "rank_2": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00003-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00011-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00019-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00027-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00035-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00043-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00051-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00059-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00067-of-00072.safetensors"
+        ],
+        "rank_3": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00004-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00012-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00020-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00028-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00036-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00044-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00052-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00060-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00068-of-00072.safetensors"
+        ],
+        "rank_4": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00005-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00013-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00021-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00029-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00037-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00045-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00053-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00061-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00069-of-00072.safetensors"
+        ],
+        "rank_5": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00006-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00014-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00022-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00030-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00038-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00046-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00054-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00062-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00070-of-00072.safetensors"
+        ],
+        "rank_6": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00007-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00015-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00023-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00031-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00039-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00047-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00055-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00063-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00071-of-00072.safetensors"
+        ],
+        "rank_7": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00008-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00016-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00024-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00032-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00040-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00048-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00056-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00064-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00072-of-00072.safetensors"
+        ]
+      },
+      "keys": {
+        "all": [
+          "word_embeddings_layernorm\\..*",
+          "ln_f\\..*",
+          "h\\.[0-9]+\\.input_layernorm\\..*",
+          "h\\.[0-9]+\\.post_attention_layernorm\\..*",
+          "h\\.[0-9]+\\.self_attention.dense\\.bias",
+          "h\\.[0-9]+\\.mlp\\.dense_4h_to_h\\.bias"
+        ],
+        "dim_0": [
+          "word_embeddings\\..*",
+          "h\\.[0-9]+\\.self_attention.query_key_value\\..*",
+          "h\\.[0-9]+\\.mlp\\.dense_h_to_4h\\..*"
+        ],
+        "dim_1": [
+          "h\\.[0-9]+\\.self_attention.dense\\.weight",
+          "h\\.[0-9]+\\.mlp\\.dense_4h_to_h\\.weight"
+        ],
+        "layer_prefix": "h."
+      }
+    },
+    "validation-bloom": {
+      "world_size_8": {
+        "rank_0": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00001-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00009-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00017-of-00072.safetensors"
+        ],
+        "rank_1": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00002-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00010-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00018-of-00072.safetensors"
+        ],
+        "rank_2": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00003-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00011-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00019-of-00072.safetensors"
+        ],
+        "rank_3": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00004-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00012-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00020-of-00072.safetensors"
+        ],
+        "rank_4": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00005-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00013-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00021-of-00072.safetensors"
+        ],
+        "rank_5": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00006-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00014-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00022-of-00072.safetensors"
+        ],
+        "rank_6": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00007-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00015-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00023-of-00072.safetensors"
+        ],
+        "rank_7": [
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00008-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00016-of-00072.safetensors",
+          "/data/transformers_cache/models--bigscience--bloom/snapshots/053d9cd9fbe814e091294f67fcfedb3397b954bb/model_00024-of-00072.safetensors"
+        ]
+      },
+      "keys": {
+        "all": [
+          "word_embeddings_layernorm\\..*",
+          "ln_f\\..*",
+          "h\\.[0-9]+\\.input_layernorm\\..*",
+          "h\\.[0-9]+\\.post_attention_layernorm\\..*",
+          "h\\.[0-9]+\\.self_attention.dense\\.bias",
+          "h\\.[0-9]+\\.mlp\\.dense_4h_to_h\\.bias"
+        ],
+        "dim_0": [
+          "word_embeddings\\..*",
+          "h\\.[0-9]+\\.self_attention.query_key_value\\..*",
+          "h\\.[0-9]+\\.mlp\\.dense_h_to_4h\\..*"
+        ],
+        "dim_1": [
+          "h\\.[0-9]+\\.self_attention.dense\\.weight",
+          "h\\.[0-9]+\\.mlp\\.dense_4h_to_h\\.weight"
+        ],
+        "layer_prefix": "h."
+      }
+    },
+    "tiiuae/falcon-40b": {
+      "world_size_1": {
+        "rank_0": [
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00001-of-00009.safetensors",
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00002-of-00009.safetensors",
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00003-of-00009.safetensors",
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00004-of-00009.safetensors",
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00005-of-00009.safetensors",
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00006-of-00009.safetensors",
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00007-of-00009.safetensors",
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00008-of-00009.safetensors",
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00009-of-00009.safetensors"
+        ]
+      },
+      "keys": {
+        "all": [
+          "transformer\\.ln_f\\.weight",
+          "transformer\\.ln_f\\.bias",
+          "transformer\\.h\\.[0-9]+\\.ln_mlp\\.weight",
+          "transformer\\.h\\.[0-9]+\\.ln_mlp\\.bias",
+          "transformer\\.h\\.[0-9]+\\.ln_attn\\.weight",
+          "transformer\\.h\\.[0-9]+\\.ln_attn\\.bias"
+        ],
+        "dim_0": [
+          "lm_head\\.weight",
+          "transformer\\.word_embeddings\\.weight",
+          "transformer\\.h\\.[0-9]+\\.mlp\\.dense_4h_to_h\\.weight"
+        ],
+        "dim_1": [
+          "transformer\\.h\\.[0-9]+\\.mlp\\.dense_h_to_4h\\.weight",
+          "transformer\\.h\\.[0-9]+\\.self_attention\\.query_key_value\\.weight",
+          "transformer\\.h\\.[0-9]+\\.self_attention\\.dense\\.weight"
+        ],
+        "layer_prefix": "transformer.h."
+      }
+    },
+    "validation-falcon": {
+      "world_size_1": {
+        "rank_0": [
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00001-of-00009.safetensors",
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00002-of-00009.safetensors",
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00003-of-00009.safetensors"
+        ]
+      },
+      "world_size_2": {
+        "rank_0": [
+        "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00001-of-00009.safetensors"
+        ],
+        "rank_1": [
+          "/data/transformers_cache/models--tiiuae--falcon-40b/snapshots/4a70170c215b36a3cce4b4253f6d0612bb7d4146/model-00002-of-00009.safetensors"
+        ]
+      },
+      "keys": {
+        "all": [
+          "transformer\\.ln_f\\.weight",
+          "transformer\\.ln_f\\.bias",
+          "transformer\\.h\\.[0-9]+\\.ln_mlp\\.weight",
+          "transformer\\.h\\.[0-9]+\\.ln_mlp\\.bias",
+          "transformer\\.h\\.[0-9]+\\.ln_attn\\.weight",
+          "transformer\\.h\\.[0-9]+\\.ln_attn\\.bias"
+        ],
+        "dim_0": [
+          "lm_head\\.weight",
+          "transformer\\.word_embeddings\\.weight",
+          "transformer\\.h\\.[0-9]+\\.mlp\\.dense_4h_to_h\\.weight"
+        ],
+        "dim_1": [
+          "transformer\\.h\\.[0-9]+\\.mlp\\.dense_h_to_4h\\.weight",
+          "transformer\\.h\\.[0-9]+\\.self_attention\\.query_key_value\\.weight",
+          "transformer\\.h\\.[0-9]+\\.self_attention\\.dense\\.weight"
+        ],
+        "layer_prefix": "transformer.h."
+      }
+    }
+  }
+  

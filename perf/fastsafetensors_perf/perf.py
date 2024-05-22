@@ -1,0 +1,552 @@
+# Copyright 2024 IBM Inc. All rights reserved
+# SPDX-License-Identifier: Apache-2.0
+
+import os
+import sys
+import typer
+import re
+from typing import Dict, List, Tuple, Any
+import json
+import subprocess
+import torch
+import torch.distributed as dist
+from collections import OrderedDict
+import time
+from copy import deepcopy
+from safetensors import safe_open
+from fastsafetensors import str_to_dtype, SafeTensorsFileLoader, SingleGroup
+
+app = typer.Typer()
+
+script_path = __file__
+
+class FilesBufferOnMmap:
+    def __init__(self, device: torch.device|None, dtype: torch.dtype|None=None, opt: bool=False, debug_log: bool=False):
+        self.device = device
+        self.dtype = dtype
+        self.debug_log = debug_log
+        self.shapes: Dict[str, torch.Size] = {}
+        self.handles: Dict[str, Any] = {}
+        self.opt = opt
+        self.key_to_handle: Dict[str, Any] = {}
+
+    def add_filenames(self, filenames: List[str]):
+        for filename in filenames:
+            f = safe_open(os.path.realpath(filename), framework="pytorch")
+            for k in f.keys():
+                self.handles[k] = f
+
+    def get_keys(self)->List[str]:
+        return self.handles.keys()
+
+    def enable_opt(self):
+        self.opt = True
+
+    def get_tensor(self, tensor_name: str)->torch.Tensor:
+        if tensor_name not in self.key_to_handle:
+            raise ValueError(f"get_tensor: key {tensor_name} was not found in files")
+        f = self.key_to_handle[tensor_name]
+        t = f.get_tensor(tensor_name) # tensor at pageable area (mmap)
+        t = t.clone().detach() if self.opt else t
+        return t.to(device=self.device, dtype=self.dtype)
+
+    def get_sharded(self, pg: dist.ProcessGroup, tensor_name: str, dim: int)->torch.Tensor:
+        if tensor_name not in self.key_to_handle:
+            raise ValueError(f"get_sharded: key {tensor_name} was not found in files")
+        f = self.key_to_handle[tensor_name]
+        t = f.get_slice(tensor_name) # tensor at pageable area (mmap)
+        rank_slices = ()
+        shape = t.get_shape()
+        size = shape[dim]
+        block_size = (size + pg.size() - 1) // pg.size()
+        for i in range(0, len(shape)):
+            if i < dim:
+                rank_slices += (slice(None,None,None),)
+            elif i == dim:
+                rank_slices += (slice(pg.rank() * block_size, (pg.rank() + 1) * block_size, 1),)
+                break
+        t = t[rank_slices]
+        t = t.clone().detach() if self.opt else t
+        return t.to(device=self.device, dtype=self.dtype)
+
+    def as_dict(self)->Dict[str, torch.Tensor]:
+        tensors: Dict[str, torch.Tensor] = {}
+        for key, f in self.handles.items():        
+            t = f.get_tensor(key) # tensor at pageable area (mmap)
+            t = t.clone().detach() if self.opt else t # opt==True: copy to pinned area?
+            t = t.to(device=self.device, dtype=self.dtype)
+            tensors[key] = t
+        return tensors
+
+    def as_dict_sharded(self, pg: dist.ProcessGroup, tensor_shard_dim: OrderedDict[str, int])->Dict[str, torch.Tensor]:
+        tensors: Dict[str, torch.Tensor] = {}
+        for key, dim in sorted(tensor_shard_dim.items(), key=lambda x:x[0]):
+            f = self.handles[key]
+            if dim == -1:
+                t = f.get_tensor(key) # tensor at pageable area (mmap)
+            else:
+                t = f.get_slice(key)
+                rank_slices = ()
+                shape = t.get_shape()
+                size = shape[dim]
+                block_size = (size + pg.size() - 1) // pg.size()
+                for i in range(0, len(shape)):
+                    if i < dim:
+                        rank_slices += (slice(None,None,None),)
+                    elif i == dim:
+                        rank_slices += (slice(pg.rank() * block_size, (pg.rank() + 1) * block_size, 1),)
+                        break
+                t = t[rank_slices]
+            t = t.clone().detach() if self.opt else t # opt==True: copy to pinned area?
+            t = t.to(device=self.device, dtype=self.dtype)
+            tensors[key] = t
+        return tensors
+
+""""
+sten_collection.json format:
+{
+    "model_name_0": {
+        "world_size_0": {
+            "rank_0": ["/path_0/file_0.safetensors", "/path_0/file_1.safetensors", "/path_0/file_2.safetensors"]
+        },
+        "world_size_1": {
+            "rank_0": ["/path_0/file_0.safetensors", "/path_0/file_1.safetensors", "/path_0/file_2.safetensors"],
+            "rank_1": ["/path_1/file_0.safetensors", "/path_1/file_1.safetensors", "/path_1/file_2.safetensors"]
+        },
+        ...
+        "world_size_N": {
+            "rank_0": ["/path_0/file_0.safetensors", "/path_0/file_1.safetensors", "/path_0/file_2.safetensors"],
+            "rank_1": ["/path_1/file_0.safetensors", "/path_1/file_1.safetensors", "/path_1/file_2.safetensors"],
+            ...
+            "rank_N": ["/path_N/file_0.safetensors", "/path_N/file_1.safetensors", "/path_N/file_2.safetensors"]
+        },
+        "keys": {
+            "all": ["key.head.weight"],
+            "dim_0": ["key\.[0-9]+\.weight"],
+            "dim_1": ["key\.x\.[0-9]+\.weight"]
+        }
+    },
+    "model_name_1": {
+    ...
+    },
+    ...
+}
+"""
+def get_sten_files(sten_collection_filepath: str, model_name: str, world_size: int) -> Dict[int, List[str]]:
+    world_size_str = f"world_size_{world_size}"
+    with open(sten_collection_filepath, "r") as f:
+        m = json.load(f)
+        if not model_name in m:
+            return {}
+        m = m[model_name]
+        if not world_size_str in m:
+            world_size_str = "world_size_0"
+        if not world_size_str in m:
+            return {}
+        m = m[world_size_str]
+        ret = {}
+        for rank in range(0, world_size):
+            ret[rank] = m[f"rank_{rank}"]
+        return ret
+
+def get_key_pats(sten_collection_filepath: str, model_name: str) -> Tuple[Dict[re.Pattern, int], str]:
+    with open(sten_collection_filepath, "r") as f:
+        m = json.load(f)
+        if not model_name in m:
+            return {}
+        m = m[model_name]
+        if not "keys" in m:
+            return {}
+        m = m["keys"]
+        ret = {}
+        for key in m["all"]:
+            ret[re.compile(key)] = -1
+        for key in m["dim_0"]:
+            ret[re.compile(key)] = 0
+        for key in m["dim_1"]:
+            ret[re.compile(key)] = 1
+        return ret, m["layer_prefix"]
+
+def get_key_dim(keys: List[str], pats: Dict[re.Pattern, int], layer_prefix: str) -> Dict[str, int]:
+    from collections import OrderedDict
+    ret: OrderedDict[str, int] = {}
+    layer_tmp = {}
+    pat2 = re.compile(f"{layer_prefix}([0-9]+)\..*")
+    for key in sorted(keys):
+        found = False
+        for pat, dim in pats.items():
+            m = pat.match(key)
+            if m is not None:
+                if m[0].startswith(layer_prefix):
+                    layer_tmp[m[0]] = (int(pat2.match(m[0])[1]), dim)
+                else:
+                    ret[m[0]] = dim
+                found = True
+                break
+        if not found:
+            ret[key] = -1
+    for key, (_, dim) in sorted(layer_tmp.items(), key=lambda x:x[1][0]):
+        ret[key] = dim
+    return ret
+
+mon_procs = {}
+def start_sysstat(model_name: str, run_id: str|None=None, gpu_trace: bool=True, memtrace_enabled: bool=False) -> int:
+    memtrace_file = ""
+    if gpu_trace and memtrace_enabled:
+        torch.cuda.memory._record_memory_history(max_entries=100000)
+        if run_id is not None:
+            memtrace_file = f"memtrace-{run_id}.pickle"
+        else:
+            memtrace_file = f"memtrace-{model_name.replace('/', '--')}.pickle"
+
+    if run_id is not None:
+        dool_file = f"dool-{run_id}.csv"
+        iostat_f = open(f"iostat-{run_id}.log", "w")
+    else:
+        dool_file = f"dool-{model_name.replace('/', '--')}.csv"
+        iostat_f = open(f"iostat-{model_name.replace('/', '--')}.log", "w")
+    dool_cmd = [
+        "dool", "-cmdnpyg", 
+    ]
+    if gpu_trace:
+        dool_cmd.append("--nvidia-gpu")
+    dool_cmd += ["--output", dool_file]
+    dool = subprocess.Popen(dool_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    iostat = subprocess.Popen(["iostat", "1"], stdout=iostat_f, stderr=subprocess.DEVNULL)
+    id = len(mon_procs)
+    mon_procs[id] = (dool, iostat, iostat_f, memtrace_file)
+    return id
+
+def stop_sysstat(id: int):
+    (dool, iostat, iostat_f, memtrace_file) = mon_procs[id]
+    dool.terminate()
+    iostat.terminate()
+    try:
+        dool.wait(timeout=3)
+        iostat.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        dool.kill()
+        dool.wait()
+        iostat.kill()
+        iostat.wait()
+    iostat_f.close()
+    if memtrace_file != "":
+        torch.cuda.memory._dump_snapshot(memtrace_file)
+        torch.cuda.memory._record_memory_history(enabled=None)
+
+def as_torch_dtype(dtype_str: str)->torch.dtype|None:
+    if dtype_str == "auto":
+        return None
+    return str_to_dtype(dtype_str)
+
+def get_size(tensor: torch.Tensor)->int:
+    c = 1
+    for s in list(tensor.shape):
+        c *= s
+    c *= tensor.dtype.itemsize
+    return c
+
+def as_torch_device(device: str, rank: int)->torch.device:
+    if device.startswith("cuda"):
+        return torch.device(f"cuda:{rank}")
+    elif device == "cpu":
+        return torch.device("cpu")
+    return torch.device(device)
+
+@app.command()
+def drop_cache(
+    model_name: str,
+    sten_collection_json: str,
+    world_size: int=1,
+):
+    total = 0
+    with open(sten_collection_json, "r") as f:
+        m = json.load(f)
+    ranks = m[model_name][f"world_size_{world_size}"]
+    targets = {}
+    for _, filenames in ranks.items():
+        for filename in filenames:
+            targets[filename] = True
+    for filename in targets.keys():
+        fd = os.open(filename, os.O_RDONLY)
+        s = os.fstat(fd)
+        os.posix_fadvise(fd, 0, s.st_size, os.POSIX_FADV_DONTNEED)
+        os.close(fd)
+        print(f"DROP_CACHE: {filename}, {s.st_size/1024/1024/1024} GiB")
+        total += s.st_size
+    fd = os.open(sten_collection_json, os.O_RDONLY)
+    s = os.fstat(fd)
+    os.posix_fadvise(fd, 0, s.st_size, os.POSIX_FADV_DONTNEED)
+    os.close(fd)
+    print(f"DROP_CACHE: {sten_collection_json}, {s.st_size/1024/1024/1024} GiB")
+    total += s.st_size
+    print(f"total={total/1024/1024/1024}GiB from {sten_collection_json}")
+
+@app.command()
+def run_mmap_sharded_internal(
+    model_name: str,
+    sten_collection_json: str,
+    device: str="cuda",
+    dtype: str="auto",
+    opt: bool=False,
+    debug_log: bool=False,
+):
+    import torch.distributed as dist
+    backend = "nccl"
+    if device == "cpu":
+        backend = "gloo"
+    dist.init_process_group(backend=backend)
+    dist.barrier() # ensure nccl is initialized
+    pg = dist.group.WORLD
+    rank_filenames = get_sten_files(sten_collection_json, model_name, pg.size())
+    filenames = []
+    for _, files in sorted(rank_filenames.items(), key=lambda x:x[0]):
+        for f in files:
+            filenames.append(f)
+    (key_pats, layer_prefix) = get_key_pats(sten_collection_json, model_name)
+    torch_dtype = as_torch_dtype(dtype)
+    ts = []
+
+    t0 = time.time_ns()
+    fb = FilesBufferOnMmap(device=as_torch_device(device, pg.rank()), dtype=torch_dtype, opt=opt, debug_log=debug_log)
+    fb.add_filenames(filenames)
+    key_dim = get_key_dim(fb.get_keys(), key_pats, layer_prefix)
+    t1 = time.time_ns()
+    count = 0
+    ts = fb.as_dict_sharded(pg, key_dim)
+    for _, t in ts.items():
+        count += get_size(t)
+    t2 = time.time_ns()
+    print(f"{t0},{t1},{t2},{count}")
+
+@app.command()
+def run_mmap(
+    model_name: str,
+    sten_collection_json: str,
+    device: str="cuda",
+    dtype: str="auto",
+    run_id: str=None,
+    rank: int=0,
+    world_size: int=1,
+    debug_log: bool=False,
+    sysstat_enabled: bool=False,
+    memtrace_enabled: bool=False,
+    opt: bool=False,
+):
+    torch_dtype = as_torch_dtype(dtype)
+    if sysstat_enabled:
+        stat_id = start_sysstat(model_name, run_id, device.startswith("cuda"), memtrace_enabled and world_size == 1)
+    t0 = time.time_ns()
+    if world_size == 1:
+        device = as_torch_device(device, 0)
+        filenames = get_sten_files(sten_collection_json, model_name, world_size)[rank]
+        ts = []
+        fb = FilesBufferOnMmap(device=device, dtype=torch_dtype, opt=opt, debug_log=debug_log)
+        fb.add_filenames(filenames)
+        t1 = time.time_ns()
+        ts = fb.as_dict()
+        count = 0
+        for _, t in ts.items():
+            count += get_size(t)
+        t2 = time.time_ns()
+        init_sec = (t1 - t0) / 1000 / 1000 / 1000
+        get_sec = (t2 - t1) / 1000 / 1000 / 1000
+        elapsed_sec = (t2 - t0) / 1000 / 1000 / 1000
+        count = count/1024/1024/1024
+    else:
+        rank_procs = []
+        for rank in range(0, world_size):
+            rank_cmd = ["torchrun", "--nproc-per-node=1", f"--nnodes={world_size}", "--max-restarts=0",
+                        "--master_addr=0.0.0.0", "--master_port=1234", f"--node_rank={rank}",
+                        script_path, "run-mmap-sharded-internal", f"--dtype={dtype}", f"--device={device}", model_name, sten_collection_json,
+                        ]
+            if opt:
+                rank_cmd += ["--opt"]
+            envs = deepcopy(os.environ)
+            envs["CUDA_VISIBLE_DEVICES"] = ",".join([str(i) for i in range(0, world_size)])
+            rank_procs.append(subprocess.Popen(rank_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=envs))
+        outs = []
+        for proc in rank_procs:
+            stdout, stderr = proc.communicate()
+            outs.append(stdout.decode("utf-8"))
+            if len(stderr) > 0:
+                print(stderr)
+        
+        count = 0
+        t = [[-1,-1],[-1,-1],[-1,-1]] # (min, max) for t_n
+        for rank, out in enumerate(outs):
+            out_split = out.split(",")
+            t_ps = [int(s) for s in out_split]
+            count += t_ps[-1]
+            p_init_sec = (t_ps[1]-t_ps[0]) / 1000 / 1000 / 1000
+            p_get_sec = (t_ps[2]-t_ps[1]) / 1000 / 1000 / 1000
+            p_elapsed_sec = (t_ps[2]-t_ps[0]) / 1000 / 1000 / 1000
+            print(f"rank{rank}: elapsed={p_elapsed_sec}, init={p_init_sec} sec, get={p_get_sec} sec, bytes={t_ps[-1]/1024/1024/1024} GiB, bw={t_ps[-1]/1024/1024/1024/p_elapsed_sec} GiB/s")
+            for i, t_p in enumerate(t_ps[:-1]):
+                if t[i][0] == -1 or t[i][0] > t_p:
+                    t[i][0] = t_p
+                if t[i][1] == -1 or t[i][1] < t_p:
+                    t[i][1] = t_p
+        init_sec = (t[1][1] - t[0][0]) / 1000 / 1000 / 1000
+        get_sec = (t[2][1] - t[1][0]) / 1000 / 1000 /1000
+        elapsed_sec = (t[2][1] - t[0][0]) / 1000 / 1000 /1000
+        count = count/1024/1024/1024
+    if sysstat_enabled:
+        stop_sysstat(stat_id)
+
+    print(f"elapsed: {elapsed_sec} sec, init: {init_sec} sec, get: {get_sec} sec, bytes={count}GiB, bw={count/elapsed_sec}GiB/s")
+
+@app.command()
+def run_gds_sharded_internal(
+    model_name: str,
+    sten_collection_json: str,
+    device: str = "cuda",
+    dtype: str="auto",
+    max_block_size_mb: float=10*1024,
+    max_direct_io_kb: int=16*1024,
+    max_pinned_memory_in_kb: int=64*1024*1024,
+    max_threads: int=16,
+    use_buf_register: bool=False,
+    debug_log: bool=False,
+    nogds: bool = False,
+):
+    torch_dtype: torch.dtype = as_torch_dtype(dtype)
+    import torch.distributed as dist
+    backend = "nccl"
+    if device == "cpu":
+        backend = "gloo"
+    dist.init_process_group(backend=backend)
+    dist.barrier() # ensure nccl is initialized
+    pg = dist.group.WORLD
+    filenames = get_sten_files(sten_collection_json, model_name, pg.size())
+    (key_pats, layer_prefix) = get_key_pats(sten_collection_json, model_name)
+    device = as_torch_device(device, pg.rank())
+
+    t0 = time.time_ns()
+    loader = SafeTensorsFileLoader(pg, device, max_direct_io_kb, max_pinned_memory_in_kb, max_threads, nogds=nogds, debug_log=debug_log)
+    loader.add_filenames(filenames)
+    key_dim = get_key_dim(loader.get_keys(), key_pats, layer_prefix)
+    t1 = time.time_ns()
+    fb = loader.copy_files_to_device(dtype=torch_dtype, use_buf_register=use_buf_register, max_copy_block_size=int(max_block_size_mb*1024*1024))
+    t2 = time.time_ns()
+    ts = fb.as_dict(tensor_shard_dim=key_dim)
+    t3 = time.time_ns()
+    count = 0
+    for _, t in ts.items():
+        count += get_size(t)
+    t4 = time.time_ns()
+    print(f"{t0},{t1},{t2},{t3},{t4},{count}")
+    loader.close()
+
+@app.command()
+def run_gds(
+    model_name: str,
+    sten_collection_json: str,
+    dtype: str="auto",
+    run_id: str=None,
+    device: str="cuda",
+    max_block_size_mb: float=10*1024,
+    debug_log: bool=False,
+    max_direct_io_kb: int=16*1024,
+    max_pinned_memory_in_kb: int=64*1024*1024,
+    max_threads: int=16,
+    world_size: int=1,
+    use_buf_register: bool=False,
+    sysstat_enabled: bool=True,
+    memtrace_enabled: bool=False,
+    nogds: bool = False,
+):
+    torch_dtype = as_torch_dtype(dtype)
+    if sysstat_enabled:
+        stat_id = start_sysstat(model_name, run_id, device.startswith("cuda"), memtrace_enabled and world_size == 1)
+    if world_size > 1:
+        rank_procs = {}
+        for rank in range(0, world_size):
+            rank_cmd = ["torchrun", "--nproc-per-node=1", f"--nnodes={world_size}", "--max-restarts=0",
+                        "--master_addr=0.0.0.0", "--master_port=1234", f"--node_rank={rank}",
+                        script_path, "run-gds-sharded-internal",
+                        f"--max-threads={max_threads}", f"--max-direct-io-kb={max_direct_io_kb}", f"--device={device}",
+                        ]
+            if use_buf_register:
+                rank_cmd += ["--use-buf-register"]
+            if nogds:
+                rank_cmd += ["--nogds"]
+            rank_cmd += [model_name, sten_collection_json]
+            envs = deepcopy(os.environ)
+            if device != "cpu":
+                envs["CUDA_VISIBLE_DEVICES"] = ",".join([str(i) for i in range(0, world_size)])
+            envs["NCCL_CUMEM_ENABLE"] = "0"
+            rank_procs[rank] = subprocess.Popen(rank_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=envs)
+        outs = []
+        for rank, proc in sorted(rank_procs.items(), key=lambda x:x[0]):
+            stdout, stderr = proc.communicate()
+            outs.append(stdout.decode("utf-8"))
+            if len(stdout) > 0:
+                sys.stdout.buffer.write(bytes(f"{rank}: ", 'utf-8'))
+                sys.stdout.buffer.write(stdout)
+            if len(stderr) > 0:
+                sys.stderr.buffer.write(bytes(f"{rank}: ", 'utf-8'))
+                sys.stderr.buffer.write(stderr)
+        pat = re.compile('^([0-9]+),([0-9]+),([0-9]+),([0-9]+),([0-9]+),([0-9]+)$')
+        count = 0
+        t = [[-1,-1],[-1,-1],[-1,-1],[-1,-1],[-1,-1]] # (min, max) for t_n
+        for rank, out in enumerate(outs):
+            for line in out.split('\n'):
+                out_split = pat.match(line)
+                if out_split is None:
+                    continue
+                t_ps = []
+                for i in range(0, 6):
+                    t_ps.append(int(out_split[i + 1]))
+                count += t_ps[-1]
+                p_init_sec = (t_ps[1]-t_ps[0]) / 1000 / 1000 / 1000
+                p_io_sec = (t_ps[2]-t_ps[1]) / 1000 / 1000 / 1000
+                p_shuffle_sec = (t_ps[3]-t_ps[2]) / 1000 / 1000 / 1000
+                p_get_sec = (t_ps[4]-t_ps[3]) / 1000 / 1000 / 1000
+                p_elapsed_sec = (t_ps[4]-t_ps[0]) / 1000 / 1000 / 1000
+                print(f"rank{rank}: elapsed={p_elapsed_sec}, init={p_init_sec} sec, io={p_io_sec} sec, shuffle={p_shuffle_sec} sec, get={p_get_sec} sec, bytes={t_ps[-1]/1024/1024/1024} GiB, bw={t_ps[-1]/1024/1024/1024/p_elapsed_sec} GiB/s")
+                for i, t_p in enumerate(t_ps[:-1]):
+                    if t[i][0] == -1 or t[i][0] > t_p:
+                        t[i][0] = t_p
+                    if t[i][1] == -1 or t[i][1] < t_p:
+                        t[i][1] = t_p
+        init_sec = (t[1][1] - t[0][0]) / 1000 / 1000 / 1000
+        io_sec = (t[3][1] - t[1][0]) / 1000 / 1000 /1000
+        get_sec = (t[4][1] - t[3][0]) / 1000 / 1000 /1000
+        elapsed_sec = (t[4][1] - t[0][0]) / 1000 / 1000 /1000
+        count = count/1024/1024/1024
+    else:
+        device = as_torch_device(device, 0)
+        if device != "cpu":
+            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+        filenames = get_sten_files(sten_collection_json, model_name, world_size)
+        t0 = time.time_ns()
+        loader = SafeTensorsFileLoader(SingleGroup(), device, max_direct_io_kb, max_pinned_memory_in_kb, max_threads, nogds=nogds, debug_log=debug_log)
+        loader.add_filenames(filenames)
+        t1 = time.time_ns()
+        tensors = loader.copy_files_to_device(dtype=torch_dtype, use_buf_register=use_buf_register, max_copy_block_size=int(max_block_size_mb*1024*1024))
+        t2 = time.time_ns()
+
+        count = 0
+        ts = tensors.as_dict({key: -1 for key in loader.get_keys()})
+        for key, t in ts.items():
+            c = get_size(t)
+            count += c
+        t3 = time.time_ns()
+        init_sec = (t1 - t0) / 1000 / 1000 / 1000
+        io_sec = (t2 - t1) / 1000 / 1000 / 1000
+        get_sec = (t3 - t2) / 1000 / 1000 / 1000
+        elapsed_sec = (t3 - t0) / 1000 / 1000 / 1000
+        count = count / 1024 / 1024 / 1024
+
+    if sysstat_enabled:
+        stop_sysstat(stat_id)
+
+    print(f"elapsed: {elapsed_sec} sec, init: {init_sec} sec, io: {io_sec} sec, get: {get_sec} sec, bytes={count}GiB, bw={count/elapsed_sec}GiB/s")
+
+    if world_size == 1:
+        loader.close()
+
+if __name__ == "__main__":
+    app()

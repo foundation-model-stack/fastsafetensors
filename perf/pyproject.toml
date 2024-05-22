@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "fastsafetensors_perf"
+version = "0.1.0"
+description = "Performance measurement helper for fastsafetensors"
+authors = ["Takeshi Yoshimura <tyos@jp.ibm.com>"]
+
+[tool.poetry.dependencies]
+python = ">=3.10.0,<3.13"
+fastsafetensors = ">=0.1.0"
+typer = "^0.9.0"
+torch = ">2.1.0"
+safetensors = "^0.4.3"
+
+[tool.poetry.scripts]
+fastsafetensors_perf = 'fastsafetensors_perf.perf:app'
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
