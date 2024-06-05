@@ -56,11 +56,11 @@ class GdsFileCopier:
 
     def wait_io(self, gbuf: fstcpp.gds_device_buffer, dtype: torch.dtype|None=None)->Dict[str, torch.Tensor]:
         failed = []
-        for req, count in sorted(self.copy_reqs.items(), key=lambda x:x[0]):
+        for req, c in sorted(self.copy_reqs.items(), key=lambda x:x[0]):
             count = self.reader.wait_read(req)
             if count < 0:
                 failed.append(req)
-            if count != -1:
+            if c != -1:
                 gbuf.cufile_deregister(count)
         if self.fh != 0:
             del self.fh
