@@ -132,6 +132,7 @@ class SafeTensorsMetadata:
                 t3 = t2.to(dtype=dtype)
                 t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, dtype, device))
                 t2.copy_(t3)
+                self.tensors[tensor_name].dtype = dtype
             ret[tensor_name] = t2
         return ret
 

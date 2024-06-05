@@ -22,7 +22,16 @@ builder: Dockerfile.build
 	docker build -t fastsafetensors-builder:latest - < Dockerfile.build
 
 dist: builder
-	docker run -u `id -u` --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.11 -m build --no-isolation /fastsafetensors
+	docker run -u `id -u` -w /fastsafetensors --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.10 setup.py sdist bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
+	docker run -u `id -u` -w /fastsafetensors --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.11 setup.py bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
+
+.PHONY: upload-test
+upload-test:
+	python3 -m twine upload -u __token__ --repository testpypi dist/fastsafetensors-$(shell grep version pyproject.toml | sed -e 's/version = "\([0-9.]\+\)"/\1/g')*
+
+.PHONY: upload
+upload:
+	python3 -m twine upload -u __token__ dist/fastsafetensors-$(shell grep version pyproject.toml | sed -e 's/version = "\([0-9.]\+\)"/\1/g')*
 
 perf/dist:
 	cd perf && python3 -m build

@@ -91,7 +91,7 @@ class FilesBufferOnDevice:
             ts.append(self.rank_loaders[rank][lidix].shuffle_multi_cols(self.pg, tns, dim))
         if len(ts) == 1:
             # fastpath: tensors at the same layer are often in the same file
-            return self._get_tensor(rank, lidix, rank_lidixs[(rank, lidix)], ts[0], device, dtype)
+            return self._get_tensor(rank, lidix, rank_lidixs[(rank, lidix)][0], ts[0], device, dtype)
         ret = torch.cat(ts, dim=dim)
         if self.auto_mem_delete:
             for tensor_name in tensor_names:
