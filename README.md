@@ -64,12 +64,13 @@ Important: To release the GPU memory allocated for tensors, you must explicitly 
 
 ## Example: single run
 
-examples/test_single.py:
+examples/run_single.py:
 
 ```python
 import torch
 from fastsafetensors import SafeTensorsFileLoader, SingleGroup
-loader = SafeTensorsFileLoader(SingleGroup, torch.device("cpu"), nogds=True, debug_log=True)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+loader = SafeTensorsFileLoader(SingleGroup(), device, nogds=True, debug_log=True)
 loader.add_filenames({0: ["a.safetensors", "b.safetensors"]}) # {rank: files}
 fb = loader.copy_files_to_device()
 tensor_a0 = fb.get_tensor(tensor_name="a0")
@@ -79,7 +80,7 @@ loader.close()
 
 ```
 cd examples
-python test_single.py
+python run_single.py
 ```
 
 Example output:
@@ -113,7 +114,7 @@ a0: tensor([[ 0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.],
 
 ## Example: parallel run
 
-examples/test_parallel.py:
+examples/run_parallel.py:
 ```python
 import torch
 import torch.distributed as dist
@@ -121,7 +122,8 @@ from fastsafetensors import SafeTensorsFileLoader
 dist.init_process_group(backend="gloo")
 dist.barrier()
 pg = dist.group.WORLD
-loader = SafeTensorsFileLoader(pg, torch.device("cpu"), nogds=True, debug_log=True)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+loader = SafeTensorsFileLoader(pg, device, nogds=True, debug_log=True)
 loader.add_filenames({0: ["a.safetensors"], 1:["b.safetensors"]}) # {rank: files}
 fb = loader.copy_files_to_device()
 tensor_name = "a0" if pg.rank() == 0 else "b0"
@@ -135,9 +137,9 @@ You can test the script with torchrun
 
 ```bash
 cd examples
-torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 test_parallel.py &
+torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 run_parallel.py &
 PIDS+=$($!)
-torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 test_parallel.py &
+torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 run_parallel.py &
 PIDS+=$($!)
 wait ${PIDS[@]}
 ```

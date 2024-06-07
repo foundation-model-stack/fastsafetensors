@@ -4,7 +4,8 @@ from fastsafetensors import SafeTensorsFileLoader
 dist.init_process_group(backend="gloo")
 dist.barrier()
 pg = dist.group.WORLD
-loader = SafeTensorsFileLoader(pg, torch.device("cpu"), nogds=True, debug_log=True)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+loader = SafeTensorsFileLoader(pg, device, nogds=True, debug_log=True)
 loader.add_filenames({0: ["a.safetensors"], 1:["b.safetensors"]}) # {rank: files}
 fb = loader.copy_files_to_device()
 tensor_a0 = fb.get_sharded(tensor_name="a0", dim=0)

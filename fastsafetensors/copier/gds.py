@@ -61,7 +61,7 @@ class GdsFileCopier:
             if count < 0:
                 failed.append(req)
             if c != -1:
-                gbuf.cufile_deregister(count)
+                gbuf.cufile_deregister(c)
         if self.fh != 0:
             del self.fh
             self.fh = 0

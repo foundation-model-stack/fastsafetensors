@@ -268,7 +268,7 @@ const int gds_device_buffer::cufile_deregister(uint64_t offset) {
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
     err = fns.cuFileBufDeregister(dst);
     if (err.err != CU_FILE_SUCCESS) {
-        std::fprintf(stderr, "gds_device_buffer.cufile_deregister: cuFileBufDeregister (%p) returned an error=%d\n", this->_devPtr_base->get_raw(), err.err);
+        std::fprintf(stderr, "gds_device_buffer.cufile_deregister: cuFileBufDeregister (%p) returned an error=%d\n", dst, err.err);
         return -1;
     }
     if (debug_log) {
