@@ -28,7 +28,7 @@ Note: when using different versions of pytorch, you may require changes on build
 ## Install from PyPi
 
 ```bash
-pip install fastsfaetensors==0.1.2
+pip install fastsafetensors
 ```
 
 ## Local installation
@@ -49,8 +49,9 @@ make dist
 
 ## Unit tests
 
+After installing fastsafetensors with `pip` or `make install`, run
+
 ```bash
-make install-test # install stub'ed fastsafetensors without torch, cuda, and numa
 make unittest
 ```
 

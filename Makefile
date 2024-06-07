@@ -9,7 +9,7 @@ install:
 	pip install setuptools
 	CUDA_HOME=$(CUDA_HOME) TORCH_PATH=$(TORCH_PATH) pip install . --no-cache-dir --no-build-isolation
 
-.PHONY: install-test
+.PHONY: install-test #deprecated. run "make install" with required packages instead
 install-test:
 	FST_TEST=1 TORCH_PATH=$(TORCH_PATH) pip install .[test] --no-cache-dir --no-build-isolation
 
