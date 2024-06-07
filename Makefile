@@ -15,7 +15,7 @@ install-test:
 
 .PHONY: unittest
 unittest:
-	pytest -s --cov=fastsafetensors --cov-report=html
+	pytest -s --cov=$(shell python3 -c "import os; os.chdir('/tmp'); import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))") --cov-report=html
 
 .PHONY: builder
 builder: Dockerfile.build
