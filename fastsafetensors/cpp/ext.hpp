@@ -19,24 +19,10 @@
 #define __MOD_NAME__ fastsafetensors_cpp
 #endif
 
-#ifndef __TEST__
-
 #include <cuda_runtime.h>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <numa.h>
 #include <cufile.h>
-
-#else
-
-typedef enum CUfileOpError { CU_FILE_SUCCESS=0, CU_FILE_INTERNAL_ERROR=5030 } CUfileOpError;
-enum CUfileFileHandleType { CU_FILE_HANDLE_TYPE_OPAQUE_FD = 1 };
-typedef void * CUfileHandle_t;
-typedef struct CUfileDescr_t { enum CUfileFileHandleType type; union { int fd; }handle; } CUfileDescr_t;
-typedef struct CUfileError { CUfileOpError err; }CUfileError_t;
-typedef enum cudaError { cudaSuccess = 0, cudaErrorMemoryAllocation = 2 } cudaError_t;
-enum cudaMemcpyKind { cudaMemcpyHostToDevice=2, cudaMemcpyDefault = 4 };
-
-#endif
 
 int get_alignment_size();
 void set_debug_log(bool _debug_log);

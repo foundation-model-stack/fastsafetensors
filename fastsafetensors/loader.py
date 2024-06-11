@@ -45,6 +45,8 @@ class SafeTensorsFileLoader:
         self.nogds = nogds
         global initialized
         if not initialized:
+            if device.type == "cpu":
+                fstcpp.set_cpumode()
             fstcpp.set_debug_log(debug_log)
             node = get_device_numa_node(device.index)
             if node is not None:
@@ -71,6 +73,9 @@ class SafeTensorsFileLoader:
         return self.frames[tensor_name].shape
 
     def add_filenames(self, filenames: Dict[int, List[str]]):
+        """
+        Register files to ranks to be copied at copy_file_to_device().
+        """
         for rank, files in sorted(filenames.items(), key=lambda x:x[0]):
             for filename in files:
                 realpath = filename #os.path.realpath(filename)
@@ -81,6 +86,11 @@ class SafeTensorsFileLoader:
                     print(f"add_filenames {len(self.meta)}: path={realpath}")
 
     def copy_files_to_device(self, dtype: torch.dtype|None=None, use_buf_register: bool=False, max_copy_block_size: int=16*1024*1024*1024)->FilesBufferOnDevice:
+        """
+        trigger copying all the files to device buffers.
+        At this moment, we do not instantiate tensors but just creating copies at device buffers with or without GDS.
+        Users can instantiate and/or partition tensors with FilesBufferOnDevice returned by this function.
+        """
         if self.device.type != "cpu":
             torch.cuda.set_device(self.device)
 

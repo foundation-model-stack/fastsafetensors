@@ -9,10 +9,6 @@ install:
 	pip install setuptools
 	CUDA_HOME=$(CUDA_HOME) TORCH_PATH=$(TORCH_PATH) pip install . --no-cache-dir --no-build-isolation
 
-.PHONY: install-test #deprecated. run "make install" with required packages instead
-install-test:
-	FST_TEST=1 TORCH_PATH=$(TORCH_PATH) pip install .[test] --no-cache-dir --no-build-isolation
-
 .PHONY: unittest
 unittest:
 	pytest -s --cov=$(shell python3 -c "import os; os.chdir('/tmp'); import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))") --cov-report=html

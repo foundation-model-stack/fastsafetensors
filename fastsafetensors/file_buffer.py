@@ -10,6 +10,23 @@ from collections import OrderedDict
 from .tensor_factory import LazyTensorFactory
 
 class FilesBufferOnDevice:
+    r""" Device buffer for .safetensors files.
+        Users can call get_tensor(), get_sharded(), etc. to instantiate (sharded) tensors from the device buffer.
+        Note that for multi-process loading, users must follow the single-program multiple-data (SPMD) paradigm, which is common for torch.distributed programs.
+        In other words, users must ensure that every worker process calls the methods here in the same order.
+        This is because methods here reuse torch.distributed operations: broadcast, scatter, recv, and send.
+        They synchornously wait all the workers to execute copies among processes.
+
+        Users should create this instance with SafeTensorsFileLoader.submit_io().
+
+    Args:
+        rank_loaders (Dict<rank, list(LazyTensorFacotry)>): Tensor factories per rank, which hold device pointers for buffers.
+        pg (dist.ProcessGroup): process group for pytorch distributed. SingleGroup is available for single GPU use-cases.
+        auto_mem_delete (bool): automatically release device buffers when all the tensors are shuffled.
+
+    Examples:
+        See examples/run_single.py and examples/run_parallel.py.
+    """
     def __init__(self, rank_loaders: Dict[int, List[LazyTensorFactory]], pg: dist.ProcessGroup, auto_mem_delete=True):
         self.rank_loaders: Dict[int, List[LazyTensorFactory]] = rank_loaders
         self.key_to_rank_lidx: Dict[str, Tuple[int, int]] = {}
@@ -61,14 +78,31 @@ class FilesBufferOnDevice:
         return ret
 
     def get_sharded(self, tensor_name: str, dim: int, device: torch.device|None=None, dtype: torch.dtype|None=None)->torch.Tensor:
+        """
+        partition a tensor instance with the key tensor_name at the dimension dim and return it.
+        In multi-process loading, this eventually calls torch.distributed.scatter.
+        A special dim is -1, which broadcast a tensor to all the ranks (== get_tensor()).
+        """
         (rank, lidix) = self._get_rank_lidx(tensor_name)
         t = self.rank_loaders[rank][lidix].shuffle(self.pg, tensor_name, dim)
         return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
 
     def get_tensor(self, tensor_name: str, device: torch.device|None=None, dtype: torch.dtype|None=None)->torch.Tensor:
+        """
+        get a tensor instance with the key tensor_name from a local or remote rank.
+        In multi-process loading, this eventually calls torch.distributed.broadcast.
+        So, every rank will allocate the same tensor at each device memroy.
+        In single-process loading, this directly instantiates a tensor from the device buffer with zero copy.
+        """
         return self.get_sharded(tensor_name, -1, device, dtype)
 
     def push_tensor(self, tensor_name: str, dst_rank: int,  device: torch.device|None=None, dtype: torch.dtype|None=None) -> torch.Tensor:
+        """
+        push a tensor instance with the key tensor_name from a rank to a destination rank dst_rank.
+        In multi-process loading, this eventually calls torch.distributed.send if the rank has the tensor instance.
+        The destination rank will call torch.distributed.recv.
+        Other ranks do nothing.
+        """
         (rank, lidix) = self._get_rank_lidx(tensor_name)
         t = self.rank_loaders[rank][lidix].push(self.pg, tensor_name, dst_rank, rank)
         return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)

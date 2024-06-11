@@ -149,26 +149,52 @@ Example output:
 
 ```
 add_filenames 1: path=a.safetensors
-add_filenames 2: path=b.safetensors
-[DEBUG] raw_device_pointer: raw_alloc: 0x7c83000, length=256, elapsed=0 us
-[DEBUG] raw_device_pointer: raw_alloc: 0x6b0f000, length=256, elapsed=0 us
-[DEBUG] nogds_file_reader.submit_read: cudaHostAlloc, size=1048576, elapsed=14 us
-[DEBUG] nogds_file_reader.submit_read: cudaHostAlloc, size=1048576, elapsed=14 us
+[DEBUG] raw_device_pointer: raw_alloc: 0x6ba1000, length=256, elapsed=2 us
+[DEBUG] nogds_file_reader.submit_read: cudaHostAlloc, size=1048576, elapsed=10 us
 [DEBUG] nogds_file_reader.submit_read #3, thread_id=1
-[DEBUG] nogds_file_reader.submit_read #3, thread_id=1
-[DEBUG] nogds_file_reader._thread: read (mmap=0), fd=10, offset=104, count=256, c=256, copy=19 us, cuda_copy=1 us
-[DEBUG] nogds_file_reader._thread: read (mmap=0), fd=10, offset=104, count=256, c=256, copy=18 us, cuda_copy=1 us
-wait_io: tensor=b0
+[DEBUG] nogds_file_reader._thread: read (mmap=0), fd=15, offset=104, count=256, c=256, copy=15 us, cuda_copy=0 us
 wait_io: tensor=a0
-shuffle: scatter, tensor_name=a0, shape=torch.Size([16, 8])->torch.Size([8, 8]), self.rank=0, pg.rank()=1, rank_slices=[(slice(0, 8, 1),), (slice(8, 16, 1),)], len(scatter_list)=0
-shuffle: scatter, tensor_name=a0, shape=torch.Size([16, 8])->torch.Size([8, 8]), self.rank=0, pg.rank()=0, rank_slices=[(slice(0, 8, 1),), (slice(8, 16, 1),)], len(scatter_list)=2
+shuffle: broadcast, tensor_name=a0, shape=torch.Size([16, 8]), self.rank=0, pg.rank()=0, has_tensor=True
+add_filenames 2: path=b.safetensors
+[DEBUG] raw_device_pointer: raw_alloc: 0x7cbb000, length=256, elapsed=2 us
+[DEBUG] nogds_file_reader.submit_read: cudaHostAlloc, size=1048576, elapsed=12 us
+[DEBUG] nogds_file_reader.submit_read #3, thread_id=1
+[DEBUG] nogds_file_reader._thread: read (mmap=0), fd=15, offset=104, count=256, c=256, copy=15 us, cuda_copy=0 us
+wait_io: tensor=b0
+shuffle: broadcast, tensor_name=a0, shape=torch.Size([16, 8]), self.rank=0, pg.rank()=1, has_tensor=False
+_get_tensor: free_dev_ptrs, lidx=0, src=a.safetensorsshuffle: use cache, tensor_name=a0
+
+[DEBUG] ~raw_device_pointer: torch_raw_delete: 0x6ba1000, elapsed=0 us
+shuffle: use cache, tensor_name=a0
 _get_tensor: free_dev_ptrs, lidx=0, src=a.safetensors
-[DEBUG] ~raw_device_pointer: torch_raw_delete: 0x6b0f000, elapsed=0 us
 shuffle: scatter, tensor_name=b0, shape=torch.Size([16, 8])->torch.Size([16, 4]), self.rank=1, pg.rank()=0, rank_slices=[(slice(None, None, None), slice(0, 4, 1)), (slice(None, None, None), slice(4, 8, 1))], len(scatter_list)=0
 shuffle: scatter, tensor_name=b0, shape=torch.Size([16, 8])->torch.Size([16, 4]), self.rank=1, pg.rank()=1, rank_slices=[(slice(None, None, None), slice(0, 4, 1)), (slice(None, None, None), slice(4, 8, 1))], len(scatter_list)=2
 _get_tensor: free_dev_ptrs, lidx=0, src=b.safetensors
-[DEBUG] ~raw_device_pointer: torch_raw_delete: 0x7c83000, elapsed=0 us
-RANK 1: tensor_name=tensor([[ 8.,  8.,  8.,  8.,  8.,  8.,  8.,  8.],
+[DEBUG] ~raw_device_pointer: torch_raw_delete: 0x7cbb000, elapsed=0 us
+RANK 0: tensor_a0=tensor([[ 0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.],
+        [ 1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.],
+        [ 2.,  2.,  2.,  2.,  2.,  2.,  2.,  2.],
+        [ 3.,  3.,  3.,  3.,  3.,  3.,  3.,  3.],
+        [ 4.,  4.,  4.,  4.,  4.,  4.,  4.,  4.],
+        [ 5.,  5.,  5.,  5.,  5.,  5.,  5.,  5.],
+        [ 6.,  6.,  6.,  6.,  6.,  6.,  6.,  6.],
+        [ 7.,  7.,  7.,  7.,  7.,  7.,  7.,  7.],
+        [ 8.,  8.,  8.,  8.,  8.,  8.,  8.,  8.],
+        [ 9.,  9.,  9.,  9.,  9.,  9.,  9.,  9.],
+        [10., 10., 10., 10., 10., 10., 10., 10.],
+        [11., 11., 11., 11., 11., 11., 11., 11.],
+        [12., 12., 12., 12., 12., 12., 12., 12.],
+        [13., 13., 13., 13., 13., 13., 13., 13.],
+        [14., 14., 14., 14., 14., 14., 14., 14.],
+        [15., 15., 15., 15., 15., 15., 15., 15.]], dtype=torch.float16)RANK 1: tensor_a0=tensor([[ 0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.],
+        [ 1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.],
+        [ 2.,  2.,  2.,  2.,  2.,  2.,  2.,  2.],
+        [ 3.,  3.,  3.,  3.,  3.,  3.,  3.,  3.],
+        [ 4.,  4.,  4.,  4.,  4.,  4.,  4.,  4.],
+        [ 5.,  5.,  5.,  5.,  5.,  5.,  5.,  5.],
+        [ 6.,  6.,  6.,  6.,  6.,  6.,  6.,  6.],
+        [ 7.,  7.,  7.,  7.,  7.,  7.,  7.,  7.],
+        [ 8.,  8.,  8.,  8.,  8.,  8.,  8.,  8.],
         [ 9.,  9.,  9.,  9.,  9.,  9.,  9.,  9.],
         [10., 10., 10., 10., 10., 10., 10., 10.],
         [11., 11., 11., 11., 11., 11., 11., 11.],
@@ -176,15 +202,55 @@ RANK 1: tensor_name=tensor([[ 8.,  8.,  8.,  8.,  8.,  8.,  8.,  8.],
         [13., 13., 13., 13., 13., 13., 13., 13.],
         [14., 14., 14., 14., 14., 14., 14., 14.],
         [15., 15., 15., 15., 15., 15., 15., 15.]], dtype=torch.float16)
-RANK 0: tensor_name=tensor([[0., 0., 0., 0., 0., 0., 0., 0.],
-        [1., 1., 1., 1., 1., 1., 1., 1.],
-        [2., 2., 2., 2., 2., 2., 2., 2.],
-        [3., 3., 3., 3., 3., 3., 3., 3.],
-        [4., 4., 4., 4., 4., 4., 4., 4.],
-        [5., 5., 5., 5., 5., 5., 5., 5.],
-        [6., 6., 6., 6., 6., 6., 6., 6.],
-        [7., 7., 7., 7., 7., 7., 7., 7.]], dtype=torch.float16)
-RANK 1: tensor_name=tensor([[ 0.,  0.,  0.,  0.],
+
+RANK 0: tensor_a0_sharded=tensor([[ 0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.],
+        [ 1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.],
+        [ 2.,  2.,  2.,  2.,  2.,  2.,  2.,  2.],
+        [ 3.,  3.,  3.,  3.,  3.,  3.,  3.,  3.],
+        [ 4.,  4.,  4.,  4.,  4.,  4.,  4.,  4.],
+        [ 5.,  5.,  5.,  5.,  5.,  5.,  5.,  5.],
+        [ 6.,  6.,  6.,  6.,  6.,  6.,  6.,  6.],
+        [ 7.,  7.,  7.,  7.,  7.,  7.,  7.,  7.],
+        [ 8.,  8.,  8.,  8.,  8.,  8.,  8.,  8.],
+        [ 9.,  9.,  9.,  9.,  9.,  9.,  9.,  9.],
+        [10., 10., 10., 10., 10., 10., 10., 10.],
+        [11., 11., 11., 11., 11., 11., 11., 11.],
+        [12., 12., 12., 12., 12., 12., 12., 12.],
+        [13., 13., 13., 13., 13., 13., 13., 13.],
+        [14., 14., 14., 14., 14., 14., 14., 14.],
+        [15., 15., 15., 15., 15., 15., 15., 15.]], dtype=torch.float16)RANK 1: tensor_a0_sharded=tensor([[ 0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.],
+        [ 1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.],
+        [ 2.,  2.,  2.,  2.,  2.,  2.,  2.,  2.],
+        [ 3.,  3.,  3.,  3.,  3.,  3.,  3.,  3.],
+        [ 4.,  4.,  4.,  4.,  4.,  4.,  4.,  4.],
+        [ 5.,  5.,  5.,  5.,  5.,  5.,  5.,  5.],
+        [ 6.,  6.,  6.,  6.,  6.,  6.,  6.,  6.],
+        [ 7.,  7.,  7.,  7.,  7.,  7.,  7.,  7.],
+        [ 8.,  8.,  8.,  8.,  8.,  8.,  8.,  8.],
+        [ 9.,  9.,  9.,  9.,  9.,  9.,  9.,  9.],
+        [10., 10., 10., 10., 10., 10., 10., 10.],
+        [11., 11., 11., 11., 11., 11., 11., 11.],
+        [12., 12., 12., 12., 12., 12., 12., 12.],
+        [13., 13., 13., 13., 13., 13., 13., 13.],
+        [14., 14., 14., 14., 14., 14., 14., 14.],
+        [15., 15., 15., 15., 15., 15., 15., 15.]], dtype=torch.float16)
+
+RANK 1: tensor_b0_sharded=tensor([[ 0.,  0.,  0.,  0.],
+        [ 1.,  1.,  1.,  1.],
+        [ 2.,  2.,  2.,  2.],
+        [ 3.,  3.,  3.,  3.],
+        [ 4.,  4.,  4.,  4.],
+        [ 5.,  5.,  5.,  5.],
+        [ 6.,  6.,  6.,  6.],
+        [ 7.,  7.,  7.,  7.],
+        [ 8.,  8.,  8.,  8.],
+        [ 9.,  9.,  9.,  9.],
+        [10., 10., 10., 10.],
+        [11., 11., 11., 11.],
+        [12., 12., 12., 12.],
+        [13., 13., 13., 13.],
+        [14., 14., 14., 14.],
+        [15., 15., 15., 15.]], dtype=torch.float16)RANK 0: tensor_b0_sharded=tensor([[ 0.,  0.,  0.,  0.],
         [ 1.,  1.,  1.,  1.],
         [ 2.,  2.,  2.,  2.],
         [ 3.,  3.,  3.,  3.],
@@ -200,22 +266,4 @@ RANK 1: tensor_name=tensor([[ 0.,  0.,  0.,  0.],
         [13., 13., 13., 13.],
         [14., 14., 14., 14.],
         [15., 15., 15., 15.]], dtype=torch.float16)
-RANK 0: tensor_name=tensor([[ 0.,  0.,  0.,  0.],
-        [ 1.,  1.,  1.,  1.],
-        [ 2.,  2.,  2.,  2.],
-        [ 3.,  3.,  3.,  3.],
-        [ 4.,  4.,  4.,  4.],
-        [ 5.,  5.,  5.,  5.],
-        [ 6.,  6.,  6.,  6.],
-        [ 7.,  7.,  7.,  7.],
-        [ 8.,  8.,  8.,  8.],
-        [ 9.,  9.,  9.,  9.],
-        [10., 10., 10., 10.],
-        [11., 11., 11., 11.],
-        [12., 12., 12., 12.],
-        [13., 13., 13., 13.],
-        [14., 14., 14., 14.],
-        [15., 15., 15., 15.]], dtype=torch.float16)
-[DEBUG] ~nogds_file_reader: elapsed=53 us
-[DEBUG] ~nogds_file_reader: elapsed=110 us
 ```

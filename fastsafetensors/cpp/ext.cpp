@@ -13,8 +13,6 @@
 
 #define ALIGN 4096
 
-#ifndef __TEST__
-
 static ssize_t ax_cuFileRead(const gds_file_handle& h, void * p, size_t l, off_t o, off_t c) {
     return cuFileRead(h._get_cf_handle(), p, l, o, c);
 }
@@ -39,87 +37,86 @@ ext_funcs_t fns = ext_funcs_t {
     torch_raw_delete: c10::cuda::CUDACachingAllocator::raw_delete,
 };
 
-bool is_stub() {
-    return false;
+static bool use_cuda = false;
+
+bool is_cpu_mode() {
+    return !use_cuda;
 }
 
-#else
+/* cpu_mode functions: for tests and debugs */
 
-static CUfileError_t stub_cuFileDriverOpen() { return CUfileError_t{err: CU_FILE_SUCCESS}; }
-static CUfileError_t stub_cuFileDriverClose() { return CUfileError_t{err: CU_FILE_SUCCESS}; }
-static CUfileError_t stub_cuFileDriverSetMaxDirectIOSize(size_t) { return CUfileError_t{err: CU_FILE_SUCCESS}; }
-static CUfileError_t stub_cuFileDriverSetMaxPinnedMemSize(size_t) { return CUfileError_t{err: CU_FILE_SUCCESS}; }
-static CUfileError_t stub_cuFileBufRegister(const void *, size_t, int) { return CUfileError_t{err: CU_FILE_SUCCESS}; }
-static CUfileError_t stub_cuFileBufDeregister(const void *) { return CUfileError_t{err: CU_FILE_SUCCESS}; }
-static CUfileError_t stub_cuFileHandleBufRegister(CUfileHandle_t * in, CUfileDescr_t *) {
+static CUfileError_t cpu_cuFileDriverOpen() { return CUfileError_t{err: CU_FILE_SUCCESS}; }
+static CUfileError_t cpu_cuFileDriverClose() { return CUfileError_t{err: CU_FILE_SUCCESS}; }
+static CUfileError_t cpu_cuFileDriverSetMaxDirectIOSize(size_t) { return CUfileError_t{err: CU_FILE_SUCCESS}; }
+static CUfileError_t cpu_cuFileDriverSetMaxPinnedMemSize(size_t) { return CUfileError_t{err: CU_FILE_SUCCESS}; }
+static CUfileError_t cpu_cuFileBufRegister(const void *, size_t, int) { return CUfileError_t{err: CU_FILE_SUCCESS}; }
+static CUfileError_t cpu_cuFileBufDeregister(const void *) { return CUfileError_t{err: CU_FILE_SUCCESS}; }
+static CUfileError_t cpu_cuFileHandleBufRegister(CUfileHandle_t * in, CUfileDescr_t *) {
     *in = reinterpret_cast<CUfileHandle_t *>(malloc(sizeof(CUfileHandle_t)));
     if (*in != nullptr) {
         return CUfileError_t{err: CU_FILE_SUCCESS};
     }
     return CUfileError_t{err: CU_FILE_INTERNAL_ERROR};
 }
-static void stub_cuFileHandleDeregister(CUfileHandle_t h) {
+static void cpu_cuFileHandleDeregister(CUfileHandle_t h) {
     free(reinterpret_cast<void *>(h));
 }
-static ssize_t stub_cuFileRead(const gds_file_handle& h, void * p, size_t l, off_t o, off_t c) {
+static ssize_t cpu_cuFileRead(const gds_file_handle& h, void * p, size_t l, off_t o, off_t c) {
     return pread(h._get_fd(), reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(p) + c), l, o);
 }
-static cudaError_t stub_cudaMemcpy(void * dst, const void * src, size_t size, enum cudaMemcpyKind) {
+static cudaError_t cpu_cudaMemcpy(void * dst, const void * src, size_t size, enum cudaMemcpyKind) {
     std::memcpy(dst, src, size);
     return cudaSuccess;
 }
-static cudaError_t stub_cudaDeviceSynchronize() { return cudaSuccess; }
-static cudaError_t stub_cudaHostAlloc(void ** p, size_t length, unsigned int) {
+static cudaError_t cpu_cudaDeviceSynchronize() { return cudaSuccess; }
+static cudaError_t cpu_cudaHostAlloc(void ** p, size_t length, unsigned int) {
     if (posix_memalign(p, ALIGN, length) < 0) {
         return cudaErrorMemoryAllocation;
     }
     return cudaSuccess;
 }
-static cudaError_t stub_cudaFreeHost(void * p) {
+static cudaError_t cpu_cudaFreeHost(void * p) {
     free(p);
     return cudaSuccess;
 }
-static cudaError_t stub_cudaDeviceGetPCIBusId(char * in, int s, int) {
+static cudaError_t cpu_cudaDeviceGetPCIBusId(char * in, int s, int) {
     std::snprintf(in, s, "0000:00:00:00.00");
     return cudaSuccess;
 }
-static int stub_numa_run_on_node(int) { return 0; }
-static void * stub_torch_row_alloc(size_t length) {
+static int cpu_numa_run_on_node(int) {return 0; }
+static void * cpu_torch_row_alloc(size_t length) {
     void *p;
     if (posix_memalign(&p, ALIGN, length) < 0) {
         return nullptr;
     }
     return p;
 }
-static void stub_torch_row_delete(void * p) {
+static void cpu_torch_row_delete(void * p) {
     free(p);
 }
 
-ext_funcs_t fns = ext_funcs_t {
-    cuFileDriverOpen: stub_cuFileDriverOpen,
-    cuFileDriverClose: stub_cuFileDriverClose,
-    cuFileDriverSetMaxDirectIOSize: stub_cuFileDriverSetMaxDirectIOSize,
-    cuFileDriverSetMaxPinnedMemSize: stub_cuFileDriverSetMaxPinnedMemSize,
-    cuFileBufRegister: stub_cuFileBufRegister,
-    cuFileBufDeregister: stub_cuFileBufDeregister,
-    cuFileHandleRegister: stub_cuFileHandleBufRegister,
-    cuFileHandleDeregister: stub_cuFileHandleDeregister,
-    cuFileRead: stub_cuFileRead,
-    cudaMemcpy: stub_cudaMemcpy,
-    cudaDeviceSynchronize: stub_cudaDeviceSynchronize,
-    cudaHostAlloc: stub_cudaHostAlloc,
-    cudaFreeHost: stub_cudaFreeHost,
-    cudaDeviceGetPCIBusId: stub_cudaDeviceGetPCIBusId,
-    numa_run_on_node: stub_numa_run_on_node,
-    torch_row_alloc: stub_torch_row_alloc,
-    torch_raw_delete: stub_torch_row_delete,
-};
-
-bool is_stub() {
-    return true;
+void set_cpu_mode() {
+    use_cuda = false;
+    fns = ext_funcs_t {
+        cuFileDriverOpen: cpu_cuFileDriverOpen,
+        cuFileDriverClose: cpu_cuFileDriverClose,
+        cuFileDriverSetMaxDirectIOSize: cpu_cuFileDriverSetMaxDirectIOSize,
+        cuFileDriverSetMaxPinnedMemSize: cpu_cuFileDriverSetMaxPinnedMemSize,
+        cuFileBufRegister: cpu_cuFileBufRegister,
+        cuFileBufDeregister: cpu_cuFileBufDeregister,
+        cuFileHandleRegister: cpu_cuFileHandleBufRegister,
+        cuFileHandleDeregister: cpu_cuFileHandleDeregister,
+        cuFileRead: cpu_cuFileRead,
+        cudaMemcpy: cpu_cudaMemcpy,
+        cudaDeviceSynchronize: cpu_cudaDeviceSynchronize,
+        cudaHostAlloc: cpu_cudaHostAlloc,
+        cudaFreeHost: cpu_cudaFreeHost,
+        cudaDeviceGetPCIBusId: cpu_cudaDeviceGetPCIBusId,
+        numa_run_on_node: cpu_numa_run_on_node,
+        torch_row_alloc: cpu_torch_row_alloc,
+        torch_raw_delete: cpu_torch_row_delete,
+    };
 }
-
-#endif
 
 static bool debug_log = false;
 
@@ -595,7 +592,8 @@ const ssize_t gds_file_reader::wait_read(const int id) {
 
 PYBIND11_MODULE(__MOD_NAME__, m)
 {
-    m.def("is_stub", &is_stub);
+    m.def("is_cpu_mode", &is_cpu_mode);
+    m.def("set_cpumode", &set_cpu_mode);
     m.def("set_debug_log", &set_debug_log);
     m.def("get_alignment_size", &get_alignment_size);
     m.def("init_gds", &init_gds);
