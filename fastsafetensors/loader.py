@@ -85,7 +85,7 @@ class SafeTensorsFileLoader:
                 if self.debug_log and rank == self.pg.rank():
                     print(f"add_filenames {len(self.meta)}: path={realpath}")
 
-    def copy_files_to_device(self, dtype: torch.dtype|None=None, use_buf_register: bool=False, max_copy_block_size: int=16*1024*1024*1024)->FilesBufferOnDevice:
+    def copy_files_to_device(self, dtype: torch.dtype=None, use_buf_register: bool=False, max_copy_block_size: int=16*1024*1024*1024)->FilesBufferOnDevice:
         """
         trigger copying all the files to device buffers.
         At this moment, we do not instantiate tensors but just creating copies at device buffers with or without GDS.
@@ -133,7 +133,7 @@ class fastsafe_open:
         device (:obj:`str`, defaults to :obj:`"cpu"`): The device on which you want the tensors.
     """
 
-    def __init__(self, filenames: str|List[str], framework: str="pt", device: str="cpu", nogds: bool=False, debug_log: bool=False):
+    def __init__(self, filenames: List[str], framework: str="pt", device: str="cpu", nogds: bool=False, debug_log: bool=False):
         if framework != "pt":
             raise NotImplementedError("pytorch is only a framework that current fastsafetensors supports")
         from .common import SingleGroup

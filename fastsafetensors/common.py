@@ -16,7 +16,7 @@ class SingleGroup:
         return 0
 
 ALIGN: int = fstcpp.get_alignment_size()
-CUDA_PTR_ALIGN: int = 8
+CUDA_PTR_ALIGN: int = 16
 
 framework_index = {
     "pytorch": 1,
@@ -34,7 +34,7 @@ def str_to_dtype(dtype_str: str, framework: str="pytorch")->torch.dtype:
         raise ValueError(f"str_to_dtype: Not supported dtype: {dtype_str}")
     return dtype_convert[dtype_str][framework_index[framework]]
 
-def get_device_numa_node(device: int|None):
+def get_device_numa_node(device: int):
     if device is None:
         return
     pci_addr = fstcpp.get_device_pci_bus(device)
@@ -43,6 +43,20 @@ def get_device_numa_node(device: int|None):
     bus_addr = ':'.join(pci_addr.split(":")[:2]).lower()
     with open(f"/sys/class/pci_bus/{bus_addr}/device/numa_node") as f:
         return int(f.read().strip())
+
+def alloc_tensor_memory(length: int)->fstcpp.gds_device_buffer:
+    if torch.cuda.is_available():
+        rbuf = torch.cuda.caching_allocator_alloc(length)
+    else:
+        rbuf = fstcpp.cpu_malloc(length)
+    return fstcpp.gds_device_buffer(rbuf, length)
+
+def free_tensor_memory(gbuf: fstcpp.gds_device_buffer):
+    if torch.cuda.is_available():
+        rbuf = torch.cuda.caching_allocator_delete(ptr)
+    else:
+        rbuf = fstcpp.cpu_free(ptr)
+    return rbuf
 
 
 class SafeTensorsMetadata:
@@ -121,7 +135,7 @@ class SafeTensorsMetadata:
         os.close(fd)
         return ret
 
-    def get_tensors(self, gbuf: fstcpp.gds_device_buffer, device: torch.device, copy_start_offset: int, dtype: torch.dtype|None=None) -> Dict[str, torch.Tensor]:
+    def get_tensors(self, gbuf: fstcpp.gds_device_buffer, device: torch.device, copy_start_offset: int, dtype: torch.dtype=None) -> Dict[str, torch.Tensor]:
         ret = {}
         for tensor_name, t in self.tensors.items():
             dst_dev_ptr = gbuf.get_base_address() + self.header_length + t.data_offsets[0]-copy_start_offset

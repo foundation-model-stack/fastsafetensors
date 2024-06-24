@@ -4,7 +4,7 @@
 import torch
 from .. import cpp as fstcpp
 from typing import Dict
-from ..common import SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN
+from ..common import alloc_tensor_memory, free_tensor_memory, SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN
 
 class GdsFileCopier:
     def __init__(self, metadata: SafeTensorsMetadata, device: torch.device, reader: fstcpp.gds_file_reader, debug_log: bool=False):
@@ -30,7 +30,7 @@ class GdsFileCopier:
             aligned_length = length + head_bytes
         aligned_offset = offset - head_bytes
 
-        gbuf = fstcpp.gds_device_buffer(aligned_length)
+        gbuf = alloc_tensor_memory(aligned_length)
         if use_buf_register:
             count = 0
             while count < aligned_length:
@@ -54,7 +54,7 @@ class GdsFileCopier:
         self.aligned_length = aligned_length
         return gbuf
 
-    def wait_io(self, gbuf: fstcpp.gds_device_buffer, dtype: torch.dtype|None=None)->Dict[str, torch.Tensor]:
+    def wait_io(self, gbuf: fstcpp.gds_device_buffer, dtype: torch.dtype=None)->Dict[str, torch.Tensor]:
         failed = []
         for req, c in sorted(self.copy_reqs.items(), key=lambda x:x[0]):
             count = self.reader.wait_read(req)
@@ -71,7 +71,7 @@ class GdsFileCopier:
         if not self.metadata.aligned and self.aligned_length > 0:
             misaligned_bytes = self.metadata.header_length % CUDA_PTR_ALIGN
             length = 1024*1024*1024
-            tmp_gbuf = fstcpp.gds_device_buffer(length)
+            tmp_gbuf = alloc_tensor_memory(length)
             count = 0
             while count + misaligned_bytes < self.aligned_length:
                 l = self.aligned_length - misaligned_bytes - count
@@ -81,6 +81,6 @@ class GdsFileCopier:
                     print("wait_io: fix misalignment, src=0x{:x}, misaligned_bytes={}, count={}, tmp=0x{:x}".format(gbuf.get_base_address(), misaligned_bytes, count, tmp_gbuf.get_base_address()))
                 gbuf.memmove(count, misaligned_bytes + count, tmp_gbuf, l)
                 count += l
-            del tmp_gbuf
+            free_tensor_memory(tmp_gbuf)
             self.aligned_offset += misaligned_bytes
         return self.metadata.get_tensors(gbuf, self.device, self.aligned_offset, dtype=dtype)

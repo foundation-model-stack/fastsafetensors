@@ -34,7 +34,7 @@ class LazyTensorFactory:
         if self.copier is not None:
             self.gbuf = self.copier.submit_io(use_buf_register, max_copy_block_size)
 
-    def wait_io(self, dtype: torch.dtype|None=None):
+    def wait_io(self, dtype: torch.dtype=None):
         if self.copier is not None:
             self.tensors = self.copier.wait_io(self.gbuf, dtype=dtype)
             if self.debug_log:
@@ -175,6 +175,7 @@ class LazyTensorFactory:
     def free_dev_ptrs(self):
         self.tensors = {}
         if self.gbuf is not None:
+            torch.cuda.caching_allocator_delete(self.gbuf.get_base_address())
             self.gbuf = None
 
     def shuffle_all(self, pg: dist.ProcessGroup, tensor_shard_dim: OrderedDict[str, int])->Tuple[int, Dict[str, torch.Tensor]]:

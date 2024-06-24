@@ -5,7 +5,7 @@ import torch
 import os
 from .. import cpp as fstcpp
 from typing import Dict
-from ..common import SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN
+from ..common import alloc_tensor_memory, SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN
 
 class NoGdsFileCopier:
     def __init__(self, metadata: SafeTensorsMetadata, device: torch.device, reader: fstcpp.nogds_file_reader, debug_log: bool=False):
@@ -20,7 +20,7 @@ class NoGdsFileCopier:
 
     def submit_io(self, use_buf_register: bool, max_copy_block_size: int)->fstcpp.gds_device_buffer:
         total_length = self.metadata.size_bytes - self.metadata.header_length
-        gbuf = fstcpp.gds_device_buffer(total_length)
+        gbuf = alloc_tensor_memory(total_length)
         count = 0
         while count < total_length:
             l = total_length - count
@@ -33,7 +33,7 @@ class NoGdsFileCopier:
             count += l
         return gbuf
 
-    def wait_io(self, gbuf: fstcpp.gds_device_buffer, dtype: torch.dtype|None=None)->Dict[str, torch.Tensor]:
+    def wait_io(self, gbuf: fstcpp.gds_device_buffer, dtype: torch.dtype=None)->Dict[str, torch.Tensor]:
         for req in self.reqs:
             count = self.reader.wait_read(req)
             if count < 0:

@@ -48,7 +48,7 @@ class FilesBufferOnDevice:
                 loader.free_dev_ptrs()
         self.rank_loaders = {}
 
-    def get_filename(self, tensor_name: str)->str|None:
+    def get_filename(self, tensor_name: str)->str:
         if tensor_name not in self.key_to_rank_lidx:
             return None
         (rank, lidx) = self.key_to_rank_lidx[tensor_name]
@@ -63,7 +63,7 @@ class FilesBufferOnDevice:
             raise ValueError(f"_get_rank: key {tensor_name} was not found in files")
         return self.key_to_rank_lidx[tensor_name]
 
-    def _get_tensor(self, rank: int, lidx: int, tensor_name: str, ret: torch.Tensor, device: torch.device|None, dtype: torch.dtype|None)->torch.Tensor:
+    def _get_tensor(self, rank: int, lidx: int, tensor_name: str, ret: torch.Tensor, device: torch.device, dtype: torch.dtype)->torch.Tensor:
         loader = self.rank_loaders[rank][lidx]
         if self.auto_mem_delete:
             self.instantiated[rank][lidx][tensor_name] = True
@@ -77,7 +77,7 @@ class FilesBufferOnDevice:
             ret = ret.to(device=device, dtype=dtype)
         return ret
 
-    def get_sharded(self, tensor_name: str, dim: int, device: torch.device|None=None, dtype: torch.dtype|None=None)->torch.Tensor:
+    def get_sharded(self, tensor_name: str, dim: int, device: torch.device=None, dtype: torch.dtype=None)->torch.Tensor:
         """
         partition a tensor instance with the key tensor_name at the dimension dim and return it.
         In multi-process loading, this eventually calls torch.distributed.scatter.
@@ -87,7 +87,7 @@ class FilesBufferOnDevice:
         t = self.rank_loaders[rank][lidix].shuffle(self.pg, tensor_name, dim)
         return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
 
-    def get_tensor(self, tensor_name: str, device: torch.device|None=None, dtype: torch.dtype|None=None)->torch.Tensor:
+    def get_tensor(self, tensor_name: str, device: torch.device=None, dtype: torch.dtype=None)->torch.Tensor:
         """
         get a tensor instance with the key tensor_name from a local or remote rank.
         In multi-process loading, this eventually calls torch.distributed.broadcast.
@@ -96,7 +96,7 @@ class FilesBufferOnDevice:
         """
         return self.get_sharded(tensor_name, -1, device, dtype)
 
-    def push_tensor(self, tensor_name: str, dst_rank: int,  device: torch.device|None=None, dtype: torch.dtype|None=None) -> torch.Tensor:
+    def push_tensor(self, tensor_name: str, dst_rank: int,  device: torch.device=None, dtype: torch.dtype=None) -> torch.Tensor:
         """
         push a tensor instance with the key tensor_name from a rank to a destination rank dst_rank.
         In multi-process loading, this eventually calls torch.distributed.send if the rank has the tensor instance.
@@ -107,12 +107,12 @@ class FilesBufferOnDevice:
         t = self.rank_loaders[rank][lidix].push(self.pg, tensor_name, dst_rank, rank)
         return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
 
-    def get_sharded_packed_qkv(self, tensor_name: str, device: torch.device|None=None, dtype: torch.dtype|None=None)->torch.Tensor:
+    def get_sharded_packed_qkv(self, tensor_name: str, device: torch.device=None, dtype: torch.dtype=None)->torch.Tensor:
         (rank, lidix) = self._get_rank_lidx(tensor_name)
         t = self.rank_loaders[rank][lidix].shuffle_packed_qkv(self.pg, tensor_name)
         return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
 
-    def get_multi_cols(self, tensor_names: List[str], dim: int, device: torch.device|None=None, dtype: torch.dtype|None=None)->torch.Tensor:
+    def get_multi_cols(self, tensor_names: List[str], dim: int, device: torch.device=None, dtype: torch.dtype=None)->torch.Tensor:
         rank_lidixs: Dict[Tuple[int, int], List[str]] = {}
         for tensor_name in tensor_names:
             ranklidx = self._get_rank_lidx(tensor_name)

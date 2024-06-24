@@ -10,13 +10,14 @@ from fastsafetensors.dlpack import from_cuda_buffer
 from fastsafetensors import SafeTensorsFileLoader, SingleGroup, SafeTensorsMetadata
 from fastsafetensors.copier.gds import GdsFileCopier
 from fastsafetensors.copier.nogds import NoGdsFileCopier
+from fastsafetensors.common import alloc_tensor_memory, free_tensor_memory
 from fastsafetensors import cpp as fstcpp
 
 def run_nogds_file_read(input_file: str)->Tuple[SafeTensorsMetadata, fstcpp.gds_device_buffer]:
     fd = os.open(input_file, os.O_RDONLY, 0o644)
     meta = SafeTensorsMetadata.from_file(input_file)
     size = meta.size_bytes - meta.header_length
-    gbuf = fstcpp.gds_device_buffer(size)
+    gbuf = alloc_tensor_memory(size)
     reader = fstcpp.nogds_file_reader(False, 20 * 1024, 1)
     req = reader.submit_read(fd, gbuf, meta.header_length, size, 0)
     assert req > 0
@@ -73,13 +74,13 @@ def test_set_numa_node(fstcpp_log):
 
 def test_alloc_gds_buffer(fstcpp_log):
     print("test_alloc_gds_buffer")
-    gbuf = fstcpp.gds_device_buffer(1024)
+    gbuf = alloc_tensor_memory(1024)
     addr = gbuf.get_base_address()
     assert addr != 0
 
 def test_cufile_register_deregister(fstcpp_log):
     print("test_cufile_register_deregister")
-    gbuf = fstcpp.gds_device_buffer(1024)
+    gbuf = alloc_tensor_memory(1024)
     assert gbuf.cufile_register(0, 256) == 0
     assert gbuf.cufile_register(256, 1024-256) == 0
     assert gbuf.cufile_deregister(0) == 0
@@ -87,8 +88,8 @@ def test_cufile_register_deregister(fstcpp_log):
 
 def test_memmove(fstcpp_log):
     print("test_memmove")
-    gbuf = fstcpp.gds_device_buffer(1024)
-    tmp = fstcpp.gds_device_buffer(1024)
+    gbuf = alloc_tensor_memory(1024)
+    tmp = alloc_tensor_memory(1024)
     assert gbuf.memmove(0, 12, tmp, 1024) == 0
 
 def test_nogds_file_reader(fstcpp_log, input_files):
@@ -96,7 +97,7 @@ def test_nogds_file_reader(fstcpp_log, input_files):
     fd = os.open(input_files[0], os.O_RDONLY, 0o644)
     s = os.fstat(fd)
     assert fd > 0
-    gbuf = fstcpp.gds_device_buffer(s.st_size)
+    gbuf = alloc_tensor_memory(s.st_size)
     reader = fstcpp.nogds_file_reader(False, 256 * 1024, 4)
     step = s.st_size // 4
     reqs = []
@@ -126,6 +127,7 @@ def test_NoGdsFileCopier(fstcpp_log, input_files):
     with safe_open(input_files[0], framework="pt") as f:
         for key in tensors.keys():
             assert torch.all(f.get_tensor(key).to(device=device).eq(tensors[key]))
+    torch.cuda.caching_allocator_delete(gbuf.get_base_address())
 
 def test_GdsFileCopier(fstcpp_log, input_files):
     print("test_GdsFileCopier")
@@ -138,6 +140,7 @@ def test_GdsFileCopier(fstcpp_log, input_files):
     with safe_open(input_files[0], framework="pt") as f:
         for key in tensors.keys():
             assert torch.all(f.get_tensor(key).to(device=device).eq(tensors[key]))
+    torch.cuda.caching_allocator_delete(gbuf.get_base_address())
 
 def test_SafeTensorsFileLoader(fstcpp_log, input_files):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

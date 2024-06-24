@@ -21,6 +21,13 @@ dist: builder
 	rm -rf dist build fastsafetensors.egg-info
 	docker run -u `id -u` -w /fastsafetensors --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.10 setup.py sdist bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
 	docker run -u `id -u` -w /fastsafetensors --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.11 setup.py bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
+	docker run -u `id -u` -w /fastsafetensors --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.9 setup.py bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
+
+.PHONY: dist-nocuda
+dist-nocuda: builder
+	rm -rf dist build fastsafetensors.egg-info
+	docker run -u `id -u` -w /fastsafetensors -e NOCUDA=1 --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.9 setup.py bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
+	docker run -u `id -u` -w /fastsafetensors -e NOCUDA=1 --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.11 setup.py bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
 
 .PHONY: upload-test
 upload-test:

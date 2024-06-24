@@ -13,36 +13,6 @@
 
 #define ALIGN 4096
 
-static ssize_t ax_cuFileRead(const gds_file_handle& h, void * p, size_t l, off_t o, off_t c) {
-    return cuFileRead(h._get_cf_handle(), p, l, o, c);
-}
-
-ext_funcs_t fns = ext_funcs_t {
-    cuFileDriverOpen: cuFileDriverOpen,
-    cuFileDriverClose: cuFileDriverClose,
-    cuFileDriverSetMaxDirectIOSize: cuFileDriverSetMaxDirectIOSize,
-    cuFileDriverSetMaxPinnedMemSize: cuFileDriverSetMaxPinnedMemSize,
-    cuFileBufRegister: cuFileBufRegister,
-    cuFileBufDeregister: cuFileBufDeregister,
-    cuFileHandleRegister: cuFileHandleRegister,
-    cuFileHandleDeregister: cuFileHandleDeregister,
-    cuFileRead: ax_cuFileRead,
-    cudaMemcpy: cudaMemcpy,
-    cudaDeviceSynchronize: cudaDeviceSynchronize,
-    cudaHostAlloc: cudaHostAlloc,
-    cudaFreeHost: cudaFreeHost,
-    cudaDeviceGetPCIBusId: cudaDeviceGetPCIBusId,
-    numa_run_on_node: numa_run_on_node,
-    torch_row_alloc: c10::cuda::CUDACachingAllocator::raw_alloc,
-    torch_raw_delete: c10::cuda::CUDACachingAllocator::raw_delete,
-};
-
-static bool use_cuda = false;
-
-bool is_cpu_mode() {
-    return !use_cuda;
-}
-
 /* cpu_mode functions: for tests and debugs */
 
 static CUfileError_t cpu_cuFileDriverOpen() { return CUfileError_t{err: CU_FILE_SUCCESS}; }
@@ -84,15 +54,57 @@ static cudaError_t cpu_cudaDeviceGetPCIBusId(char * in, int s, int) {
     return cudaSuccess;
 }
 static int cpu_numa_run_on_node(int) {return 0; }
-static void * cpu_torch_row_alloc(size_t length) {
-    void *p;
-    if (posix_memalign(&p, ALIGN, length) < 0) {
-        return nullptr;
-    }
-    return p;
+
+#ifndef NOCUDA
+
+static ssize_t ax_cuFileRead(const gds_file_handle& h, void * p, size_t l, off_t o, off_t c) {
+    return cuFileRead(h._get_cf_handle(), p, l, o, c);
 }
-static void cpu_torch_row_delete(void * p) {
-    free(p);
+
+ext_funcs_t fns = ext_funcs_t {
+    cuFileDriverOpen: cuFileDriverOpen,
+    cuFileDriverClose: cuFileDriverClose,
+    cuFileDriverSetMaxDirectIOSize: cuFileDriverSetMaxDirectIOSize,
+    cuFileDriverSetMaxPinnedMemSize: cuFileDriverSetMaxPinnedMemSize,
+    cuFileBufRegister: cuFileBufRegister,
+    cuFileBufDeregister: cuFileBufDeregister,
+    cuFileHandleRegister: cuFileHandleRegister,
+    cuFileHandleDeregister: cuFileHandleDeregister,
+    cuFileRead: ax_cuFileRead,
+    cudaMemcpy: cudaMemcpy,
+    cudaDeviceSynchronize: cudaDeviceSynchronize,
+    cudaHostAlloc: cudaHostAlloc,
+    cudaFreeHost: cudaFreeHost,
+    cudaDeviceGetPCIBusId: cudaDeviceGetPCIBusId,
+    numa_run_on_node: numa_run_on_node,
+};
+
+static bool use_cuda = true;
+
+#else
+ext_funcs_t fns = ext_funcs_t {
+    cuFileDriverOpen: cpu_cuFileDriverOpen,
+    cuFileDriverClose: cpu_cuFileDriverClose,
+    cuFileDriverSetMaxDirectIOSize: cpu_cuFileDriverSetMaxDirectIOSize,
+    cuFileDriverSetMaxPinnedMemSize: cpu_cuFileDriverSetMaxPinnedMemSize,
+    cuFileBufRegister: cpu_cuFileBufRegister,
+    cuFileBufDeregister: cpu_cuFileBufDeregister,
+    cuFileHandleRegister: cpu_cuFileHandleBufRegister,
+    cuFileHandleDeregister: cpu_cuFileHandleDeregister,
+    cuFileRead: cpu_cuFileRead,
+    cudaMemcpy: cpu_cudaMemcpy,
+    cudaDeviceSynchronize: cpu_cudaDeviceSynchronize,
+    cudaHostAlloc: cpu_cudaHostAlloc,
+    cudaFreeHost: cpu_cudaFreeHost,
+    cudaDeviceGetPCIBusId: cpu_cudaDeviceGetPCIBusId,
+    numa_run_on_node: numa_run_on_node,
+};
+static bool use_cuda = false;
+
+#endif
+
+bool is_cpu_mode() {
+    return !use_cuda;
 }
 
 void set_cpu_mode() {
@@ -113,8 +125,6 @@ void set_cpu_mode() {
         cudaFreeHost: cpu_cudaFreeHost,
         cudaDeviceGetPCIBusId: cpu_cudaDeviceGetPCIBusId,
         numa_run_on_node: cpu_numa_run_on_node,
-        torch_row_alloc: cpu_torch_row_alloc,
-        torch_raw_delete: cpu_torch_row_delete,
     };
 }
 
@@ -215,30 +225,17 @@ pybind11::bytes read_buffer(uintptr_t _dst, uint64_t length) {
     return pybind11::bytes(buf);
 }
 
-raw_device_pointer::raw_device_pointer(uint64_t length) {
-    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    if (length == 0) {
-        throw std::runtime_error("raw_device_pointer: raw_alloc with zero is not allowed, length = " + length);
+uintptr_t cpu_malloc(uint64_t length) {
+    void *p;
+    if (posix_memalign(&p, ALIGN, length) < 0) {
+        return 0;
     }
-    this->_devPtr_base = fns.torch_row_alloc(length);
-    if (this->_devPtr_base == 0) {
-        throw std::runtime_error("raw_device_pointer: torch_row_alloc failed, length = " + length);
-    }
-    if (debug_log) {
-        std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] raw_device_pointer: raw_alloc: %p, length=%lu, elapsed=%ld us\n", this->_devPtr_base, length,
-            std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
-    }
+    return reinterpret_cast<uintptr_t>(p);
 }
 
-raw_device_pointer::~raw_device_pointer() {
-    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    fns.torch_raw_delete(const_cast<void *>(this->_devPtr_base));
-    if (debug_log) {
-        std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] ~raw_device_pointer: torch_raw_delete: %p, elapsed=%ld us\n", this->_devPtr_base,
-            std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
-    }
+void cpu_free(uintptr_t addr) {
+    void *p = reinterpret_cast<void *>(addr);
+    free(p);
 }
 
 const int gds_device_buffer::cufile_register(uint64_t offset, uint64_t length) {
@@ -601,9 +598,11 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("get_device_pci_bus", &get_device_pci_bus);
     m.def("set_numa_node", &set_numa_node);
     m.def("read_buffer", &read_buffer);
+    m.def("cpu_malloc", &cpu_malloc);
+    m.def("cpu_free", &cpu_free);
 
     pybind11::class_<gds_device_buffer>(m, "gds_device_buffer")
-        .def(pybind11::init<const uint64_t>())
+        .def(pybind11::init<const uintptr_t, const uint64_t>())
         .def("cufile_register", &gds_device_buffer::cufile_register)
         .def("cufile_deregister", &gds_device_buffer::cufile_deregister)
         .def("memmove", &gds_device_buffer::memmove)

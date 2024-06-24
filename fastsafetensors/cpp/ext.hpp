@@ -19,10 +19,24 @@
 #define __MOD_NAME__ fastsafetensors_cpp
 #endif
 
-#include <cuda_runtime.h>
-#include <c10/cuda/CUDACachingAllocator.h>
 #include <numa.h>
+
+#ifndef NOCUDA
+
+#include <cuda_runtime.h>
 #include <cufile.h>
+
+#else
+
+typedef enum CUfileOpError { CU_FILE_SUCCESS=0, CU_FILE_INTERNAL_ERROR=5030 } CUfileOpError;
+enum CUfileFileHandleType { CU_FILE_HANDLE_TYPE_OPAQUE_FD = 1 };
+typedef void * CUfileHandle_t;
+typedef struct CUfileDescr_t { enum CUfileFileHandleType type; union { int fd; }handle; } CUfileDescr_t;
+typedef struct CUfileError { CUfileOpError err; }CUfileError_t;
+typedef enum cudaError { cudaSuccess = 0, cudaErrorMemoryAllocation = 2 } cudaError_t;
+enum cudaMemcpyKind { cudaMemcpyHostToDevice=2, cudaMemcpyDefault = 4 };
+
+#endif
 
 int get_alignment_size();
 void set_debug_log(bool _debug_log);
@@ -31,13 +45,14 @@ int close_gds();
 std::string get_device_pci_bus(int deviceId);
 int set_numa_node(int numa_node);
 pybind11::bytes read_buffer(uintptr_t _dst, uint64_t length);
+uintptr_t cpu_malloc(uint64_t length);
+void cpu_free(uintptr_t addr);
 
 class raw_device_pointer {
 private:
     const void * _devPtr_base;
 public:
-    raw_device_pointer(const uint64_t length);
-    ~raw_device_pointer();
+    raw_device_pointer(const uintptr_t devPtr_base): _devPtr_base(reinterpret_cast<const void *>(devPtr_base)) {}
     const uintptr_t get_uintptr() const { return reinterpret_cast<const uintptr_t>(this->_devPtr_base); }
     const void * get_raw() const { return this->_devPtr_base; }
 };
@@ -47,8 +62,8 @@ private:
     const std::shared_ptr<const raw_device_pointer> _devPtr_base;
     const uint64_t _length;
 public:
-    gds_device_buffer(const uint64_t length):
-        _devPtr_base(std::make_shared<const raw_device_pointer>(length)), _length(length) {}
+    gds_device_buffer(const uintptr_t devPtr_base, const uint64_t length):
+        _devPtr_base(std::make_shared<const raw_device_pointer>((devPtr_base))), _length(length) {}
     const int cufile_register(uint64_t offset, uint64_t length);
     const int cufile_deregister(uint64_t offset);
     const int memmove(uint64_t _dst_off, uint64_t _src_off, const gds_device_buffer& _tmp, uint64_t length);
@@ -145,8 +160,6 @@ typedef struct ext_funcs {
     cudaError_t (*cudaFreeHost)(void *);
     cudaError_t (*cudaDeviceGetPCIBusId)(char *, int, int);
     int (*numa_run_on_node)(int);
-    void* (*torch_row_alloc)(size_t);
-    void (*torch_raw_delete)(void*);
 } ext_funcs_t;
 
 #endif //__EXT_HPP__
