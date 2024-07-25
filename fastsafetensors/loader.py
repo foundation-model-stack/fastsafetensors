@@ -137,7 +137,7 @@ class fastsafe_open:
         if framework != "pt":
             raise NotImplementedError("pytorch is only a framework that current fastsafetensors supports")
         from .common import SingleGroup
-        self.loader = SafeTensorsFileLoader(SingleGroup, torch.device(device), nogds=nogds, debug_log=debug_log)
+        self.loader = SafeTensorsFileLoader(SingleGroup(), torch.device(device), nogds=nogds, debug_log=debug_log)
         if isinstance(filenames, str):
             filenames = [filenames]
         self.loader.add_filenames({0: filenames})
@@ -157,7 +157,7 @@ class fastsafe_open:
         return self.tensors.keys()
 
     def get_tensor(self, name: str)->torch.Tensor:
-        return self.get_tensor(name)
+        return self.bufs.get_tensor(name)
 
     def get_slice(self, name: str)->TensorFrame:
         return self.get_slice(name)
@@ -165,5 +165,5 @@ class fastsafe_open:
     def __enter__(self):
         return self
 
-    def __exit__(self):
+    def __exit__(self, exc_type, exc_value, tb):
         pass
