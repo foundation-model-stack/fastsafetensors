@@ -54,7 +54,7 @@ class GdsFileCopier:
         self.aligned_length = aligned_length
         return gbuf
 
-    def wait_io(self, gbuf: fstcpp.gds_device_buffer, dtype: torch.dtype=None)->Dict[str, torch.Tensor]:
+    def wait_io(self, gbuf: fstcpp.gds_device_buffer, dtype: torch.dtype=None, noalign: bool=False)->Dict[str, torch.Tensor]:
         failed = []
         for req, c in sorted(self.copy_reqs.items(), key=lambda x:x[0]):
             count = self.reader.wait_read(req)
@@ -68,7 +68,7 @@ class GdsFileCopier:
         if len(failed) > 0:
             raise Exception(f"wait_io: wait_gds_read failed, failed={failed}, reqs={self.copy_reqs}")
         self.copy_reqs = {}
-        if not self.metadata.aligned and self.aligned_length > 0:
+        if not noalign and not self.metadata.aligned and self.aligned_length > 0:
             misaligned_bytes = self.metadata.header_length % CUDA_PTR_ALIGN
             length = 1024*1024*1024
             tmp_gbuf = alloc_tensor_memory(length)

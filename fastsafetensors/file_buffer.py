@@ -4,7 +4,7 @@
 import os
 import torch
 import torch.distributed as dist
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Generator
 from collections import OrderedDict
 
 from .tensor_factory import LazyTensorFactory

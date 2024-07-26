@@ -53,9 +53,9 @@ def alloc_tensor_memory(length: int)->fstcpp.gds_device_buffer:
 
 def free_tensor_memory(gbuf: fstcpp.gds_device_buffer):
     if torch.cuda.is_available():
-        rbuf = torch.cuda.caching_allocator_delete(ptr)
+        rbuf = torch.cuda.caching_allocator_delete(gbuf)
     else:
-        rbuf = fstcpp.cpu_free(ptr)
+        rbuf = fstcpp.cpu_free(gbuf)
     return rbuf
 
 

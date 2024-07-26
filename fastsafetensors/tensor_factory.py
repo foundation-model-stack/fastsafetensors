@@ -34,9 +34,9 @@ class LazyTensorFactory:
         if self.copier is not None:
             self.gbuf = self.copier.submit_io(use_buf_register, max_copy_block_size)
 
-    def wait_io(self, dtype: torch.dtype=None):
+    def wait_io(self, dtype: torch.dtype=None, noalign: bool=False):
         if self.copier is not None:
-            self.tensors = self.copier.wait_io(self.gbuf, dtype=dtype)
+            self.tensors = self.copier.wait_io(self.gbuf, dtype=dtype, noalign=noalign)
             if self.debug_log:
                 for name in self.tensors.keys():
                     print(f"wait_io: tensor={name}")

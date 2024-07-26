@@ -31,7 +31,7 @@ def MyExtension(name, sources, mod_name, *args, **kwargs):
     return Extension(name, sources, *args, **kwargs)
 
 setup(
-    packages=["fastsafetensors", "fastsafetensors.connectors", "fastsafetensors.copier", "fastsafetensors.cpp"],
+    packages=["fastsafetensors", "fastsafetensors.copier", "fastsafetensors.cpp"],
     include_package_data=True,
     package_data={"fastsafetensors.cpp": ["*.hpp"]},
     ext_modules=[

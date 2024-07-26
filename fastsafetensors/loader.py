@@ -111,7 +111,7 @@ class SafeTensorsFileLoader:
                 need_wait.append(factory)
             lidx += 1
         for factory in need_wait:
-            factory.wait_io(dtype=dtype)
+            factory.wait_io(dtype=dtype, noalign=self.pg.size() > 1)
         return FilesBufferOnDevice(factories, pg=self.pg)
 
 fastsafe_open_loaders: List[Tuple[SafeTensorsFileLoader, FilesBufferOnDevice]] = []

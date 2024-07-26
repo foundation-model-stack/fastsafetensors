@@ -25,4 +25,5 @@ tensor_a0 = fb.get_tensor(tensor_name="a0") # broadcast
 tensor_b0_sharded = fb.get_sharded(tensor_name="b0", dim=1) # partition and scatter
 print(f"RANK {pg.rank()}: tensor_a0={tensor_a0}")
 print(f"RANK {pg.rank()}: tensor_b0_sharded={tensor_b0_sharded}")
+fb.close()
 loader.close()

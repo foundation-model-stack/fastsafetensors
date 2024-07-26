@@ -33,7 +33,7 @@ class NoGdsFileCopier:
             count += l
         return gbuf
 
-    def wait_io(self, gbuf: fstcpp.gds_device_buffer, dtype: torch.dtype=None)->Dict[str, torch.Tensor]:
+    def wait_io(self, gbuf: fstcpp.gds_device_buffer, dtype: torch.dtype=None, noalign: bool=False)->Dict[str, torch.Tensor]:
         for req in self.reqs:
             count = self.reader.wait_read(req)
             if count < 0:
