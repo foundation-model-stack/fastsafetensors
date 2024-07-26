@@ -63,8 +63,9 @@ class SafeTensorsMetadata:
     def __init__(self, string: str, header_length: int, size_bytes: int, src: str="", keep_orig_dict: bool=False):
         self.src = src
         ser = json.loads(string, object_pairs_hook=OrderedDict)
-        self.metadata = ser['__metadata__']
-        del(ser['__metadata__'])
+        self.metadata = ser.get('__metadata__', '')
+        if self.metadata:
+            del(ser['__metadata__'])
         self.tensors: Dict[str, TensorFrame] = {}
         self.header_length = header_length
         self.aligned = header_length % CUDA_PTR_ALIGN == 0
