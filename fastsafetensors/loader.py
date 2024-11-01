@@ -6,7 +6,7 @@ import torch.distributed as dist
 import os
 import math
 from . import cpp as fstcpp
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, OrderedDict
 
 from .common import SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN, TensorFrame, get_device_numa_node
 from .tensor_factory import LazyTensorFactory
@@ -40,7 +40,7 @@ class SafeTensorsFileLoader:
         self.debug_log = debug_log
         self.meta: Dict[str, Tuple[SafeTensorsMetadata, int]] = {}
         self.need_gds_close = False
-        self.frames: Dict[str, TensorFrame] = {}
+        self.frames: OrderedDict[str, TensorFrame] = {}
         self.pg = pg
         self.nogds = nogds
         global initialized
@@ -76,14 +76,23 @@ class SafeTensorsFileLoader:
         """
         Register files to ranks to be copied at copy_file_to_device().
         """
-        for rank, files in sorted(filenames.items(), key=lambda x:x[0]):
-            for filename in files:
-                realpath = filename #os.path.realpath(filename)
-                metadata = SafeTensorsMetadata.from_file(realpath)
-                self.meta[realpath] = (metadata, rank)
-                self.frames.update(metadata.tensors)
-                if self.debug_log and rank == self.pg.rank():
-                    print(f"add_filenames {len(self.meta)}: path={realpath}")
+        # shuffle files in a round-robin fashion to avoid OoM
+        rank_next_idx = {rank: 0 for rank in filenames.keys()}
+        completed = 0
+        while completed < len(filenames.keys()):
+            completed = 0
+            for rank in filenames.keys():
+                next_idx = rank_next_idx[rank]
+                if next_idx < len(filenames[rank]):
+                    realpath = filenames[rank][next_idx] #os.path.realpath(filename)
+                    metadata = SafeTensorsMetadata.from_file(realpath)
+                    self.meta[realpath] = (metadata, rank)
+                    self.frames.update(metadata.tensors)
+                    if self.debug_log and rank == self.pg.rank():
+                        print(f"add_filenames {len(self.meta)}: path={realpath}")
+                    rank_next_idx[rank] = next_idx + 1
+                else:
+                    completed += 1
 
     def copy_files_to_device(self, dtype: torch.dtype=None, use_buf_register: bool=False, max_copy_block_size: int=16*1024*1024*1024)->FilesBufferOnDevice:
         """
@@ -111,7 +120,7 @@ class SafeTensorsFileLoader:
                 need_wait.append(factory)
             lidx += 1
         for factory in need_wait:
-            factory.wait_io(dtype=dtype, noalign=self.pg.size() > 1)
+            factory.wait_io(dtype=dtype, noalign=self.nogds)
         return FilesBufferOnDevice(factories, pg=self.pg)
 
 fastsafe_open_loaders: List[Tuple[SafeTensorsFileLoader, FilesBufferOnDevice]] = []
