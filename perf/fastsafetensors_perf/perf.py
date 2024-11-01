@@ -153,10 +153,10 @@ def get_key_pats(sten_collection_filepath: str, model_name: str) -> Tuple[Dict[r
     with open(sten_collection_filepath, "r") as f:
         m = json.load(f)
         if not model_name in m:
-            return {}
+            return {}, ""
         m = m[model_name]
         if not "keys" in m:
-            return {}
+            return {}, ""
         m = m["keys"]
         ret = {}
         for key in m["all"]:
@@ -172,21 +172,22 @@ def get_key_dim(keys: List[str], pats: Dict[re.Pattern, int], layer_prefix: str)
     ret: OrderedDict[str, int] = {}
     layer_tmp = {}
     pat2 = re.compile(f"{layer_prefix}([0-9]+)\..*")
-    for key in sorted(keys):
+    for key in keys:
         found = False
         for pat, dim in pats.items():
             m = pat.match(key)
             if m is not None:
-                if m[0].startswith(layer_prefix):
-                    layer_tmp[m[0]] = (int(pat2.match(m[0])[1]), dim)
-                else:
-                    ret[m[0]] = dim
+                #if m[0].startswith(layer_prefix):
+                #    layer_tmp[m[0]] = (int(pat2.match(m[0])[1]), dim)
+                #else:
+                #    ret[m[0]] = dim
+                ret[m[0]] = dim
                 found = True
                 break
         if not found:
             ret[key] = -1
-    for key, (_, dim) in sorted(layer_tmp.items(), key=lambda x:x[1][0]):
-        ret[key] = dim
+    #for key, (_, dim) in sorted(layer_tmp.items(), key=lambda x:x[1][0]):
+    #    ret[key] = dim
     return ret
 
 mon_procs = {}
@@ -254,6 +255,56 @@ def as_torch_device(device: str, rank: int)->torch.device:
     return torch.device(device)
 
 @app.command()
+def get_config(device_index: int,
+               model_name: str,
+               sten_collection_json: str,
+               rank: int,
+               world_size: int) -> Tuple[int, int]:
+
+    rank_filenames = get_sten_files(sten_collection_json, model_name, world_size)
+    filenames = rank_filenames[rank]
+
+    max_copier_threads = int(os.getenv("FST_THREADS", "16"))           # number of copy threads at host CPU
+    bbuf_size_kb_total = int(os.getenv("FST_BBUF_SIZE_KB", "163840")) # size of bounce buffer at host memory for FST_NOGDS==1
+    from fastsafetensors.common import get_device_numa_node
+    node = get_device_numa_node(device_index)
+    total_l2_size = 0
+    phys_cpus = {}
+    failed = False
+    import glob
+    for cpudir in glob.glob(f"/sys/devices/system/node/node{node}/cpu[0-9]*"):
+        try:
+            with open(f"{cpudir}/cache/index2/size") as f: # L2 cache size for a cpu
+                size_str = f.read().strip()
+                if size_str[-1] != "K":
+                    raise Exception(f"cannot parse {cpudir}/cache/index2/size")
+                total_l2_size += int(size_str[:-1])
+            with open(f"{cpudir}/topology/core_id") as f: # physical core ID
+                phys_cpus[f.read().strip()] = True
+        except Exception as e:
+            failed = True
+            print(f"Failed to auto-configure fastsafetensors. reason: {e}")
+            break
+    if not failed and total_l2_size > 0:
+        bbuf_size_kb_total = total_l2_size
+    if not failed and len(phys_cpus) > 0:
+        max_copier_threads = len(phys_cpus)
+
+    max_copy_block_size = 1
+    total_size = 0
+    for _, filename in enumerate(sorted(filenames, key=lambda x: os.path.basename(x))):
+        s = os.stat(filename)
+        total_size += s.st_size
+        if max_copy_block_size < s.st_size:
+            max_copy_block_size = s.st_size
+    if len(filenames) < max_copier_threads:
+        max_copy_block_size = total_size // world_size // max_copier_threads
+        if max_copy_block_size % bbuf_size_kb_total*1024 > 0:
+            max_copy_block_size = max_copy_block_size - max_copy_block_size % (bbuf_size_kb_total*1024) + (bbuf_size_kb_total*1024)
+    print(f"--max-threads={max_copier_threads} --max-direct-io-kb={int(bbuf_size_kb_total)} --max-block-size-mb={int(max_copy_block_size/1024/1024)}")
+    return (max_copier_threads, bbuf_size_kb_total)
+
+@app.command()
 def drop_cache(
     model_name: str,
     sten_collection_json: str,
@@ -266,7 +317,7 @@ def drop_cache(
     targets = {}
     for _, filenames in ranks.items():
         for filename in filenames:
-            targets[filename] = True
+            targets[os.path.realpath(filename)] = True
     for filename in targets.keys():
         fd = os.open(filename, os.O_RDONLY)
         s = os.fstat(fd)
@@ -329,10 +380,13 @@ def run_mmap(
     rank: int=0,
     world_size: int=1,
     debug_log: bool=False,
-    sysstat_enabled: bool=False,
+    sysstat_enabled: bool=True,
     memtrace_enabled: bool=False,
     opt: bool=False,
+    cache_drop: bool=False,
 ):
+    if cache_drop:
+        drop_cache(model_name, sten_collection_json, world_size)
     torch_dtype = as_torch_dtype(dtype)
     if sysstat_enabled:
         stat_id = start_sysstat(model_name, run_id, device.startswith("cuda"), memtrace_enabled and world_size == 1)
@@ -363,7 +417,10 @@ def run_mmap(
             if opt:
                 rank_cmd += ["--opt"]
             envs = deepcopy(os.environ)
-            envs["CUDA_VISIBLE_DEVICES"] = ",".join([str(i) for i in range(0, world_size)])
+            if world_size == 2:
+                envs["CUDA_VISIBLE_DEVICES"] = "4,6"
+            else:
+                envs["CUDA_VISIBLE_DEVICES"] = ",".join([str((i + 4) % 8) for i in range(0, world_size)]) # for vela cluster
             rank_procs.append(subprocess.Popen(rank_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=envs))
         outs = []
         for proc in rank_procs:
@@ -409,6 +466,7 @@ def run_gds_sharded_internal(
     use_buf_register: bool=False,
     debug_log: bool=False,
     nogds: bool = False,
+    exclude_gds_init: bool=True,
 ):
     torch_dtype: torch.dtype = as_torch_dtype(dtype)
     import torch.distributed as dist
@@ -423,6 +481,9 @@ def run_gds_sharded_internal(
     device = as_torch_device(device, pg.rank())
 
     t0 = time.time_ns()
+    if not nogds and exclude_gds_init:
+        import fastsafetensors.cpp as fstcpp
+        fstcpp.init_gds(16 * 1024, 80 * 1024 * 1024)
     loader = SafeTensorsFileLoader(pg, device, max_direct_io_kb, max_pinned_memory_in_kb, max_threads, nogds=nogds, debug_log=debug_log)
     loader.add_filenames(filenames)
     key_dim = get_key_dim(loader.get_keys(), key_pats, layer_prefix)
@@ -437,6 +498,8 @@ def run_gds_sharded_internal(
     t4 = time.time_ns()
     print(f"{t0},{t1},{t2},{t3},{t4},{count}")
     loader.close()
+    if not nogds and exclude_gds_init:
+        fstcpp.close_gds()
 
 @app.command()
 def run_gds(
@@ -455,7 +518,11 @@ def run_gds(
     sysstat_enabled: bool=True,
     memtrace_enabled: bool=False,
     nogds: bool = False,
+    cache_drop: bool = False,
+    exclude_gds_init: bool=True,
 ):
+    if cache_drop:
+        drop_cache(model_name, sten_collection_json, world_size)
     torch_dtype = as_torch_dtype(dtype)
     if sysstat_enabled:
         stat_id = start_sysstat(model_name, run_id, device.startswith("cuda"), memtrace_enabled and world_size == 1)
@@ -466,16 +533,26 @@ def run_gds(
                         "--master_addr=0.0.0.0", "--master_port=1234", f"--node_rank={rank}",
                         script_path, "run-gds-sharded-internal",
                         f"--max-threads={max_threads}", f"--max-direct-io-kb={max_direct_io_kb}", f"--device={device}",
+                        f"--max-block-size-mb={max_block_size_mb}",
                         ]
             if use_buf_register:
                 rank_cmd += ["--use-buf-register"]
             if nogds:
                 rank_cmd += ["--nogds"]
+            if debug_log and rank == 0:
+                rank_cmd += ["--debug-log"]
+            if exclude_gds_init:
+                rank_cmd += ["--exclude-gds-init"]
             rank_cmd += [model_name, sten_collection_json]
             envs = deepcopy(os.environ)
             if device != "cpu":
-                envs["CUDA_VISIBLE_DEVICES"] = ",".join([str(i) for i in range(0, world_size)])
+                if world_size == 2:
+                    envs["CUDA_VISIBLE_DEVICES"] = "4,6"
+                else:
+                    envs["CUDA_VISIBLE_DEVICES"] = ",".join([str((i + 4) % 8) for i in range(0, world_size)]) # for vela cluster
             envs["NCCL_CUMEM_ENABLE"] = "0"
+            if debug_log:
+                print(' '.join(rank_cmd))
             rank_procs[rank] = subprocess.Popen(rank_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=envs)
         outs = []
         for rank, proc in sorted(rank_procs.items(), key=lambda x:x[0]):
@@ -517,11 +594,12 @@ def run_gds(
         count = count/1024/1024/1024
     else:
         device = as_torch_device(device, 0)
-        if device != "cpu":
-            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
         filenames = get_sten_files(sten_collection_json, model_name, world_size)
         t0 = time.time_ns()
+        if not nogds and exclude_gds_init:
+            import fastsafetensors.cpp as fstcpp
+            fstcpp.init_gds(16 * 1024, 80 * 1024 * 1024)
         loader = SafeTensorsFileLoader(SingleGroup(), device, max_direct_io_kb, max_pinned_memory_in_kb, max_threads, nogds=nogds, debug_log=debug_log)
         loader.add_filenames(filenames)
         t1 = time.time_ns()
