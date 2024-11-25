@@ -61,6 +61,10 @@ class SafeTensorsFileLoader:
         else:
             self.reader = fstcpp.gds_file_reader(max_threads)
 
+    def reset(self):
+        self.frames = {}
+        self.meta = {}
+
     def close(self):
         if self.need_gds_close:
             fstcpp.close_gds()
