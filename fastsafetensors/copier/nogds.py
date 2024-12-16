@@ -20,7 +20,7 @@ class NoGdsFileCopier:
 
     def submit_io(self, use_buf_register: bool, max_copy_block_size: int)->fstcpp.gds_device_buffer:
         total_length = self.metadata.size_bytes - self.metadata.header_length
-        gbuf = alloc_tensor_memory(total_length)
+        gbuf = alloc_tensor_memory(total_length, self.device)
         count = 0
         while count < total_length:
             l = total_length - count

@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple
 from collections import OrderedDict
 
 from . import cpp as fstcpp
-from .common import SafeTensorsMetadata
+from .common import SafeTensorsMetadata, free_tensor_memory
 from .copier.gds import GdsFileCopier
 from .copier.nogds import NoGdsFileCopier
 
@@ -175,7 +175,7 @@ class LazyTensorFactory:
     def free_dev_ptrs(self):
         self.tensors = {}
         if self.gbuf is not None:
-            torch.cuda.caching_allocator_delete(self.gbuf.get_base_address())
+            free_tensor_memory(self.gbuf, self.device)
             self.gbuf = None
 
     def shuffle_all(self, pg: dist.ProcessGroup, tensor_shard_dim: OrderedDict[str, int])->Tuple[int, Dict[str, torch.Tensor]]:

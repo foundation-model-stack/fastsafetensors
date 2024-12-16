@@ -1,7 +1,9 @@
 import os
 import pytest
 import torch
+import torch.distributed as dist
 from fastsafetensors import cpp as fstcpp
+from fastsafetensors import SingleGroup
 from typing import List
 
 TESTS_DIR = os.path.dirname(__file__)
@@ -24,8 +26,21 @@ def input_files() -> List[str]:
     return src_files
 
 @pytest.fixture(scope='session', autouse=True)
+def pg():
+    world_size = os.getenv("WORLD_SIZE")
+    if world_size is not None and int(world_size) > 1:
+        dist.init_process_group(backend="gloo")
+        dist.barrier()
+        PG = dist.group.WORLD
+    else:
+        PG = SingleGroup()
+    return PG
+
+@pytest.fixture(scope='session', autouse=True)
 def dev_init() -> None:
-    if not fstcpp.is_stub():
+    if not torch.cuda.is_available():
+        fstcpp.set_cpumode()
+    else:
         torch.cuda.set_device(0)
 
 @pytest.fixture(scope='function')

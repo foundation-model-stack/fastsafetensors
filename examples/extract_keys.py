@@ -1,6 +1,5 @@
 import sys
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
 import torch
 from fastsafetensors import SafeTensorsFileLoader, SingleGroup
 from safetensors import safe_open

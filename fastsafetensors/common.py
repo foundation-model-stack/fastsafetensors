@@ -39,20 +39,21 @@ def get_device_numa_node(device: int):
         return
     pci_addr = fstcpp.get_device_pci_bus(device)
     if pci_addr == "":
-        raise Exception(f"get_device_numa_node, get_device_pci_bus failed, device={device}")
+        #raise Exception(f"get_device_numa_node, get_device_pci_bus failed, device={device}")
+        return
     bus_addr = ':'.join(pci_addr.split(":")[:2]).lower()
     with open(f"/sys/class/pci_bus/{bus_addr}/device/numa_node") as f:
         return int(f.read().strip())
 
-def alloc_tensor_memory(length: int)->fstcpp.gds_device_buffer:
-    if torch.cuda.is_available():
+def alloc_tensor_memory(length: int, dev: torch.device)->fstcpp.gds_device_buffer:
+    if dev.type == 'cuda':
         rbuf = torch.cuda.caching_allocator_alloc(length)
     else:
         rbuf = fstcpp.cpu_malloc(length)
     return fstcpp.gds_device_buffer(rbuf, length)
 
-def free_tensor_memory(gbuf: fstcpp.gds_device_buffer):
-    if torch.cuda.is_available():
+def free_tensor_memory(gbuf: fstcpp.gds_device_buffer, dev: torch.device):
+    if dev.type == 'cuda':
         rbuf = torch.cuda.caching_allocator_delete(gbuf.get_base_address())
     else:
         rbuf = fstcpp.cpu_free(gbuf.get_base_address())

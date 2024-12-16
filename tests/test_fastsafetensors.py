@@ -17,7 +17,8 @@ def run_nogds_file_read(input_file: str)->Tuple[SafeTensorsMetadata, fstcpp.gds_
     fd = os.open(input_file, os.O_RDONLY, 0o644)
     meta = SafeTensorsMetadata.from_file(input_file)
     size = meta.size_bytes - meta.header_length
-    gbuf = alloc_tensor_memory(size)
+    device = torch.device("cuda:0" if not fstcpp.is_cpu_mode() else "cpu")
+    gbuf = alloc_tensor_memory(size, device)
     reader = fstcpp.nogds_file_reader(False, 20 * 1024, 1)
     req = reader.submit_read(fd, gbuf, meta.header_length, size, 0)
     assert req > 0
@@ -28,7 +29,7 @@ def run_nogds_file_read(input_file: str)->Tuple[SafeTensorsMetadata, fstcpp.gds_
 def test_load_metadata_and_dlpack(fstcpp_log, input_files):
     print("test_load_metadata_and_dlpack")
     assert len(input_files) > 0
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if not fstcpp.is_cpu_mode() else "cpu")
     for input_file in input_files:
         expected_tensors: Dict[str, torch.Tensor] = {}
         with safe_open(input_file, framework="pt") as f:
@@ -63,7 +64,7 @@ def test_close_gds(fstcpp_log):
 
 def test_get_device_pci_bus(fstcpp_log):
     bus = fstcpp.get_device_pci_bus(0)
-    if fstcpp.is_stub():
+    if fstcpp.is_cpu_mode():
         assert bus ==  "0000:00:00:00.00"
     else:
         print(f"bus for cuda:0: {bus}")
@@ -74,13 +75,15 @@ def test_set_numa_node(fstcpp_log):
 
 def test_alloc_gds_buffer(fstcpp_log):
     print("test_alloc_gds_buffer")
-    gbuf = alloc_tensor_memory(1024)
+    device = torch.device("cuda:0" if not fstcpp.is_cpu_mode() else "cpu")
+    gbuf = alloc_tensor_memory(1024, device)
     addr = gbuf.get_base_address()
     assert addr != 0
 
 def test_cufile_register_deregister(fstcpp_log):
     print("test_cufile_register_deregister")
-    gbuf = alloc_tensor_memory(1024)
+    device = torch.device("cuda:0" if not fstcpp.is_cpu_mode() else "cpu")
+    gbuf = alloc_tensor_memory(1024, device)
     assert gbuf.cufile_register(0, 256) == 0
     assert gbuf.cufile_register(256, 1024-256) == 0
     assert gbuf.cufile_deregister(0) == 0
@@ -88,8 +91,9 @@ def test_cufile_register_deregister(fstcpp_log):
 
 def test_memmove(fstcpp_log):
     print("test_memmove")
-    gbuf = alloc_tensor_memory(1024)
-    tmp = alloc_tensor_memory(1024)
+    device = torch.device("cuda:0" if not fstcpp.is_cpu_mode() else "cpu")
+    gbuf = alloc_tensor_memory(1024, device)
+    tmp = alloc_tensor_memory(1024, device)
     assert gbuf.memmove(0, 12, tmp, 1024) == 0
 
 def test_nogds_file_reader(fstcpp_log, input_files):
@@ -97,7 +101,8 @@ def test_nogds_file_reader(fstcpp_log, input_files):
     fd = os.open(input_files[0], os.O_RDONLY, 0o644)
     s = os.fstat(fd)
     assert fd > 0
-    gbuf = alloc_tensor_memory(s.st_size)
+    device = torch.device("cuda:0" if not fstcpp.is_cpu_mode() else "cpu")
+    gbuf = alloc_tensor_memory(s.st_size, device)
     reader = fstcpp.nogds_file_reader(False, 256 * 1024, 4)
     step = s.st_size // 4
     reqs = []
@@ -120,30 +125,30 @@ def test_NoGdsFileCopier(fstcpp_log, input_files):
     print("test_NoGdsFileCopier")
     meta = SafeTensorsMetadata.from_file(input_files[0])
     reader = fstcpp.nogds_file_reader(False, 256 * 1024, 4)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if not fstcpp.is_cpu_mode() else "cpu")
     copier = NoGdsFileCopier(meta, device, reader, True)
     gbuf = copier.submit_io(False, 10 * 1024 * 1024 * 1024)
     tensors = copier.wait_io(gbuf, None)
     with safe_open(input_files[0], framework="pt") as f:
         for key in tensors.keys():
             assert torch.all(f.get_tensor(key).to(device=device).eq(tensors[key]))
-    torch.cuda.caching_allocator_delete(gbuf.get_base_address())
+    free_tensor_memory(gbuf, device)
 
 def test_GdsFileCopier(fstcpp_log, input_files):
     print("test_GdsFileCopier")
     meta = SafeTensorsMetadata.from_file(input_files[0])
     reader = fstcpp.gds_file_reader(4)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if not fstcpp.is_cpu_mode() else "cpu")
     copier = GdsFileCopier(meta, device, reader, True)
     gbuf = copier.submit_io(False, 10 * 1024 * 1024 * 1024)
     tensors = copier.wait_io(gbuf, None)
     with safe_open(input_files[0], framework="pt") as f:
         for key in tensors.keys():
             assert torch.all(f.get_tensor(key).to(device=device).eq(tensors[key]))
-    torch.cuda.caching_allocator_delete(gbuf.get_base_address())
+    free_tensor_memory(gbuf, device)
 
 def test_SafeTensorsFileLoader(fstcpp_log, input_files):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if not fstcpp.is_cpu_mode() else "cpu")
     loader = SafeTensorsFileLoader(SingleGroup(), device, nogds=False, debug_log=True)
     loader.add_filenames({0: input_files})
     bufs = loader.copy_files_to_device(dtype=torch.float16, use_buf_register=True, max_copy_block_size=256*1024*1024)
@@ -167,7 +172,7 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files):
 
 
 def test_SafeTensorsFileLoaderNoGds(fstcpp_log, input_files):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if not fstcpp.is_cpu_mode() else "cpu")
     loader = SafeTensorsFileLoader(SingleGroup(), device, nogds=True, debug_log=True)
     loader.add_filenames({0: input_files})
     bufs = loader.copy_files_to_device()
@@ -176,4 +181,5 @@ def test_SafeTensorsFileLoaderNoGds(fstcpp_log, input_files):
     with safe_open(input_files[0], framework="pt") as f:
         for key in tensors.keys():
             assert torch.all(f.get_tensor(key).to(device=device).eq(tensors[key]))
+    bufs
     loader.close()

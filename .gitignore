@@ -4,4 +4,5 @@ dist/
 .testdata/
 htmlcov/
 .coverage
+.coverage_*
 .pytest_cache/

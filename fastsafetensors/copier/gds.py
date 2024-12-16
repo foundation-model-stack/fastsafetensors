@@ -30,7 +30,7 @@ class GdsFileCopier:
             aligned_length = length + head_bytes
         aligned_offset = offset - head_bytes
 
-        gbuf = alloc_tensor_memory(aligned_length)
+        gbuf = alloc_tensor_memory(aligned_length, self.device)
         if use_buf_register:
             count = 0
             while count < aligned_length:
@@ -71,7 +71,7 @@ class GdsFileCopier:
         if not noalign and not self.metadata.aligned and self.aligned_length > 0:
             misaligned_bytes = self.metadata.header_length % CUDA_PTR_ALIGN
             length = 1024*1024*1024
-            tmp_gbuf = alloc_tensor_memory(length)
+            tmp_gbuf = alloc_tensor_memory(length, self.device)
             count = 0
             while count + misaligned_bytes < self.aligned_length:
                 l = self.aligned_length - misaligned_bytes - count
@@ -81,6 +81,6 @@ class GdsFileCopier:
                     print("wait_io: fix misalignment, src=0x{:x}, misaligned_bytes={}, count={}, tmp=0x{:x}".format(gbuf.get_base_address(), misaligned_bytes, count, tmp_gbuf.get_base_address()))
                 gbuf.memmove(count, misaligned_bytes + count, tmp_gbuf, l)
                 count += l
-            free_tensor_memory(tmp_gbuf)
+            free_tensor_memory(tmp_gbuf, self.device)
             self.aligned_offset += misaligned_bytes
         return self.metadata.get_tensors(gbuf, self.device, self.aligned_offset, dtype=dtype)

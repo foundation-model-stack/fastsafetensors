@@ -9,3 +9,4 @@ RUN yum-config-manager --add-repo https://developer.download.nvidia.com/compute/
 RUN python3.11 -m pip install setuptools==69.5.1 pybind11
 RUN python3.10 -m pip install setuptools==69.5.1 pybind11
 RUN python3.9 -m pip install setuptools==69.5.1 pybind11
+RUN python3.12 -m pip install pip wheel setuptools pybind11
