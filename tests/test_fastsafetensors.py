@@ -7,7 +7,7 @@ import torch
 from safetensors import safe_open
 from typing import Dict, Tuple
 from fastsafetensors.dlpack import from_cuda_buffer
-from fastsafetensors import SafeTensorsFileLoader, SingleGroup, SafeTensorsMetadata
+from fastsafetensors import SafeTensorsFileLoader, SingleGroup, SafeTensorsMetadata, fastsafe_open
 from fastsafetensors.copier.gds import GdsFileCopier
 from fastsafetensors.copier.nogds import NoGdsFileCopier
 from fastsafetensors.common import alloc_tensor_memory, free_tensor_memory
@@ -181,5 +181,22 @@ def test_SafeTensorsFileLoaderNoGds(fstcpp_log, input_files):
     with safe_open(input_files[0], framework="pt") as f:
         for key in tensors.keys():
             assert torch.all(f.get_tensor(key).to(device=device).eq(tensors[key]))
-    bufs
+    bufs.close()
     loader.close()
+
+def test_fastsafe_open(fstcpp_log, input_files):
+    device = torch.device("cuda:0" if not fstcpp.is_cpu_mode() else "cpu")
+    def weight_iterator():
+        with fastsafe_open(input_files, pg=SingleGroup(), device=device, nogds=True, debug_log=True) as f:
+            for k in f.get_keys():
+                t = f.get_tensor(k)
+                yield k, t
+    tensors = {}
+    with safe_open(input_files[0], framework="pt") as f:
+        for key in f.keys():
+            tensors[key] = f.get_tensor(key).to(device=device)
+    for k, t in weight_iterator():
+        assert torch.all(tensors[k].eq(t))
+
+def test_is_gds_p2p_mode(fstcpp_log, input_files):
+    fstcpp.is_gds_p2p_mode()
