@@ -15,28 +15,42 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#define ENV_ENABLE_INIT_LOG "FASTSAFETENSORS_ENABLE_INIT_LOG"
+
 #ifndef __MOD_NAME__
 #define __MOD_NAME__ fastsafetensors_cpp
 #endif
-
-#include <numa.h>
-
-#ifndef NOCUDA
-
-#include <cuda_runtime.h>
-#include <cufile.h>
-
-#else
 
 typedef enum CUfileOpError { CU_FILE_SUCCESS=0, CU_FILE_INTERNAL_ERROR=5030 } CUfileOpError;
 enum CUfileFileHandleType { CU_FILE_HANDLE_TYPE_OPAQUE_FD = 1 };
 typedef void * CUfileHandle_t;
 typedef struct CUfileDescr_t { enum CUfileFileHandleType type; union { int fd; }handle; } CUfileDescr_t;
-typedef struct CUfileError { CUfileOpError err; }CUfileError_t;
+typedef struct CUfileError { CUfileOpError err; } CUfileError_t;
 typedef enum cudaError { cudaSuccess = 0, cudaErrorMemoryAllocation = 2 } cudaError_t;
 enum cudaMemcpyKind { cudaMemcpyHostToDevice=2, cudaMemcpyDefault = 4 };
 
-#endif
+
+typedef enum CUfileFeatureFlags {
+    CU_FILE_DYN_ROUTING_SUPPORTED =0,
+    CU_FILE_BATCH_IO_SUPPORTED = 1,
+    CU_FILE_STREAMS_SUPPORTED = 2
+} CUfileFeatureFlags_t;
+
+typedef struct CUfileDrvProps {
+    struct {
+      unsigned int major_version;
+      unsigned int minor_version;
+      size_t poll_thresh_size;
+      size_t max_direct_io_size;
+      unsigned int dstatusflags;
+      unsigned int dcontrolflags;
+    } nvfs;
+    CUfileFeatureFlags_t fflags;
+    unsigned int max_device_cache_size;
+    unsigned int per_buffer_cache_size;
+    unsigned int max_pinned_memory_size;
+    unsigned int max_batch_io_timeout_msecs;
+ } CUfileDrvProps_t;
 
 int get_alignment_size();
 void set_debug_log(bool _debug_log);
@@ -153,7 +167,7 @@ typedef struct ext_funcs {
     CUfileError_t (*cuFileBufDeregister)(const void *);
     CUfileError_t (*cuFileHandleRegister)(CUfileHandle_t *, CUfileDescr_t *);
     void (*cuFileHandleDeregister)(CUfileHandle_t);
-    ssize_t (*cuFileRead)(const gds_file_handle&, void *, size_t, off_t, off_t);
+    ssize_t (*cuFileRead)(CUfileHandle_t, void *, size_t, off_t, off_t);
     cudaError_t (*cudaMemcpy)(void *, const void *, size_t, enum cudaMemcpyKind);
     cudaError_t (*cudaDeviceSynchronize)(void);
     cudaError_t (*cudaHostAlloc)(void **, size_t, unsigned int);
