@@ -65,7 +65,7 @@ def test_close_gds(fstcpp_log):
 def test_get_device_pci_bus(fstcpp_log):
     bus = fstcpp.get_device_pci_bus(0)
     if fstcpp.is_cpu_mode():
-        assert bus ==  "0000:00:00:00.00"
+        assert bus ==  ""
     else:
         print(f"bus for cuda:0: {bus}")
         assert len(bus) > 0
@@ -197,6 +197,3 @@ def test_fastsafe_open(fstcpp_log, input_files):
             tensors[key] = f.get_tensor(key).to(device=device)
     for k, t in weight_iterator():
         assert torch.all(tensors[k].eq(t))
-
-def test_is_gds_p2p_mode(fstcpp_log, input_files):
-    fstcpp.is_gds_p2p_mode()

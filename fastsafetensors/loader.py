@@ -52,7 +52,7 @@ class SafeTensorsFileLoader:
             if node is not None:
                 fstcpp.set_numa_node(node)
             if False and not nogds: # TODO: init_gds should be called but too slow for parallel initialization
-                if fstcpp.init_gds(bbuf_size_kb, max_pinned_memory_in_kb, max_threads) != 0:
+                if fstcpp.init_gds(bbuf_size_kb, max_pinned_memory_in_kb) != 0:
                     raise Exception(f"[FAIL] GdsWeights: init_gds max_io_block_in_kb={max_io_block_in_kb}, max_pinned_memory_in_kb={max_pinned_memory_in_kb}")
                 self.need_gds_close = True
             initialized = True

@@ -24,7 +24,14 @@
 typedef enum CUfileOpError { CU_FILE_SUCCESS=0, CU_FILE_INTERNAL_ERROR=5030 } CUfileOpError;
 enum CUfileFileHandleType { CU_FILE_HANDLE_TYPE_OPAQUE_FD = 1 };
 typedef void * CUfileHandle_t;
-typedef struct CUfileDescr_t { enum CUfileFileHandleType type; union { int fd; }handle; } CUfileDescr_t;
+typedef struct CUfileDescr_t {
+    enum CUfileFileHandleType type;
+    union {
+        int fd;
+        void *handle;
+    } handle;
+    const void *fs_ops; /* CUfileFSOps_t */
+} CUfileDescr_t;
 typedef struct CUfileError { CUfileOpError err; } CUfileError_t;
 typedef enum cudaError { cudaSuccess = 0, cudaErrorMemoryAllocation = 2 } cudaError_t;
 enum cudaMemcpyKind { cudaMemcpyHostToDevice=2, cudaMemcpyDefault = 4 };
@@ -126,7 +133,7 @@ private:
     int _fd;
     CUfileHandle_t _cf_handle;
 public:
-    raw_gds_file_handle(std::string filename);
+    raw_gds_file_handle(std::string filename, bool o_direct);
     ~raw_gds_file_handle();
     const CUfileHandle_t get_cf_handle() const { return this->_cf_handle; }
     const int get_fd() const { return this->_fd; }
@@ -136,7 +143,7 @@ class gds_file_handle {
 private:
     std::shared_ptr<const raw_gds_file_handle> _h;
 public:
-    gds_file_handle(std::string filename): _h(std::make_shared<const raw_gds_file_handle>(filename)) {}
+    gds_file_handle(std::string filename, bool o_direct): _h(std::make_shared<const raw_gds_file_handle>(filename, o_direct)) {}
     const CUfileHandle_t _get_cf_handle() const { return this->_h->get_cf_handle(); }
     const int _get_fd() const { return this->_h->get_fd(); }
 };
