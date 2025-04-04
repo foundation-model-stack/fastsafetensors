@@ -6,9 +6,9 @@ import torch.distributed as dist
 import os
 import math
 from . import cpp as fstcpp
-from typing import List, Dict, Tuple, OrderedDict
+from typing import List, Dict, Tuple, OrderedDict, Union
 
-from .common import SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN, TensorFrame, get_device_numa_node
+from .common import SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN, TensorFrame, get_device_numa_node, SingleGroup
 from .tensor_factory import LazyTensorFactory
 from .file_buffer import FilesBufferOnDevice
 
@@ -52,7 +52,7 @@ class SafeTensorsFileLoader:
             if node is not None:
                 fstcpp.set_numa_node(node)
             if False and not nogds: # TODO: init_gds should be called but too slow for parallel initialization
-                if fstcpp.init_gds(bbuf_size_kb, max_pinned_memory_in_kb, max_threads) != 0:
+                if fstcpp.init_gds(bbuf_size_kb, max_pinned_memory_in_kb) != 0:
                     raise Exception(f"[FAIL] GdsWeights: init_gds max_io_block_in_kb={max_io_block_in_kb}, max_pinned_memory_in_kb={max_pinned_memory_in_kb}")
                 self.need_gds_close = True
             initialized = True
@@ -127,38 +127,34 @@ class SafeTensorsFileLoader:
             factory.wait_io(dtype=dtype, noalign=self.nogds)
         return FilesBufferOnDevice(factories, pg=self.pg)
 
-fastsafe_open_loaders: List[Tuple[SafeTensorsFileLoader, FilesBufferOnDevice]] = []
-
-def fastsafe_close():
-    global fastsafe_open_loaders
-    for (loader, bufs) in fastsafe_open_loaders:
-        bufs.close()
-        loader.close()
-
 class fastsafe_open:
     """
     Opens a safetensors lazily and returns tensors as asked
     This is an enhanced version of safe_open in the original safetensors library to consume file list
 
     Args:
-        filename (:obj:`str`): The filename to open
+        filenames (:obj:`str`|`list[str]`|`dict[int, str]`): The filename(s) or rank-file map to open
         framework (:obj:`str`): `pt` is only supported currently
         device (:obj:`str`, defaults to :obj:`"cpu"`): The device on which you want the tensors.
     """
 
-    def __init__(self, filenames: List[str], framework: str="pt", device: str="cpu", nogds: bool=False, debug_log: bool=False):
+    def __init__(self, filenames: Union[str, List[str], Dict[int, str]],
+                       framework: str="pt", pg: dist.ProcessGroup=SingleGroup(),
+                       device: Union[str, torch.device]="cpu",
+                       nogds: bool=False,
+                       debug_log: bool=False):
         if framework != "pt":
             raise NotImplementedError("pytorch is only a framework that current fastsafetensors supports")
-        from .common import SingleGroup
-        self.loader = SafeTensorsFileLoader(SingleGroup(), torch.device(device), nogds=nogds, debug_log=debug_log)
+        if isinstance(device, str):
+            device = torch.device(device)
+        self.loader = SafeTensorsFileLoader(pg, device, nogds=nogds, debug_log=debug_log)
         if isinstance(filenames, str):
             filenames = [filenames]
-        self.loader.add_filenames({0: filenames})
-        self.bufs = self.loader.copy_files_to_device()
-        key_dims = {key: -1 for key in self.loader.get_keys()}
-        self.tensors = self.bufs.as_dict(key_dims)
-        global fastsafe_open_loaders
-        fastsafe_open_loaders.append((self.loader, self.bufs))
+        if isinstance(filenames, list):
+            self.loader.add_filenames({0: filenames})
+        elif isinstance(filenames, dict):
+            self.loader.add_filenames(filenames)
+        self.fb = self.loader.copy_files_to_device()
 
     def metadata(self)->Dict[str, Dict[str, str]]:
         ret = {}
@@ -167,16 +163,16 @@ class fastsafe_open:
         return ret
 
     def get_keys(self)->List[str]:
-        return self.tensors.keys()
+        return self.fb.key_to_rank_lidx.keys()
 
     def get_tensor(self, name: str)->torch.Tensor:
-        return self.bufs.get_tensor(name)
-
-    def get_slice(self, name: str)->TensorFrame:
-        return self.get_slice(name)
+        return self.fb.get_tensor(name)
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, tb):
-        pass
+        if self.fb:
+            self.fb.close()
+        if self.loader:
+            self.loader.close()

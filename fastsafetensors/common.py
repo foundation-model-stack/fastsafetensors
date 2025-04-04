@@ -42,7 +42,10 @@ def get_device_numa_node(device: int):
         #raise Exception(f"get_device_numa_node, get_device_pci_bus failed, device={device}")
         return
     bus_addr = ':'.join(pci_addr.split(":")[:2]).lower()
-    with open(f"/sys/class/pci_bus/{bus_addr}/device/numa_node") as f:
+    syspath = f"/sys/class/pci_bus/{bus_addr}/device/numa_node"
+    if not os.path.exists(syspath):
+        return 0
+    with open(syspath) as f:
         return int(f.read().strip())
 
 def alloc_tensor_memory(length: int, dev: torch.device)->fstcpp.gds_device_buffer:

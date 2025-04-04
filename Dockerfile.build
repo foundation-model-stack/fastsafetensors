@@ -3,10 +3,8 @@
 
 FROM quay.io/pypa/manylinux2014_x86_64
 
-RUN yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel7/x86_64/cuda-rhel7.repo && \
-    yum clean all && yum install -y cuda-libraries-devel-12-4 cuda-compiler-12-4 numactl-devel && rm -rf /var/cache/yum/* && yum clean all
-
 RUN python3.11 -m pip install setuptools==69.5.1 pybind11
 RUN python3.10 -m pip install setuptools==69.5.1 pybind11
 RUN python3.9 -m pip install setuptools==69.5.1 pybind11
 RUN python3.12 -m pip install pip wheel setuptools pybind11
+RUN python3.13 -m pip install pip wheel setuptools pybind11
