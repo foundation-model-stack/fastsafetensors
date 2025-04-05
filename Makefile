@@ -21,6 +21,10 @@ unittest:
 	coverage combine .coverage_0 .coverage_1 .coverage_2 .coverage_3
 	coverage html
 
+.PHONY: integrationtest
+integrationtest:
+	cd tests && COVERAGE_FILE=.coverage pytest -s test_vllm.py
+
 .PHONY: builder
 builder: Dockerfile.build
 	$(CONCMD) build -t fastsafetensors-builder:latest - < Dockerfile.build
