@@ -74,14 +74,13 @@ ext_funcs_t fns = ext_funcs_t {
     numa_run_on_node: cpu_numa_run_on_node,
 };
 
-static bool use_cuda = true;
+static bool use_cuda = false;
 static bool use_cufile = false;
 
 template <typename T> void mydlsym(T** h, void* lib, std::string const& name) {
     *h = reinterpret_cast<T*>(dlsym(lib, name.c_str()));
 }
 
-__attribute__((constructor))
 static void load_nvidia_functions() {
     ext_funcs_t *fs = &fns;
     cudaError_t (*cudaGetDeviceCount)(int*);
@@ -89,7 +88,7 @@ static void load_nvidia_functions() {
     const char* cudartLib = "libcudart.so";
     const char* numaLib = "libnuma.so.1";
     bool init_log = getenv(ENV_ENABLE_INIT_LOG);
-    int mode = RTLD_LAZY | RTLD_LOCAL | RTLD_NODELETE;
+    int mode = RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE;
 
     void* handle_numa = dlopen(numaLib, mode);
     if (handle_numa) {
@@ -119,7 +118,7 @@ static void load_nvidia_functions() {
                 fprintf(stderr, "[DEBUG] device count=%d, use_cuda=%d\n", count, use_cuda);
             }
         } else {
-            use_cuda = 0;
+            use_cuda = false;
             if (init_log) {
                 fprintf(stderr, "[DEBUG] No cudaGetDeviceCount, fallback!\n");
             }
@@ -132,7 +131,7 @@ static void load_nvidia_functions() {
             mydlsym(&fs->cudaDeviceGetPCIBusId, handle_cudart, "cudaDeviceGetPCIBusId");
             bool success = fs->cudaMemcpy && fs->cudaDeviceSynchronize && fs->cudaHostAlloc && fs->cudaFreeHost && fs->cudaDeviceGetPCIBusId;
             if (!success) {
-                use_cuda = 0;
+                use_cuda = false;
                 if (init_log) {
                     fprintf(stderr, "[DEBUG] %s does not contain required CUDA functions. fallback\n", cudartLib);
                 }
@@ -150,7 +149,7 @@ static void load_nvidia_functions() {
         fs->cudaDeviceGetPCIBusId = cpu_cudaDeviceGetPCIBusId;
     }
 
-    use_cufile = 0;
+    use_cufile = false;
     if (use_cuda) {
         void* handle_cufile = dlopen(cufileLib, mode);
         if (handle_cufile) {
@@ -174,7 +173,7 @@ static void load_nvidia_functions() {
                 if (init_log) {
                     fprintf(stderr, "[DEBUG] loaded: %s\n", cufileLib);
                 }
-                use_cufile = 1;
+                use_cufile = true;
             }
             dlclose(handle_cufile);
         } else if (init_log) {
@@ -200,6 +199,7 @@ bool is_cpu_mode() {
 
 void set_cpu_mode() {
     use_cuda = false;
+    use_cufile = false;
     fns = ext_funcs_t {
         cuFileDriverOpen: cpu_cuFileDriverOpen,
         cuFileDriverClose: cpu_cuFileDriverClose,
@@ -697,6 +697,7 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("read_buffer", &read_buffer);
     m.def("cpu_malloc", &cpu_malloc);
     m.def("cpu_free", &cpu_free);
+    m.def("load_nvidia_functions", &load_nvidia_functions);
 
     pybind11::class_<gds_device_buffer>(m, "gds_device_buffer")
         .def(pybind11::init<const uintptr_t, const uint64_t>())
@@ -717,4 +718,9 @@ PYBIND11_MODULE(__MOD_NAME__, m)
         .def(pybind11::init<const int>())
         .def("submit_read", &gds_file_reader::submit_read)
         .def("wait_read", &gds_file_reader::wait_read);
+}
+
+__attribute__((constructor))
+void init_fastsafetensors_lib() {
+    set_cpu_mode();
 }
