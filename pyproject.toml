@@ -1,6 +1,6 @@
 [project]
 name = "fastsafetensors"
-version = "0.1.11"
+version = "0.1.12"
 description = "High-performance safetensors model loader"
 authors = [{name = "Takeshi Yoshimura", email = "tyos@jp.ibm.com"}]
 maintainers = [{name = "Takeshi Yoshimura", email = "tyos@jp.ibm.com"}]
@@ -19,6 +19,7 @@ test = [
     "pytest-cov>=5.0.0",
     "transformers>=4.40.2",
     "safetensors>=0.4.0",
+    "vllm>=0.8.2"
 ]
 
 [project.urls]

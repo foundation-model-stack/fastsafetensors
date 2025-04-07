@@ -45,6 +45,7 @@ class SafeTensorsFileLoader:
         self.nogds = nogds
         global initialized
         if not initialized:
+            fstcpp.load_nvidia_functions()
             if device.type == "cpu":
                 fstcpp.set_cpumode()
             fstcpp.set_debug_log(debug_log)
