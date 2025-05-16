@@ -6,3 +6,7 @@ htmlcov/
 .coverage
 .coverage_*
 .pytest_cache/
+.vscode
+*.log
+*.pyc
+examples/paddle_case/log

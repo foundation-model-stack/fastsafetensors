@@ -2,6 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import torch
+try:
+    import paddle
+    from paddle.framework import core as paddle_core
+    paddle_loaded = True
+except:
+    paddle_loaded = False
 import os
 import json
 from collections import OrderedDict
@@ -32,9 +38,27 @@ need_workaround_dtypes = {
     torch.float8_e4m3fn: torch.int8,
 }
 
+if paddle_loaded:
+    framework_index = {
+        "pytorch": 1,
+        "paddle": 2,
+    }
+    dtype_convert = {
+        'BOOL': (1, torch.bool, paddle.bool), 'U8': (1, torch.uint8, paddle.uint8), 'I8': (1, torch.int8, paddle.int8), 'F8_E5M2': (1, torch.float8_e5m2, paddle.float8_e5m2), 'F8_E4M3': (1, torch.float8_e4m3fn, paddle.float8_e4m3fn),
+        'I16': (2, torch.int16, paddle.int16), 'U16': (2, torch.int16, paddle.bfloat16), 'I32': (4, torch.int32, paddle.int32), 'U32': (4, torch.int32, paddle.int32), 'I64': (8, torch.int64, paddle.int64), 'U64': (8, torch.int64, paddle.int64),
+        'F16': (2, torch.float16, paddle.float16), 'BF16': (2, torch.bfloat16, paddle.bfloat16), 'F32': (4, torch.float32, paddle.float32), 'F64': (8, torch.float64, paddle.float64)
+    }
+
+    need_workaround_dtypes = {
+        torch.float8_e5m2: torch.int8,
+        torch.float8_e4m3fn: torch.int8,
+        paddle.float8_e5m2 : paddle.int8,
+        paddle.float8_e4m3fn : paddle.int8
+    }
+
 def str_to_dtype(dtype_str: str, framework: str="pytorch")->torch.dtype:
-    if framework != "pytorch":
-        raise NotImplementedError(f"str_to_dtype: Not implemented for other frameworks than pytorch")
+    if framework not in framework_index.keys():
+        raise NotImplementedError(f"str_to_dtype: Not implemented for other frameworks than {framework_index.keys()}")
     if dtype_str not in dtype_convert:
         raise ValueError(f"str_to_dtype: Not supported dtype: {dtype_str}")
     return dtype_convert[dtype_str][framework_index[framework]]
@@ -53,24 +77,31 @@ def get_device_numa_node(device: int):
     with open(syspath) as f:
         return int(f.read().strip())
 
-def alloc_tensor_memory(length: int, dev: torch.device)->fstcpp.gds_device_buffer:
-    if dev.type == 'cuda':
+def alloc_tensor_memory(length: int, dev: torch.device, framework: str="pytorch")->fstcpp.gds_device_buffer:
+    dev_is_gpu = True
+    if framework == "pytorch" and dev.type == 'cuda':
         rbuf = torch.cuda.caching_allocator_alloc(length)
+    elif paddle_loaded and framework == "paddle" and "gpu" in dev:
+        rbuf = fstcpp.gpu_malloc(length)
     else:
+        dev_is_gpu = False
         rbuf = fstcpp.cpu_malloc(length)
-    return fstcpp.gds_device_buffer(rbuf, length, dev.type == 'cuda')
+    return fstcpp.gds_device_buffer(rbuf, length, dev_is_gpu)
 
-def free_tensor_memory(gbuf: fstcpp.gds_device_buffer, dev: torch.device):
-    if dev.type == 'cuda':
+def free_tensor_memory(gbuf: fstcpp.gds_device_buffer, dev: torch.device, framework: str="pytorch"):
+    if framework =="pytorch" and dev.type == 'cuda':
         rbuf = torch.cuda.caching_allocator_delete(gbuf.get_base_address())
+    elif paddle_loaded and framework == "paddle" and "gpu" in dev:
+        rbuf = fstcpp.gpu_free(gbuf.get_base_address())
     else:
         rbuf = fstcpp.cpu_free(gbuf.get_base_address())
     return rbuf
 
 
 class SafeTensorsMetadata:
-    def __init__(self, string: str, header_length: int, size_bytes: int, src: str="", keep_orig_dict: bool=False):
+    def __init__(self, string: str, header_length: int, size_bytes: int, src: str="", keep_orig_dict: bool=False, framework: str="pytorch"):
         self.src = src
+        self.framework = framework
         ser = json.loads(string, object_pairs_hook=OrderedDict)
         self.metadata = ser.get('__metadata__', '')
         if self.metadata:
@@ -83,7 +114,7 @@ class SafeTensorsMetadata:
 
         start = 0
         for _, (k, buffer) in enumerate(sorted(ser.items(), key=lambda x: x[1]['data_offsets'][0])):
-            t = TensorFrame.from_buffer(buffer)
+            t = TensorFrame.from_buffer(buffer, self.framework)
             self.tensors[k] = t
             # validation
             s, e = t.data_offsets
@@ -95,7 +126,11 @@ class SafeTensorsMetadata:
             nelements = 1
             for sh in t.shape:
                 nelements *= sh
-            nbytes = nelements * t.dtype.itemsize
+            if self.framework == "pytorch":
+                t_dtype_size = t.dtype.itemsize
+            elif paddle_loaded and self.framework == "paddle":
+                t_dtype_size = paddle_core.size_of_dtype(t.dtype)
+            nbytes = nelements * t_dtype_size
             if (e - s) != nbytes:
                 raise Exception(f"validate(tensor {k}): TensorInvalidInfo, e-s={e-s}, nbytes={nbytes}, src={src}")
         self.size_bytes = size_bytes
@@ -120,7 +155,7 @@ class SafeTensorsMetadata:
         return SafeTensorsMetadata(string, n + 8, buffer_len)
 
     @classmethod
-    def from_fd(self, fd: int, filename: str, keep_orig_dict: bool=False):
+    def from_fd(self, fd: int, filename: str, keep_orig_dict: bool=False, framework: str="pytorch"):
         status = os.fstat(fd)
         buffer_len = status.st_size
         if buffer_len < 8:
@@ -136,12 +171,12 @@ class SafeTensorsMetadata:
         # NOTE: Add when we move to 0.4.0
         #if string.startswith('{'):
         #    raise Exception(f"{filename}: InvalidHeaderStart")
-        return SafeTensorsMetadata(string, n + 8, buffer_len, filename, keep_orig_dict=keep_orig_dict)
+        return SafeTensorsMetadata(string, n + 8, buffer_len, filename, keep_orig_dict=keep_orig_dict, framework=framework)
 
     @classmethod
-    def from_file(self, filename: str):
+    def from_file(self, filename: str, framework: str="pytorch"):
         fd = os.open(filename, os.O_RDONLY, 0o644)
-        ret = self.from_fd(fd, filename, keep_orig_dict=False)
+        ret = self.from_fd(fd, filename, keep_orig_dict=False, framework=framework)
         os.close(fd)
         return ret
 
@@ -149,20 +184,36 @@ class SafeTensorsMetadata:
         ret = {}
         for tensor_name, t in self.tensors.items():
             dst_dev_ptr = gbuf.get_base_address() + self.header_length + t.data_offsets[0]-copy_start_offset
-            if t.dtype in need_workaround_dtypes:
-                t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, need_workaround_dtypes[t.dtype], device)).view(t.dtype)
-            else:
-                t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, t.dtype, device))
-            if dtype is not None and dtype != t.dtype:
-                if dtype.itemsize > t.dtype.itemsize:
-                    raise Exception(f"Online type conversion to larger sizes is not supported ({t.dtype} -> {dtype})")
-                t3 = t2.to(dtype=dtype)
-                if dtype in need_workaround_dtypes:
-                    t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, need_workaround_dtypes[dtype], device)).view(dtype)
+            if self.framework == "pytorch":
+                if t.dtype in need_workaround_dtypes:
+                    t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, need_workaround_dtypes[t.dtype], device)).view(t.dtype)
                 else:
-                    t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, dtype, device))
-                t2.copy_(t3)
-                self.tensors[tensor_name].dtype = dtype
+                    t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, t.dtype, device))
+                if dtype is not None and dtype != t.dtype:
+                    if dtype.itemsize > t.dtype.itemsize:
+                        raise Exception(f"Online type conversion to larger sizes is not supported ({t.dtype} -> {dtype})")
+                    t3 = t2.to(dtype=dtype)
+                    if dtype in need_workaround_dtypes:
+                        t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, need_workaround_dtypes[dtype], device)).view(dtype)
+                    else:
+                        t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, dtype, device))
+                    t2.copy_(t3)
+                    self.tensors[tensor_name].dtype = dtype
+            elif paddle_loaded and self.framework == "paddle":
+                if t.dtype in need_workaround_dtypes:
+                    t2 = paddle.utils.dlpack.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, need_workaround_dtypes[t.dtype], device))
+                else:
+                    t2 = paddle.utils.dlpack.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, t.dtype, device))
+                if dtype is not None and dtype != t.dtype:
+                    if paddle_core.size_of_dtype(dtype) > paddle_core.size_of_dtype(t.dtype):
+                        raise Exception(f"Online type conversion to larger sizes is not supported ({t.dtype} -> {dtype})")
+                    t3 = t2.to(dtype=dtype)
+                    if t.dtype in need_workaround_dtypes:
+                        t2 = paddle.utils.dlpack.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, need_workaround_dtypes[dtype], device))
+                    else:
+                        t2 = paddle.utils.dlpack.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, dtype, device))
+                    paddle.assign(t3, output=t2)
+                    self.tensors[tensor_name].dtype = dtype
             ret[tensor_name] = t2
         return ret
 
@@ -180,8 +231,10 @@ class TensorFrame:
 
     @classmethod
     def from_buffer(self, entry: OrderedDict[str, List[int]], framework:str="pytorch"):
-        dtype = str_to_dtype(entry['dtype'])
-        shape = torch.Size(entry['shape'])
+        dtype = str_to_dtype(entry['dtype'], framework=framework)
+        shape = entry['shape']
+        if framework == "pytorch":
+            shape = torch.Size(shape)
         data_offsets = list(entry['data_offsets'])
         strides = []
         offsets = []

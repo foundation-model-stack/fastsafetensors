@@ -14,7 +14,7 @@ dist.init_process_group(backend="gloo")
 dist.barrier()
 pg = dist.group.WORLD
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-loader = SafeTensorsFileLoader(pg, device, nogds=True, debug_log=True)
+loader = SafeTensorsFileLoader(pg, device, nogds=False, debug_log=True)
 loader.add_filenames({0: ["a.safetensors"], 1:["b.safetensors"]}) # {rank: files}
 
 # load a.safetensors to rank 0 GPU and b.safetensors to rank 1 GPU

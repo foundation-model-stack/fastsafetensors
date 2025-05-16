@@ -8,6 +8,9 @@ from typing import Dict, List, Tuple, Generator
 from collections import OrderedDict
 
 from .tensor_factory import LazyTensorFactory
+from .common import SingleGroup, paddle_loaded
+if paddle_loaded:
+    import paddle
 
 class FilesBufferOnDevice:
     r""" Device buffer for .safetensors files.
@@ -27,7 +30,7 @@ class FilesBufferOnDevice:
     Examples:
         See examples/run_single.py and examples/run_parallel.py.
     """
-    def __init__(self, rank_loaders: Dict[int, List[LazyTensorFactory]], pg: dist.ProcessGroup, auto_mem_delete=True):
+    def __init__(self, rank_loaders: Dict[int, List[LazyTensorFactory]], pg: dist.ProcessGroup, auto_mem_delete=True, framework="pytorch"):
         self.rank_loaders: Dict[int, List[LazyTensorFactory]] = rank_loaders
         self.key_to_rank_lidx: Dict[str, Tuple[int, int]] = {}
         self.instantiated: Dict[int, Dict[int, Dict[str, bool]]] = {} # rank, key name
@@ -39,8 +42,14 @@ class FilesBufferOnDevice:
                         raise Exception(f"FilesBufferOnDevice: key {key} must be unique among files")
                     self.key_to_rank_lidx[key] = (rank, lidx)
                 self.instantiated[rank][lidx] = {}
-        self.auto_mem_delete = auto_mem_delete and pg.size() > 1
-        self.pg = pg
+        self.framework = framework
+        if self.framework == "pytorch" or isinstance(pg, SingleGroup):
+            self.pg = pg
+            self.group = None
+        elif paddle_loaded and self.framework == "paddle":
+            self.pg = pg.process_group
+            self.group = pg
+        self.auto_mem_delete = auto_mem_delete and self.pg.size() > 1
 
     def close(self):
         for _, loaders in self.rank_loaders.items():
@@ -84,7 +93,7 @@ class FilesBufferOnDevice:
         A special dim is -1, which broadcast a tensor to all the ranks (== get_tensor()).
         """
         (rank, lidix) = self._get_rank_lidx(tensor_name)
-        t = self.rank_loaders[rank][lidix].shuffle(self.pg, tensor_name, dim)
+        t = self.rank_loaders[rank][lidix].shuffle(self.pg, tensor_name, dim, group=self.group)
         return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
 
     def get_tensor(self, tensor_name: str, device: torch.device=None, dtype: torch.dtype=None)->torch.Tensor:
@@ -104,12 +113,12 @@ class FilesBufferOnDevice:
         Other ranks do nothing.
         """
         (rank, lidix) = self._get_rank_lidx(tensor_name)
-        t = self.rank_loaders[rank][lidix].push(self.pg, tensor_name, dst_rank, rank)
+        t = self.rank_loaders[rank][lidix].push(self.pg, tensor_name, dst_rank, rank, group=self.group)
         return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
 
     def get_sharded_packed_qkv(self, tensor_name: str, device: torch.device=None, dtype: torch.dtype=None)->torch.Tensor:
         (rank, lidix) = self._get_rank_lidx(tensor_name)
-        t = self.rank_loaders[rank][lidix].shuffle_packed_qkv(self.pg, tensor_name)
+        t = self.rank_loaders[rank][lidix].shuffle_packed_qkv(self.pg, tensor_name, group=self.group)
         return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
 
     def get_multi_cols(self, tensor_names: List[str], dim: int, device: torch.device=None, dtype: torch.dtype=None)->torch.Tensor:
@@ -122,7 +131,7 @@ class FilesBufferOnDevice:
                 rank_lidixs[ranklidx] = [tensor_name]
         ts: List[torch.Tensor] = []
         for (rank, lidix), tns in sorted(rank_lidixs.items(), key=lambda x:x[0]):
-            ts.append(self.rank_loaders[rank][lidix].shuffle_multi_cols(self.pg, tns, dim))
+            ts.append(self.rank_loaders[rank][lidix].shuffle_multi_cols(self.pg, tns, dim,group=self.group))
         if len(ts) == 1:
             # fastpath: tensors at the same layer are often in the same file
             return self._get_tensor(rank, lidix, rank_lidixs[(rank, lidix)][0], ts[0], device, dtype)
@@ -145,7 +154,7 @@ class FilesBufferOnDevice:
         for tensor_name, dim in tensor_shard_dim.items():
             (rank, lidx) = self._get_rank_lidx(tensor_name)
             loader = self.rank_loaders[rank][lidx]
-            tensors[tensor_name] = loader.shuffle(self.pg, tensor_name, dim)
+            tensors[tensor_name] = loader.shuffle(self.pg, tensor_name, dim, group=self.group)
             if self.auto_mem_delete:
                 self.instantiated[rank][lidx][tensor_name] = True
                 if len(self.instantiated[rank][lidx]) == len(loader.metadata.tensors):

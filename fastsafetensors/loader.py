@@ -9,15 +9,21 @@ from . import cpp as fstcpp
 from typing import List, Dict, Tuple, OrderedDict, Union
 import warnings
 
-from .common import SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN, TensorFrame, get_device_numa_node, SingleGroup
+from .common import paddle_loaded, SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN, TensorFrame, get_device_numa_node, SingleGroup
 from .tensor_factory import LazyTensorFactory
 from .file_buffer import FilesBufferOnDevice
+if paddle_loaded:
+    import paddle
 
 initialized: bool = False
 loaded_nvidia: bool = False
 if not loaded_nvidia:
     fstcpp.load_nvidia_functions()
     loaded_nvidia = True
+
+support_framework = ["pytorch", "pt"]
+if paddle_loaded:
+    support_framework.append("paddle")
 
 class SafeTensorsFileLoader:
     r""" Load .safetensors files lazily.
@@ -40,17 +46,34 @@ class SafeTensorsFileLoader:
         >> print(bufs.get_tensor(loader.get_keys()[0]))
         >> loader.close()
     """
-    def __init__(self, pg: dist.ProcessGroup, device: torch.device, bbuf_size_kb: int = 16 * 1024, max_pinned_memory_in_kb: int = 64 * 1024 * 1024, max_threads: int=16, nogds: bool=False, debug_log: bool=False):
+    def __init__(self, pg: dist.ProcessGroup, device: torch.device, bbuf_size_kb: int = 16 * 1024, max_pinned_memory_in_kb: int = 64 * 1024 * 1024, max_threads: int=16, nogds: bool=False, debug_log: bool=False, framework="pytorch"):
+        if framework not in support_framework:
+            raise NotImplementedError(f"fastsafetensors only supports {support_framework} framework")
         self.device = device
         self.debug_log = debug_log
         self.meta: Dict[str, Tuple[SafeTensorsMetadata, int]] = {}
         self.need_gds_close = False
         self.frames: OrderedDict[str, TensorFrame] = {}
-        self.pg = pg
+        self.framework = framework
+        if self.framework == "pytorch" or isinstance(pg, SingleGroup):
+            self.pg = pg
+            self.group = pg
+        elif paddle_loaded and self.framework == "paddle":
+            self.pg = pg.process_group
+            self.group = pg
+        self.nogds = nogds
         global initialized
         if not initialized:
             fstcpp.set_debug_log(debug_log)
-            node = get_device_numa_node(device.index)
+            if self.framework == "pytorch":
+                d_id = device.index
+            elif paddle_loaded and self.framework == "paddle":
+                if device == "cpu":
+                    d_id = None
+                else:
+                    d_id = device.split(":") # "gpu:0" or "gpu"
+                    d_id = int(d_id[1]) if len(d_id) == 2 else 0
+            node = get_device_numa_node(d_id)
             if node is not None:
                 fstcpp.set_numa_node(node)
             if False and fstcpp.is_cufile_found() and not nogds: # TODO: init_gds should be called but too slow for parallel initialization
@@ -58,15 +81,16 @@ class SafeTensorsFileLoader:
                     raise Exception(f"[FAIL] init_gds max_io_block_in_kb={max_io_block_in_kb}, max_pinned_memory_in_kb={max_pinned_memory_in_kb}")
                 self.need_gds_close = True
             initialized = True
-        if not device.type == "cpu" and not fstcpp.is_cuda_found():
+        device_is_not_cpu = not (paddle_loaded and self.framework == "paddle" and device == "cpu") and not (self.framework == "pytorch" and device.type == "cpu")
+        if device_is_not_cpu and not fstcpp.is_cuda_found():
             raise Exception("[FAIL] libcudart.so does not exist")
         if not fstcpp.is_cufile_found() and not nogds:
             warnings.warn("libcufile.so does not exist but nogds is False. use nogds=True", UserWarning)
             nogds = True
         if nogds:
-            self.reader = fstcpp.nogds_file_reader(False, bbuf_size_kb, max_threads, device.type != "cpu")
+            self.reader = fstcpp.nogds_file_reader(False, bbuf_size_kb, max_threads, device_is_not_cpu)
         else:
-            self.reader = fstcpp.gds_file_reader(max_threads, device != "cpu")
+            self.reader = fstcpp.gds_file_reader(max_threads, device_is_not_cpu)
         self.nogds = nogds
 
     def reset(self):
@@ -97,7 +121,7 @@ class SafeTensorsFileLoader:
                 next_idx = rank_next_idx[rank]
                 if next_idx < len(filenames[rank]):
                     realpath = filenames[rank][next_idx] #os.path.realpath(filename)
-                    metadata = SafeTensorsMetadata.from_file(realpath)
+                    metadata = SafeTensorsMetadata.from_file(realpath, self.framework)
                     self.meta[realpath] = (metadata, rank)
                     self.frames.update(metadata.tensors)
                     if self.debug_log and rank == self.pg.rank():
@@ -112,8 +136,12 @@ class SafeTensorsFileLoader:
         At this moment, we do not instantiate tensors but just creating copies at device buffers with or without GDS.
         Users can instantiate and/or partition tensors with FilesBufferOnDevice returned by this function.
         """
-        if self.device.type != "cpu":
-            torch.cuda.set_device(self.device)
+        if self.framework == "pytorch":
+            if self.device.type != "cpu":
+                torch.cuda.set_device(self.device)
+        elif paddle_loaded and self.framework == "paddle":
+            if self.device != paddle.CPUPlace():
+                paddle.set_device(self.device)
 
         need_wait: List[LazyTensorFactory] = []
         factories: Dict[int, List[LazyTensorFactory]] = {}
@@ -133,7 +161,11 @@ class SafeTensorsFileLoader:
             lidx += 1
         for factory in need_wait:
             factory.wait_io(dtype=dtype, noalign=self.nogds)
-        return FilesBufferOnDevice(factories, pg=self.pg)
+        if self.framework == "pytorch":
+            return FilesBufferOnDevice(factories, pg=self.pg)
+        elif paddle_loaded and self.framework == "paddle":
+            return FilesBufferOnDevice(factories, pg=self.group, framework=self.framework)
+        return None
 
 class fastsafe_open:
     """
@@ -142,7 +174,7 @@ class fastsafe_open:
 
     Args:
         filenames (:obj:`str`|`list[str]`|`dict[int, str]`): The filename(s) or rank-file map to open
-        framework (:obj:`str`): `pt` is only supported currently
+        framework (:obj:`str`): `pt` and `paddle` are only supported currently
         device (:obj:`str`, defaults to :obj:`"cpu"`): The device on which you want the tensors.
     """
 
@@ -150,19 +182,20 @@ class fastsafe_open:
                        framework: str="pt", pg: dist.ProcessGroup=SingleGroup(),
                        device: Union[str, torch.device]="cpu",
                        nogds: bool=False,
-                       debug_log: bool=False):
-        if framework != "pt":
+                       debug_log: bool=False,
+                       max_copy_block_size: int=16*1024*1024*1024):
+        if framework not in support_framework:
             raise NotImplementedError("pytorch is only a framework that current fastsafetensors supports")
-        if isinstance(device, str):
+        if isinstance(device, str) and framework == "pt":
             device = torch.device(device)
-        self.loader = SafeTensorsFileLoader(pg, device, nogds=nogds, debug_log=debug_log)
+        self.loader = SafeTensorsFileLoader(pg, device, nogds=nogds, debug_log=debug_log, framework= framework if framework != "pt" else "pytorch")
         if isinstance(filenames, str):
             filenames = [filenames]
         if isinstance(filenames, list):
             self.loader.add_filenames({0: filenames})
         elif isinstance(filenames, dict):
             self.loader.add_filenames(filenames)
-        self.fb = self.loader.copy_files_to_device()
+        self.fb = self.loader.copy_files_to_device(max_copy_block_size=max_copy_block_size)
 
     def metadata(self)->Dict[str, Dict[str, str]]:
         ret = {}
