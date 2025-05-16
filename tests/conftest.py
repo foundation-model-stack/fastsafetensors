@@ -46,3 +46,9 @@ def dev_init() -> None:
 @pytest.fixture(scope='function')
 def fstcpp_log() -> None:
     fstcpp.set_debug_log(True)
+
+@pytest.fixture(scope='function')
+def tmp_dir() -> str:
+    t_dir = os.path.join(DATA_DIR, "tmp")
+    os.makedirs(t_dir, 0o777, True)
+    return t_dir
