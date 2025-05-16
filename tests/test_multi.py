@@ -10,7 +10,7 @@ from fastsafetensors import SafeTensorsFileLoader, SingleGroup, SafeTensorsMetad
 
 def test_shuffle(fstcpp_log, input_files, pg):
     print("test_shuffle")
-    device = torch.device(f"cuda:0" if not fstcpp.is_cpu_mode() else "cpu")
+    device = torch.device(f"cuda:0" if fstcpp.is_cuda_found() else "cpu")
     loader = SafeTensorsFileLoader(pg, device, nogds=True, debug_log=True)
     loader.add_filenames({0: input_files})
     bufs = loader.copy_files_to_device()

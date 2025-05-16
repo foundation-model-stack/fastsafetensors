@@ -16,18 +16,17 @@ class GdsFileCopier:
         self.fh = 0
         self.copy_reqs: Dict[int, int] = {}
         self.aligned_length = 0
-        try:
-            cudavers = list(map(int, torch.version.cuda.split('.')))
-            # CUDA 12.2 (GDS version 1.7) introduces support for non O_DIRECT file descriptors
-            self.o_direct = not (cudavers[0] > 12 or (cudavers[0] == 12 and cudavers[1] >= 2))
-        except:
-            self.o_direct = True
+        cufile_ver = fstcpp.cufile_version()
+        # GDS version 1.7 introduces support for non O_DIRECT file descriptors
+        self.o_direct = cufile_ver < 1700
+        if debug_log:
+            print(f"[DEBUG] o_direct={self.o_direct}, cufile_ver={cufile_ver}")
 
     def set_o_direct(self, enable: bool):
         self.o_direct = enable
 
     def submit_io(self, use_buf_register: bool, max_copy_block_size: int)->fstcpp.gds_device_buffer:
-        self.fh = fstcpp.gds_file_handle(self.metadata.src, self.o_direct)
+        self.fh = fstcpp.gds_file_handle(self.metadata.src, self.o_direct, self.device.type == 'cuda')
         offset = self.metadata.header_length
         length = self.metadata.size_bytes - self.metadata.header_length
         head_bytes = offset % ALIGN
