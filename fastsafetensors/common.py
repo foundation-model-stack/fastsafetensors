@@ -22,9 +22,14 @@ framework_index = {
     "pytorch": 1,
 }
 dtype_convert = {
-    'BOOL': (1, torch.bool), 'U8': (1, torch.uint8), 'I8': (1, torch.int8), 'F8_E5M2': (1, torch.float), 'F8_E4M3': (1, torch.int8),
+    'BOOL': (1, torch.bool), 'U8': (1, torch.uint8), 'I8': (1, torch.int8), 'F8_E5M2': (1, torch.float8_e5m2), 'F8_E4M3': (1, torch.float8_e4m3fn),
     'I16': (2, torch.int16), 'U16': (2, torch.int16), 'I32': (4, torch.int32), 'U32': (4, torch.int32), 'I64': (8, torch.int64), 'U64': (8, torch.int64),
     'F16': (2, torch.float16), 'BF16': (2, torch.bfloat16), 'F32': (4, torch.float32), 'F64': (8, torch.float64)
+}
+
+need_workaround_dtypes = {
+    torch.float8_e5m2: torch.int8,
+    torch.float8_e4m3fn: torch.int8,
 }
 
 def str_to_dtype(dtype_str: str, framework: str="pytorch")->torch.dtype:
@@ -144,12 +149,18 @@ class SafeTensorsMetadata:
         ret = {}
         for tensor_name, t in self.tensors.items():
             dst_dev_ptr = gbuf.get_base_address() + self.header_length + t.data_offsets[0]-copy_start_offset
-            t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, t.dtype, device))
+            if t.dtype in need_workaround_dtypes:
+                t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, need_workaround_dtypes[t.dtype], device)).view(t.dtype)
+            else:
+                t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, t.dtype, device))
             if dtype is not None and dtype != t.dtype:
                 if dtype.itemsize > t.dtype.itemsize:
                     raise Exception(f"Online type conversion to larger sizes is not supported ({t.dtype} -> {dtype})")
                 t3 = t2.to(dtype=dtype)
-                t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, dtype, device))
+                if dtype in need_workaround_dtypes:
+                    t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, need_workaround_dtypes[dtype], device)).view(dtype)
+                else:
+                    t2 = torch.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, dtype, device))
                 t2.copy_(t3)
                 self.tensors[tensor_name].dtype = dtype
             ret[tensor_name] = t2
