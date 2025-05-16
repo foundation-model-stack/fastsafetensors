@@ -56,7 +56,7 @@ static cudaError_t cpu_cudaDeviceGetPCIBusId(char * in, int s, int) {
 }
 static int cpu_numa_run_on_node(int) {return 0; }
 
-ext_funcs_t fns = ext_funcs_t {
+ext_funcs_t cpu_fns = ext_funcs_t {
     cuFileDriverOpen: cpu_cuFileDriverOpen,
     cuFileDriverClose: cpu_cuFileDriverClose,
     cuFileDriverSetMaxDirectIOSize: cpu_cuFileDriverSetMaxDirectIOSize,
@@ -73,16 +73,17 @@ ext_funcs_t fns = ext_funcs_t {
     cudaDeviceGetPCIBusId: cpu_cudaDeviceGetPCIBusId,
     numa_run_on_node: cpu_numa_run_on_node,
 };
+ext_funcs_t cuda_fns;
+ext_funcs_t *fns = &cpu_fns;
 
-static bool use_cuda = false;
-static bool use_cufile = false;
+static bool cuda_found = false;
+static bool cufile_found = false;
 
 template <typename T> void mydlsym(T** h, void* lib, std::string const& name) {
     *h = reinterpret_cast<T*>(dlsym(lib, name.c_str()));
 }
 
 static void load_nvidia_functions() {
-    ext_funcs_t *fs = &fns;
     cudaError_t (*cudaGetDeviceCount)(int*);
     const char* cufileLib = "libcufile.so.0";
     const char* cudartLib = "libcudart.so";
@@ -92,17 +93,21 @@ static void load_nvidia_functions() {
 
     void* handle_numa = dlopen(numaLib, mode);
     if (handle_numa) {
-        mydlsym(&fs->numa_run_on_node, handle_numa, "numa_run_on_node");
-        if (fs->numa_run_on_node && init_log) {
-            fprintf(stderr, "[DEBUG] loaded: %s\n", numaLib);
+        mydlsym(&cpu_fns.numa_run_on_node, handle_numa, "numa_run_on_node");
+        if (cpu_fns.numa_run_on_node) {
+            cuda_fns.numa_run_on_node = cpu_fns.numa_run_on_node;
+            if (init_log) {
+                fprintf(stderr, "[DEBUG] loaded: %s\n", numaLib);
+            }
         }
         dlclose(handle_numa);
     }
-    if (!fs->numa_run_on_node) {
+    if (!cpu_fns.numa_run_on_node) {
         if (init_log) {
             fprintf(stderr, "[DEBUG] %s is not installed. fallback\n", numaLib);
         }
-        fs->numa_run_on_node = cpu_numa_run_on_node;
+        cpu_fns.numa_run_on_node = cpu_numa_run_on_node;
+        cuda_fns.numa_run_on_node = cpu_numa_run_on_node;
     }
 
     void* handle_cudart = dlopen(cudartLib, mode);
@@ -113,25 +118,25 @@ static void load_nvidia_functions() {
             if (cudaGetDeviceCount(&count) != cudaSuccess) {
                 count = 0; // why cudaGetDeviceCount returns non-zero for errors?
             }
-            use_cuda = count > 0;
+            cuda_found = count > 0;
             if (init_log) {
-                fprintf(stderr, "[DEBUG] device count=%d, use_cuda=%d\n", count, use_cuda);
+                fprintf(stderr, "[DEBUG] device count=%d, cuda_found=%d\n", count, cuda_found);
             }
         } else {
-            use_cuda = false;
+            cuda_found = false;
             if (init_log) {
                 fprintf(stderr, "[DEBUG] No cudaGetDeviceCount, fallback!\n");
             }
         }
-        if (use_cuda) {
-            mydlsym(&fs->cudaMemcpy, handle_cudart, "cudaMemcpy");
-            mydlsym(&fs->cudaDeviceSynchronize, handle_cudart, "cudaDeviceSynchronize");
-            mydlsym(&fs->cudaHostAlloc, handle_cudart, "cudaHostAlloc");
-            mydlsym(&fs->cudaFreeHost, handle_cudart, "cudaFreeHost");
-            mydlsym(&fs->cudaDeviceGetPCIBusId, handle_cudart, "cudaDeviceGetPCIBusId");
-            bool success = fs->cudaMemcpy && fs->cudaDeviceSynchronize && fs->cudaHostAlloc && fs->cudaFreeHost && fs->cudaDeviceGetPCIBusId;
+        if (cuda_found) {
+            mydlsym(&cuda_fns.cudaMemcpy, handle_cudart, "cudaMemcpy");
+            mydlsym(&cuda_fns.cudaDeviceSynchronize, handle_cudart, "cudaDeviceSynchronize");
+            mydlsym(&cuda_fns.cudaHostAlloc, handle_cudart, "cudaHostAlloc");
+            mydlsym(&cuda_fns.cudaFreeHost, handle_cudart, "cudaFreeHost");
+            mydlsym(&cuda_fns.cudaDeviceGetPCIBusId, handle_cudart, "cudaDeviceGetPCIBusId");
+            bool success = cuda_fns.cudaMemcpy && cuda_fns.cudaDeviceSynchronize && cuda_fns.cudaHostAlloc && cuda_fns.cudaFreeHost && cuda_fns.cudaDeviceGetPCIBusId;
             if (!success) {
-                use_cuda = false;
+                cuda_found = false;
                 if (init_log) {
                     fprintf(stderr, "[DEBUG] %s does not contain required CUDA functions. fallback\n", cudartLib);
                 }
@@ -141,30 +146,31 @@ static void load_nvidia_functions() {
         }
         dlclose(handle_cudart);
     }
-    if (!use_cuda) {
-        fs->cudaMemcpy = cpu_cudaMemcpy;
-        fs->cudaDeviceSynchronize = cpu_cudaDeviceSynchronize;
-        fs->cudaHostAlloc = cpu_cudaHostAlloc;
-        fs->cudaFreeHost = cpu_cudaFreeHost;
-        fs->cudaDeviceGetPCIBusId = cpu_cudaDeviceGetPCIBusId;
+    if (!cuda_found) {
+        cuda_fns.cudaMemcpy = cpu_cudaMemcpy;
+        cuda_fns.cudaDeviceSynchronize = cpu_cudaDeviceSynchronize;
+        cuda_fns.cudaHostAlloc = cpu_cudaHostAlloc;
+        cuda_fns.cudaFreeHost = cpu_cudaFreeHost;
+        cuda_fns.cudaDeviceGetPCIBusId = cpu_cudaDeviceGetPCIBusId;
+        fns = &cpu_fns;
     }
 
-    use_cufile = false;
-    if (use_cuda) {
+    cufile_found = false;
+    if (cuda_found) {
         void* handle_cufile = dlopen(cufileLib, mode);
         if (handle_cufile) {
-            mydlsym(&fs->cuFileDriverOpen, handle_cufile, "cuFileDriverOpen");
-            mydlsym(&fs->cuFileDriverClose, handle_cufile, "cuFileDriverClose");
-            mydlsym(&fs->cuFileDriverSetMaxDirectIOSize, handle_cufile, "cuFileDriverSetMaxDirectIOSize");
-            mydlsym(&fs->cuFileDriverSetMaxPinnedMemSize, handle_cufile, "cuFileDriverSetMaxPinnedMemSize");
-            mydlsym(&fs->cuFileBufRegister, handle_cufile, "cuFileBufRegister");
-            mydlsym(&fs->cuFileBufDeregister, handle_cufile, "cuFileBufDeregister");
-            mydlsym(&fs->cuFileHandleRegister, handle_cufile, "cuFileHandleRegister");
-            mydlsym(&fs->cuFileHandleDeregister, handle_cufile, "cuFileHandleDeregister");
-            mydlsym(&fs->cuFileRead, handle_cufile, "cuFileRead");
-            bool success = fs->cuFileDriverOpen && fs->cuFileDriverClose && fs->cuFileDriverSetMaxDirectIOSize;
-            success &= fs->cuFileDriverSetMaxPinnedMemSize && fs->cuFileBufRegister && fs->cuFileBufDeregister;
-            success &= fs->cuFileHandleRegister && fs->cuFileHandleDeregister && fs->cuFileRead;
+            mydlsym(&cuda_fns.cuFileDriverOpen, handle_cufile, "cuFileDriverOpen");
+            mydlsym(&cuda_fns.cuFileDriverClose, handle_cufile, "cuFileDriverClose");
+            mydlsym(&cuda_fns.cuFileDriverSetMaxDirectIOSize, handle_cufile, "cuFileDriverSetMaxDirectIOSize");
+            mydlsym(&cuda_fns.cuFileDriverSetMaxPinnedMemSize, handle_cufile, "cuFileDriverSetMaxPinnedMemSize");
+            mydlsym(&cuda_fns.cuFileBufRegister, handle_cufile, "cuFileBufRegister");
+            mydlsym(&cuda_fns.cuFileBufDeregister, handle_cufile, "cuFileBufDeregister");
+            mydlsym(&cuda_fns.cuFileHandleRegister, handle_cufile, "cuFileHandleRegister");
+            mydlsym(&cuda_fns.cuFileHandleDeregister, handle_cufile, "cuFileHandleDeregister");
+            mydlsym(&cuda_fns.cuFileRead, handle_cufile, "cuFileRead");
+            bool success = cuda_fns.cuFileDriverOpen && cuda_fns.cuFileDriverClose && cuda_fns.cuFileDriverSetMaxDirectIOSize;
+            success &= cuda_fns.cuFileDriverSetMaxPinnedMemSize && cuda_fns.cuFileBufRegister && cuda_fns.cuFileBufDeregister;
+            success &= cuda_fns.cuFileHandleRegister && cuda_fns.cuFileHandleDeregister && cuda_fns.cuFileRead;
             if (!success) {
                 if (init_log) {
                     fprintf(stderr, "[DEBUG] %s does not contain required cuFile functions. fallback\n", cufileLib);
@@ -173,7 +179,7 @@ static void load_nvidia_functions() {
                 if (init_log) {
                     fprintf(stderr, "[DEBUG] loaded: %s\n", cufileLib);
                 }
-                use_cufile = true;
+                cufile_found = true;
             }
             dlclose(handle_cufile);
         } else if (init_log) {
@@ -181,42 +187,32 @@ static void load_nvidia_functions() {
         }
     }
 
-    if (!use_cufile) {
-        fs->cuFileDriverOpen = cpu_cuFileDriverOpen;
-        fs->cuFileDriverClose = cpu_cuFileDriverClose;
-        fs->cuFileDriverSetMaxDirectIOSize = cpu_cuFileDriverSetMaxDirectIOSize;
-        fs->cuFileDriverSetMaxPinnedMemSize = cpu_cuFileDriverSetMaxPinnedMemSize;
-        fs->cuFileBufRegister = cpu_cuFileBufRegister;
-        fs->cuFileBufDeregister = cpu_cuFileBufDeregister;
-        fs->cuFileHandleRegister = cpu_cuFileHandleRegister;
-        fs->cuFileHandleDeregister = cpu_cuFileHandleDeregister;
+    if (!cufile_found) {
+        cuda_fns.cuFileDriverOpen = cpu_cuFileDriverOpen;
+        cuda_fns.cuFileDriverClose = cpu_cuFileDriverClose;
+        cuda_fns.cuFileDriverSetMaxDirectIOSize = cpu_cuFileDriverSetMaxDirectIOSize;
+        cuda_fns.cuFileDriverSetMaxPinnedMemSize = cpu_cuFileDriverSetMaxPinnedMemSize;
+        cuda_fns.cuFileBufRegister = cpu_cuFileBufRegister;
+        cuda_fns.cuFileBufDeregister = cpu_cuFileBufDeregister;
+        cuda_fns.cuFileHandleRegister = cpu_cuFileHandleRegister;
+        cuda_fns.cuFileHandleDeregister = cpu_cuFileHandleDeregister;
     }
 }
 
 bool is_cpu_mode() {
-    return !use_cuda;
+    return fns == &cpu_fns;
+}
+
+bool is_cuda_found() {
+    return cuda_found;
 }
 
 void set_cpu_mode() {
-    use_cuda = false;
-    use_cufile = false;
-    fns = ext_funcs_t {
-        cuFileDriverOpen: cpu_cuFileDriverOpen,
-        cuFileDriverClose: cpu_cuFileDriverClose,
-        cuFileDriverSetMaxDirectIOSize: cpu_cuFileDriverSetMaxDirectIOSize,
-        cuFileDriverSetMaxPinnedMemSize: cpu_cuFileDriverSetMaxPinnedMemSize,
-        cuFileBufRegister: cpu_cuFileBufRegister,
-        cuFileBufDeregister: cpu_cuFileBufDeregister,
-        cuFileHandleRegister: cpu_cuFileHandleRegister,
-        cuFileHandleDeregister: cpu_cuFileHandleDeregister,
-        cuFileRead: nullptr,
-        cudaMemcpy: cpu_cudaMemcpy,
-        cudaDeviceSynchronize: cpu_cudaDeviceSynchronize,
-        cudaHostAlloc: cpu_cudaHostAlloc,
-        cudaFreeHost: cpu_cudaFreeHost,
-        cudaDeviceGetPCIBusId: cpu_cudaDeviceGetPCIBusId,
-        numa_run_on_node: cpu_numa_run_on_node,
-    };
+    fns = &cpu_fns;
+}
+
+void set_cuda_mode() {
+    fns = &cuda_fns;
 }
 
 int get_alignment_size()
@@ -234,14 +230,14 @@ int init_gds(uint64_t _max_direct_io_size_in_kb, uint64_t max_pinned_memory_size
     CUfileError_t err;
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    err = fns.cuFileDriverOpen();
+    err = fns->cuFileDriverOpen();
     if (err.err != CU_FILE_SUCCESS) {
         std::fprintf(stderr, "init_gds: cuFileDriverOpen returned an error = %d\n", err.err);
         return -1;
     }
 
     std::chrono::steady_clock::time_point begin_set_dio = std::chrono::steady_clock::now();
-    err = fns.cuFileDriverSetMaxDirectIOSize(_max_direct_io_size_in_kb);
+    err = fns->cuFileDriverSetMaxDirectIOSize(_max_direct_io_size_in_kb);
     if (err.err != CU_FILE_SUCCESS) {
         std::fprintf(stderr, "init_gds: cuFileDriverGetProperties(%ld) returned an error = %d\n", _max_direct_io_size_in_kb, err.err);
         close_gds();
@@ -249,7 +245,7 @@ int init_gds(uint64_t _max_direct_io_size_in_kb, uint64_t max_pinned_memory_size
     }
 
     std::chrono::steady_clock::time_point begin_set_pin = std::chrono::steady_clock::now();
-    err = fns.cuFileDriverSetMaxPinnedMemSize(max_pinned_memory_size_in_kb);
+    err = fns->cuFileDriverSetMaxPinnedMemSize(max_pinned_memory_size_in_kb);
     if (err.err != CU_FILE_SUCCESS) {
         std::fprintf(stderr, "init_gds: cuFileDriverSetMaxPinnedMemSize(%ld) returned an error = %d\n", max_pinned_memory_size_in_kb, err.err);
         close_gds();
@@ -271,7 +267,7 @@ int close_gds()
     CUfileError_t err;
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    err = fns.cuFileDriverClose();
+    err = fns->cuFileDriverClose();
     if (err.err != CU_FILE_SUCCESS) {
         std::fprintf(stderr, "close_gds: cuFileDriverClose returned an error = %d\n", err.err);
         return -1;
@@ -289,7 +285,7 @@ std::string get_device_pci_bus(int deviceId) {
     char pciBusId[32];
 
     std::memset(pciBusId, 0, 32);
-    err = fns.cudaDeviceGetPCIBusId(pciBusId, 32, deviceId);
+    err = fns->cudaDeviceGetPCIBusId(pciBusId, 32, deviceId);
     if (err != cudaSuccess) {
         std::fprintf(stderr, "get_device_pci_bus: cudaDeviceGetPCIBusId failed, deviceId=%d, err=%d\n", deviceId, err);
         return "";
@@ -299,7 +295,7 @@ std::string get_device_pci_bus(int deviceId) {
 
 int set_numa_node(int numa_node) {
     if (numa_node >= 0) {
-        if (fns.numa_run_on_node(numa_node) != 0) {
+        if (fns->numa_run_on_node(numa_node) != 0) {
             std::fprintf(stderr, "set_numa_node: numa_run_on_node(numa_node=%d) failed\n", numa_node);
             return -1;
         }
@@ -332,7 +328,7 @@ const int gds_device_buffer::cufile_register(uint64_t offset, uint64_t length) {
     void * dst = reinterpret_cast<void*>(this->_devPtr_base->get_uintptr() + offset);
 
     std::chrono::steady_clock::time_point begin_register = std::chrono::steady_clock::now();
-    err = fns.cuFileBufRegister(dst, length, 0);
+    err = fns->cuFileBufRegister(dst, length, 0);
     if (err.err != CU_FILE_SUCCESS) {
         std::fprintf(stderr, "gds_device_buffer.cufile_register: cuFileBufRegister returned an error = %d\n", err.err);
         return -1;
@@ -349,7 +345,7 @@ const int gds_device_buffer::cufile_deregister(uint64_t offset) {
     void * dst = reinterpret_cast<void*>(this->_devPtr_base->get_uintptr() + offset);
     CUfileError_t err;
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    err = fns.cuFileBufDeregister(dst);
+    err = fns->cuFileBufDeregister(dst);
     if (err.err != CU_FILE_SUCCESS) {
         std::fprintf(stderr, "gds_device_buffer.cufile_deregister: cuFileBufDeregister (%p) returned an error=%d\n", dst, err.err);
         return -1;
@@ -385,12 +381,12 @@ const int gds_device_buffer::memmove(uint64_t _dst_off, uint64_t _src_off, const
     }
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    err = fns.cudaMemcpy(tmp, src, length, cudaMemcpyDefault);
+    err = fns->cudaMemcpy(tmp, src, length, cudaMemcpyDefault);
     if (err != cudaSuccess) {
         std::printf("gds_device_buffer.memmove: cudaMemcpy[0](tmp=%p, src=%p, length=%ld) failed, err=%d\n", tmp, src, length, err);
         return -1;
     }
-    err = fns.cudaMemcpy(dst, tmp, length, cudaMemcpyDefault);
+    err = fns->cudaMemcpy(dst, tmp, length, cudaMemcpyDefault);
     if (err != cudaSuccess) {
         std::printf("gds_device_buffer.memmove: cudaMemcpy[1](dst=%p, tmp=%p, length=%ld) failed, err=%d\n", dst, tmp, length, err);
         return -1;
@@ -445,13 +441,13 @@ void nogds_file_reader::_thread(const int thread_id, const int fd, const gds_dev
             }
         }
         std::chrono::steady_clock::time_point memcpy_begin = std::chrono::steady_clock::now();
-        err = fns.cudaMemcpy(dst._get_raw_pointer(ptr_off + count, c), buffer, c, cudaMemcpyHostToDevice);      
+        err = fns->cudaMemcpy(dst._get_raw_pointer(ptr_off + count, c), buffer, c, cudaMemcpyHostToDevice);
         if (err != cudaSuccess) {
             std::printf("nogds_file_reader._thread: cudaMemcpy(%p, %p, %ld) failed, err=%d\n", dst._get_raw_pointer(ptr_off + count, c), buffer, count, err);
             failed = true;
             goto out;
         } else if (c <= 64 * 1024) {
-            fns.cudaDeviceSynchronize();
+            fns->cudaDeviceSynchronize();
         }
         count += c;
         if (debug_log) {
@@ -487,7 +483,7 @@ const int nogds_file_reader::submit_read(const int fd, const gds_device_buffer& 
     if (this->_s._read_buffer == nullptr) {
         cudaError_t err;
         std::chrono::steady_clock::time_point alloc_begin = std::chrono::steady_clock::now();
-        err = fns.cudaHostAlloc(&this->_s._read_buffer, this->_s._bbuf_size_kb * 1024 * this->_s._max_threads, 0);
+        err = fns->cudaHostAlloc(&this->_s._read_buffer, this->_s._bbuf_size_kb * 1024 * this->_s._max_threads, 0);
         if (err != cudaSuccess) {
             std::printf("nogds_file_reader.submit_read: cudaHostAlloc(%lu) failed\n", this->_s._bbuf_size_kb * 1024 * this->_s._max_threads);
             return -1;
@@ -527,7 +523,7 @@ const uintptr_t nogds_file_reader::wait_read(const int thread_id) {
 nogds_file_reader::~nogds_file_reader() {
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
     if (this->_s._read_buffer != nullptr) {
-        fns.cudaFreeHost(this->_s._read_buffer);
+        fns->cudaFreeHost(this->_s._read_buffer);
         this->_s._read_buffer = nullptr;
     }
     if (this->_threads != nullptr) {
@@ -569,7 +565,7 @@ raw_gds_file_handle::raw_gds_file_handle(std::string filename, bool o_direct) {
     cf_descr.handle.fd = fd;
     cf_descr.type = CU_FILE_HANDLE_TYPE_OPAQUE_FD;
 
-    err = fns.cuFileHandleRegister(&cf_handle, &cf_descr);
+    err = fns->cuFileHandleRegister(&cf_handle, &cf_descr);
     if (err.err != CU_FILE_SUCCESS) {
         close(fd);
         char msg[256];
@@ -587,7 +583,7 @@ raw_gds_file_handle::raw_gds_file_handle(std::string filename, bool o_direct) {
 
 raw_gds_file_handle::~raw_gds_file_handle() {
     if (this->_cf_handle != 0) {
-        fns.cuFileHandleDeregister(this->_cf_handle);
+        fns->cuFileHandleDeregister(this->_cf_handle);
         if (debug_log) {
             std::printf("[DEBUG] ~raw_gds_file_handle: cuFileHandleDeregister: cf_handle=%p\n", this->_cf_handle);
         }
@@ -609,10 +605,10 @@ void gds_file_reader::_thread(const int thread_id, const gds_file_handle &fh, co
     begin = std::chrono::steady_clock::now();
     while (uint64_t(count) < length && offset + uint64_t(count) < file_length) {
         ssize_t c;
-        if (!use_cufile) {
+        if (!fns->cuFileRead) {
             c = pread(fh._get_fd(), reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(devPtr_base) + count), length - count, offset + count);
         } else {
-            c = fns.cuFileRead(fh._get_cf_handle(), devPtr_base, length - count, offset + count, count);
+            c = fns->cuFileRead(fh._get_cf_handle(), devPtr_base, length - count, offset + count, count);
         }
         if (debug_log) {
             std::printf("[DEBUG] gds_file_reader._thread: cuFileRead(fh, %p, length=%lu, off=%lu, ptr_off=%lu, count=%ld)=%ld\n", devPtr_base, length, offset, ptr_off, count, c);
@@ -687,7 +683,9 @@ const ssize_t gds_file_reader::wait_read(const int id) {
 PYBIND11_MODULE(__MOD_NAME__, m)
 {
     m.def("is_cpu_mode", &is_cpu_mode);
-    m.def("set_cpumode", &set_cpu_mode);
+    m.def("is_cuda_found", &is_cuda_found);
+    m.def("set_cpu_mode", &set_cpu_mode);
+    m.def("set_cuda_mode", &set_cuda_mode);
     m.def("set_debug_log", &set_debug_log);
     m.def("get_alignment_size", &get_alignment_size);
     m.def("init_gds", &init_gds);

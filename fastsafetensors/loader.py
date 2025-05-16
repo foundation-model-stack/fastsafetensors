@@ -47,14 +47,16 @@ class SafeTensorsFileLoader:
         if not initialized:
             fstcpp.load_nvidia_functions()
             if device.type == "cpu":
-                fstcpp.set_cpumode()
+                fstcpp.set_cpu_mode()
+            elif fstcpp.is_cuda_found():
+                raise Exception("[FAIL] libcudart.so does not exist")
             fstcpp.set_debug_log(debug_log)
             node = get_device_numa_node(device.index)
             if node is not None:
                 fstcpp.set_numa_node(node)
             if False and not nogds: # TODO: init_gds should be called but too slow for parallel initialization
                 if fstcpp.init_gds(bbuf_size_kb, max_pinned_memory_in_kb) != 0:
-                    raise Exception(f"[FAIL] GdsWeights: init_gds max_io_block_in_kb={max_io_block_in_kb}, max_pinned_memory_in_kb={max_pinned_memory_in_kb}")
+                    raise Exception(f"[FAIL] init_gds max_io_block_in_kb={max_io_block_in_kb}, max_pinned_memory_in_kb={max_pinned_memory_in_kb}")
                 self.need_gds_close = True
             initialized = True
         if nogds:

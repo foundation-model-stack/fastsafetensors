@@ -51,7 +51,8 @@ class DLDataType(ctypes.Structure):
         ("lanes", ctypes.c_uint16),
     ]
     TYPE_MAP = {
-        torch.bool: (1, 1, 1),
+        torch.bool: (6, 8, 1),
+        torch.int8: (0, 8, 1),
         torch.int16: (0, 16, 1),
         torch.int32: (0, 32, 1),
         torch.int: (0, 32, 1),
