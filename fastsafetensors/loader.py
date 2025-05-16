@@ -7,6 +7,7 @@ import os
 import math
 from . import cpp as fstcpp
 from typing import List, Dict, Tuple, OrderedDict, Union
+import warnings
 
 from .common import SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN, TensorFrame, get_device_numa_node, SingleGroup
 from .tensor_factory import LazyTensorFactory
@@ -42,27 +43,28 @@ class SafeTensorsFileLoader:
         self.need_gds_close = False
         self.frames: OrderedDict[str, TensorFrame] = {}
         self.pg = pg
-        self.nogds = nogds
         global initialized
         if not initialized:
             fstcpp.load_nvidia_functions()
-            if device.type == "cpu":
-                fstcpp.set_cpu_mode()
-            elif fstcpp.is_cuda_found():
-                raise Exception("[FAIL] libcudart.so does not exist")
             fstcpp.set_debug_log(debug_log)
             node = get_device_numa_node(device.index)
             if node is not None:
                 fstcpp.set_numa_node(node)
-            if False and not nogds: # TODO: init_gds should be called but too slow for parallel initialization
+            if fstcpp.is_cufile_found() and not nogds: # TODO: init_gds should be called but too slow for parallel initialization
                 if fstcpp.init_gds(bbuf_size_kb, max_pinned_memory_in_kb) != 0:
                     raise Exception(f"[FAIL] init_gds max_io_block_in_kb={max_io_block_in_kb}, max_pinned_memory_in_kb={max_pinned_memory_in_kb}")
                 self.need_gds_close = True
             initialized = True
+        if not device.type == "cpu" and not fstcpp.is_cuda_found():
+            raise Exception("[FAIL] libcudart.so does not exist")
+        if not fstcpp.is_cufile_found() and not nogds:
+            warnings.warn("libcufile.so does not exist but nogds is False. use nogds=True", UserWarning)
+            nogds = True
         if nogds:
-            self.reader = fstcpp.nogds_file_reader(False, bbuf_size_kb, max_threads)
+            self.reader = fstcpp.nogds_file_reader(False, bbuf_size_kb, max_threads, device.type != "cpu")
         else:
-            self.reader = fstcpp.gds_file_reader(max_threads)
+            self.reader = fstcpp.gds_file_reader(max_threads, device != "cpu")
+        self.nogds = nogds
 
     def reset(self):
         self.frames = {}

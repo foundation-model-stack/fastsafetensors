@@ -78,13 +78,18 @@ public:
     const void * get_raw() const { return this->_devPtr_base; }
 };
 
+typedef struct ext_funcs ext_funcs_t;
+extern ext_funcs_t cpu_fns;
+extern ext_funcs_t cuda_fns;
+
 class gds_device_buffer {
 private:
     const std::shared_ptr<const raw_device_pointer> _devPtr_base;
     const uint64_t _length;
+    ext_funcs_t *_fns;
 public:
-    gds_device_buffer(const uintptr_t devPtr_base, const uint64_t length):
-        _devPtr_base(std::make_shared<const raw_device_pointer>((devPtr_base))), _length(length) {}
+    gds_device_buffer(const uintptr_t devPtr_base, const uint64_t length, bool use_cuda):
+        _devPtr_base(std::make_shared<const raw_device_pointer>((devPtr_base))), _length(length), _fns(use_cuda?&cuda_fns:&cpu_fns) {}
     const int cufile_register(uint64_t offset, uint64_t length);
     const int cufile_deregister(uint64_t offset);
     const int memmove(uint64_t _dst_off, uint64_t _src_off, const gds_device_buffer& _tmp, uint64_t length);
@@ -107,6 +112,7 @@ private:
     std::mutex _mutex;
     std::condition_variable _cond;
     std::thread ** _threads; // TOFIX
+    ext_funcs_t * _fns;
 
     typedef struct thread_states {
         std::mutex _result_mutex;
@@ -119,10 +125,13 @@ private:
     } thread_states_t;
     thread_states_t _s;
 public:
-    nogds_file_reader(const bool use_mmap, const uint64_t bbuf_size_kb, const uint64_t max_threads):
-        _next_thread_id(1), _threads(nullptr), _s(thread_states_t{_read_buffer: nullptr, _use_mmap: use_mmap, _bbuf_size_kb: (bbuf_size_kb + max_threads - 1)/max_threads, _max_threads: max_threads}) {}
+    nogds_file_reader(const bool use_mmap, const uint64_t bbuf_size_kb, const uint64_t max_threads, bool use_cuda):
+        _next_thread_id(1), _threads(nullptr), _fns(use_cuda?&cuda_fns:&cpu_fns),
+        _s(thread_states_t{_read_buffer: nullptr, _use_mmap: use_mmap,
+            _bbuf_size_kb: (bbuf_size_kb + max_threads - 1)/max_threads, _max_threads: max_threads})
+         {}
 
-    static void _thread(const int thread_id, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off, thread_states_t *s); // not exposed to python
+    static void _thread(const int thread_id, ext_funcs_t *fns, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off, thread_states_t *s); // not exposed to python
     const int submit_read(const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off);
     const uintptr_t wait_read(const int thread_id);
     ~nogds_file_reader();
@@ -132,8 +141,10 @@ class raw_gds_file_handle {
 private:
     int _fd;
     CUfileHandle_t _cf_handle;
+    ext_funcs_t * _fns;
+
 public:
-    raw_gds_file_handle(std::string filename, bool o_direct);
+    raw_gds_file_handle(std::string filename, bool o_direct, bool use_cuda);
     ~raw_gds_file_handle();
     const CUfileHandle_t get_cf_handle() const { return this->_cf_handle; }
     const int get_fd() const { return this->_fd; }
@@ -143,7 +154,8 @@ class gds_file_handle {
 private:
     std::shared_ptr<const raw_gds_file_handle> _h;
 public:
-    gds_file_handle(std::string filename, bool o_direct): _h(std::make_shared<const raw_gds_file_handle>(filename, o_direct)) {}
+    gds_file_handle(std::string filename, bool o_direct, bool use_cuda):
+        _h(std::make_shared<const raw_gds_file_handle>(filename, o_direct, use_cuda)) {}
     const CUfileHandle_t _get_cf_handle() const { return this->_h->get_cf_handle(); }
     const int _get_fd() const { return this->_h->get_fd(); }
 };
@@ -158,9 +170,10 @@ private:
         const int _max_threads;
     } thread_states_t;
     thread_states_t _s;
+    ext_funcs_t *_fns;
 public:
-    gds_file_reader(const int max_threads): _next_id(1), _threads(nullptr), _s(thread_states_t{_max_threads: max_threads}) {}
-    static void _thread(const int thread_id, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, thread_states_t *s);
+    gds_file_reader(const int max_threads, bool use_cuda): _next_id(1), _threads(nullptr), _s(thread_states_t{_max_threads: max_threads}), _fns(use_cuda?&cuda_fns:&cpu_fns) {}
+    static void _thread(const int thread_id, ext_funcs_t *fns, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, thread_states_t *s);
     const int submit_read(const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length);
     const ssize_t wait_read(const int id);
 };

@@ -74,10 +74,11 @@ ext_funcs_t cpu_fns = ext_funcs_t {
     numa_run_on_node: cpu_numa_run_on_node,
 };
 ext_funcs_t cuda_fns;
-ext_funcs_t *fns = &cpu_fns;
 
 static bool cuda_found = false;
 static bool cufile_found = false;
+
+static int cufile_ver = 0;
 
 template <typename T> void mydlsym(T** h, void* lib, std::string const& name) {
     *h = reinterpret_cast<T*>(dlsym(lib, name.c_str()));
@@ -152,13 +153,24 @@ static void load_nvidia_functions() {
         cuda_fns.cudaHostAlloc = cpu_cudaHostAlloc;
         cuda_fns.cudaFreeHost = cpu_cudaFreeHost;
         cuda_fns.cudaDeviceGetPCIBusId = cpu_cudaDeviceGetPCIBusId;
-        fns = &cpu_fns;
     }
 
     cufile_found = false;
     if (cuda_found) {
         void* handle_cufile = dlopen(cufileLib, mode);
         if (handle_cufile) {
+            CUfileError_t (*cuFileGetVersion)(int *);
+            mydlsym(&cuFileGetVersion, handle_cufile, "cuFileGetVersion");
+            if (cuFileGetVersion) {
+                int version;
+                CUfileError_t err = cuFileGetVersion(&version);
+                if (err.err == CU_FILE_SUCCESS) {
+                    cufile_ver = version;
+                }
+            }
+            if (cufile_ver == 0) {
+                fprintf(stderr, "[WARN] libcufile.so is loaded but its version is unknown");
+            }
             mydlsym(&cuda_fns.cuFileDriverOpen, handle_cufile, "cuFileDriverOpen");
             mydlsym(&cuda_fns.cuFileDriverClose, handle_cufile, "cuFileDriverClose");
             mydlsym(&cuda_fns.cuFileDriverSetMaxDirectIOSize, handle_cufile, "cuFileDriverSetMaxDirectIOSize");
@@ -177,7 +189,7 @@ static void load_nvidia_functions() {
                 }
             } else {
                 if (init_log) {
-                    fprintf(stderr, "[DEBUG] loaded: %s\n", cufileLib);
+                    fprintf(stderr, "[DEBUG] loaded: %s (ver: %d.%d.%d)\n", cufileLib, cufile_ver / 1000, (cufile_ver % 1000) / 10, cufile_ver % 10);
                 }
                 cufile_found = true;
             }
@@ -196,23 +208,25 @@ static void load_nvidia_functions() {
         cuda_fns.cuFileBufDeregister = cpu_cuFileBufDeregister;
         cuda_fns.cuFileHandleRegister = cpu_cuFileHandleRegister;
         cuda_fns.cuFileHandleDeregister = cpu_cuFileHandleDeregister;
+
+        cuda_fns.cuFileRead = nullptr;
     }
 }
 
-bool is_cpu_mode() {
-    return fns == &cpu_fns;
-}
-
-bool is_cuda_found() {
+bool is_cuda_found()
+{
     return cuda_found;
 }
 
-void set_cpu_mode() {
-    fns = &cpu_fns;
+bool is_cufile_found()
+{
+    return cufile_found;
 }
 
-void set_cuda_mode() {
-    fns = &cuda_fns;
+/* The version is returned as (1000 * major + 10 * minor). */
+int cufile_version()
+{
+    return cufile_ver;
 }
 
 int get_alignment_size()
@@ -230,26 +244,32 @@ int init_gds(uint64_t _max_direct_io_size_in_kb, uint64_t max_pinned_memory_size
     CUfileError_t err;
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    err = fns->cuFileDriverOpen();
-    if (err.err != CU_FILE_SUCCESS) {
-        std::fprintf(stderr, "init_gds: cuFileDriverOpen returned an error = %d\n", err.err);
-        return -1;
+    if (cuda_fns.cuFileDriverOpen) {
+        err = cuda_fns.cuFileDriverOpen();
+        if (err.err != CU_FILE_SUCCESS) {
+            std::fprintf(stderr, "init_gds: cuFileDriverOpen returned an error = %d\n", err.err);
+            return -1;
+        }
     }
 
     std::chrono::steady_clock::time_point begin_set_dio = std::chrono::steady_clock::now();
-    err = fns->cuFileDriverSetMaxDirectIOSize(_max_direct_io_size_in_kb);
-    if (err.err != CU_FILE_SUCCESS) {
-        std::fprintf(stderr, "init_gds: cuFileDriverGetProperties(%ld) returned an error = %d\n", _max_direct_io_size_in_kb, err.err);
-        close_gds();
-        return -1;
+    if (cuda_fns.cuFileDriverSetMaxDirectIOSize) {
+        err = cuda_fns.cuFileDriverSetMaxDirectIOSize(_max_direct_io_size_in_kb);
+        if (err.err != CU_FILE_SUCCESS) {
+            std::fprintf(stderr, "init_gds: cuFileDriverGetProperties(%ld) returned an error = %d\n", _max_direct_io_size_in_kb, err.err);
+            close_gds();
+            return -1;
+        }
     }
 
     std::chrono::steady_clock::time_point begin_set_pin = std::chrono::steady_clock::now();
-    err = fns->cuFileDriverSetMaxPinnedMemSize(max_pinned_memory_size_in_kb);
-    if (err.err != CU_FILE_SUCCESS) {
-        std::fprintf(stderr, "init_gds: cuFileDriverSetMaxPinnedMemSize(%ld) returned an error = %d\n", max_pinned_memory_size_in_kb, err.err);
-        close_gds();
-        return -1;
+    if (cuda_fns.cuFileDriverSetMaxPinnedMemSize) {
+        err = cuda_fns.cuFileDriverSetMaxPinnedMemSize(max_pinned_memory_size_in_kb);
+        if (err.err != CU_FILE_SUCCESS) {
+            std::fprintf(stderr, "init_gds: cuFileDriverSetMaxPinnedMemSize(%ld) returned an error = %d\n", max_pinned_memory_size_in_kb, err.err);
+            close_gds();
+            return -1;
+        }
     }
     if (debug_log) {
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
@@ -267,10 +287,12 @@ int close_gds()
     CUfileError_t err;
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    err = fns->cuFileDriverClose();
-    if (err.err != CU_FILE_SUCCESS) {
-        std::fprintf(stderr, "close_gds: cuFileDriverClose returned an error = %d\n", err.err);
-        return -1;
+    if (cuda_fns.cuFileDriverClose) {
+        err = cuda_fns.cuFileDriverClose();
+        if (err.err != CU_FILE_SUCCESS) {
+            std::fprintf(stderr, "close_gds: cuFileDriverClose returned an error = %d\n", err.err);
+            return -1;
+        }
     }
     if (debug_log) {
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
@@ -285,9 +307,13 @@ std::string get_device_pci_bus(int deviceId) {
     char pciBusId[32];
 
     std::memset(pciBusId, 0, 32);
-    err = fns->cudaDeviceGetPCIBusId(pciBusId, 32, deviceId);
-    if (err != cudaSuccess) {
-        std::fprintf(stderr, "get_device_pci_bus: cudaDeviceGetPCIBusId failed, deviceId=%d, err=%d\n", deviceId, err);
+    if (cuda_fns.cudaDeviceGetPCIBusId) {
+        err = cuda_fns.cudaDeviceGetPCIBusId(pciBusId, 32, deviceId);
+        if (err != cudaSuccess) {
+            std::fprintf(stderr, "get_device_pci_bus: cudaDeviceGetPCIBusId failed, deviceId=%d, err=%d\n", deviceId, err);
+            return "";
+        }
+    } else {
         return "";
     }
     return std::string(pciBusId);
@@ -295,7 +321,7 @@ std::string get_device_pci_bus(int deviceId) {
 
 int set_numa_node(int numa_node) {
     if (numa_node >= 0) {
-        if (fns->numa_run_on_node(numa_node) != 0) {
+        if (cpu_fns.numa_run_on_node(numa_node) != 0) {
             std::fprintf(stderr, "set_numa_node: numa_run_on_node(numa_node=%d) failed\n", numa_node);
             return -1;
         }
@@ -328,7 +354,7 @@ const int gds_device_buffer::cufile_register(uint64_t offset, uint64_t length) {
     void * dst = reinterpret_cast<void*>(this->_devPtr_base->get_uintptr() + offset);
 
     std::chrono::steady_clock::time_point begin_register = std::chrono::steady_clock::now();
-    err = fns->cuFileBufRegister(dst, length, 0);
+    err = _fns->cuFileBufRegister(dst, length, 0);
     if (err.err != CU_FILE_SUCCESS) {
         std::fprintf(stderr, "gds_device_buffer.cufile_register: cuFileBufRegister returned an error = %d\n", err.err);
         return -1;
@@ -345,7 +371,7 @@ const int gds_device_buffer::cufile_deregister(uint64_t offset) {
     void * dst = reinterpret_cast<void*>(this->_devPtr_base->get_uintptr() + offset);
     CUfileError_t err;
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    err = fns->cuFileBufDeregister(dst);
+    err = _fns->cuFileBufDeregister(dst);
     if (err.err != CU_FILE_SUCCESS) {
         std::fprintf(stderr, "gds_device_buffer.cufile_deregister: cuFileBufDeregister (%p) returned an error=%d\n", dst, err.err);
         return -1;
@@ -381,12 +407,12 @@ const int gds_device_buffer::memmove(uint64_t _dst_off, uint64_t _src_off, const
     }
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    err = fns->cudaMemcpy(tmp, src, length, cudaMemcpyDefault);
+    err = _fns->cudaMemcpy(tmp, src, length, cudaMemcpyDefault);
     if (err != cudaSuccess) {
         std::printf("gds_device_buffer.memmove: cudaMemcpy[0](tmp=%p, src=%p, length=%ld) failed, err=%d\n", tmp, src, length, err);
         return -1;
     }
-    err = fns->cudaMemcpy(dst, tmp, length, cudaMemcpyDefault);
+    err = _fns->cudaMemcpy(dst, tmp, length, cudaMemcpyDefault);
     if (err != cudaSuccess) {
         std::printf("gds_device_buffer.memmove: cudaMemcpy[1](dst=%p, tmp=%p, length=%ld) failed, err=%d\n", dst, tmp, length, err);
         return -1;
@@ -400,7 +426,7 @@ const int gds_device_buffer::memmove(uint64_t _dst_off, uint64_t _src_off, const
 }
 
 
-void nogds_file_reader::_thread(const int thread_id, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off, thread_states_t *s) {
+void nogds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off, thread_states_t *s) {
     void * src = nullptr;
     cudaError_t err;
     int64_t count;
@@ -483,7 +509,7 @@ const int nogds_file_reader::submit_read(const int fd, const gds_device_buffer& 
     if (this->_s._read_buffer == nullptr) {
         cudaError_t err;
         std::chrono::steady_clock::time_point alloc_begin = std::chrono::steady_clock::now();
-        err = fns->cudaHostAlloc(&this->_s._read_buffer, this->_s._bbuf_size_kb * 1024 * this->_s._max_threads, 0);
+        err = _fns->cudaHostAlloc(&this->_s._read_buffer, this->_s._bbuf_size_kb * 1024 * this->_s._max_threads, 0);
         if (err != cudaSuccess) {
             std::printf("nogds_file_reader.submit_read: cudaHostAlloc(%lu) failed\n", this->_s._bbuf_size_kb * 1024 * this->_s._max_threads);
             return -1;
@@ -499,7 +525,7 @@ const int nogds_file_reader::submit_read(const int fd, const gds_device_buffer& 
         t->join();
         delete(t);
     }
-    t = new std::thread(nogds_file_reader::_thread, thread_id, fd, dst, offset, length, ptr_off, &this->_s);
+    t = new std::thread(nogds_file_reader::_thread, thread_id, _fns, fd, dst, offset, length, ptr_off, &this->_s);
     this->_threads[thread_id % this->_s._max_threads] = t;
     if (debug_log) {
         std::printf("[DEBUG] nogds_file_reader.submit_read #3, thread_id=%d\n", thread_id);
@@ -523,7 +549,7 @@ const uintptr_t nogds_file_reader::wait_read(const int thread_id) {
 nogds_file_reader::~nogds_file_reader() {
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
     if (this->_s._read_buffer != nullptr) {
-        fns->cudaFreeHost(this->_s._read_buffer);
+        _fns->cudaFreeHost(this->_s._read_buffer);
         this->_s._read_buffer = nullptr;
     }
     if (this->_threads != nullptr) {
@@ -544,7 +570,7 @@ nogds_file_reader::~nogds_file_reader() {
     }
 }
 
-raw_gds_file_handle::raw_gds_file_handle(std::string filename, bool o_direct) {
+raw_gds_file_handle::raw_gds_file_handle(std::string filename, bool o_direct, bool use_cuda) {
     CUfileHandle_t cf_handle;
     CUfileDescr_t cf_descr;
     CUfileError_t err;
@@ -565,7 +591,9 @@ raw_gds_file_handle::raw_gds_file_handle(std::string filename, bool o_direct) {
     cf_descr.handle.fd = fd;
     cf_descr.type = CU_FILE_HANDLE_TYPE_OPAQUE_FD;
 
-    err = fns->cuFileHandleRegister(&cf_handle, &cf_descr);
+    _fns = use_cuda ? &cuda_fns: &cpu_fns;
+
+    err = _fns->cuFileHandleRegister(&cf_handle, &cf_descr);
     if (err.err != CU_FILE_SUCCESS) {
         close(fd);
         char msg[256];
@@ -583,7 +611,7 @@ raw_gds_file_handle::raw_gds_file_handle(std::string filename, bool o_direct) {
 
 raw_gds_file_handle::~raw_gds_file_handle() {
     if (this->_cf_handle != 0) {
-        fns->cuFileHandleDeregister(this->_cf_handle);
+        _fns->cuFileHandleDeregister(this->_cf_handle);
         if (debug_log) {
             std::printf("[DEBUG] ~raw_gds_file_handle: cuFileHandleDeregister: cf_handle=%p\n", this->_cf_handle);
         }
@@ -596,7 +624,7 @@ raw_gds_file_handle::~raw_gds_file_handle() {
     }
 }
 
-void gds_file_reader::_thread(const int thread_id, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, thread_states_t *s) {
+void gds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, thread_states_t *s) {
     ssize_t count = 0;
     void * devPtr_base = dst._get_raw_pointer(ptr_off, length);
     std::chrono::steady_clock::time_point begin, begin_notify;
@@ -657,7 +685,7 @@ const int gds_file_reader::submit_read(const gds_file_handle &fh, const gds_devi
         t->join();
         delete(t);
     }
-    t = new std::thread(_thread, id, fh, dst, offset, length, ptr_off, file_length, &this->_s);
+    t = new std::thread(_thread, id, _fns, fh, dst, offset, length, ptr_off, file_length, &this->_s);
     this->_threads[thread_index] = t;
     return id;
 }
@@ -682,10 +710,9 @@ const ssize_t gds_file_reader::wait_read(const int id) {
 
 PYBIND11_MODULE(__MOD_NAME__, m)
 {
-    m.def("is_cpu_mode", &is_cpu_mode);
     m.def("is_cuda_found", &is_cuda_found);
-    m.def("set_cpu_mode", &set_cpu_mode);
-    m.def("set_cuda_mode", &set_cuda_mode);
+    m.def("is_cufile_found", &is_cufile_found);
+    m.def("cufile_version", &cufile_version);
     m.def("set_debug_log", &set_debug_log);
     m.def("get_alignment_size", &get_alignment_size);
     m.def("init_gds", &init_gds);
@@ -698,27 +725,22 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("load_nvidia_functions", &load_nvidia_functions);
 
     pybind11::class_<gds_device_buffer>(m, "gds_device_buffer")
-        .def(pybind11::init<const uintptr_t, const uint64_t>())
+        .def(pybind11::init<const uintptr_t, const uint64_t, bool>())
         .def("cufile_register", &gds_device_buffer::cufile_register)
         .def("cufile_deregister", &gds_device_buffer::cufile_deregister)
         .def("memmove", &gds_device_buffer::memmove)
         .def("get_base_address", &gds_device_buffer::get_base_address);
 
     pybind11::class_<nogds_file_reader>(m, "nogds_file_reader")
-        .def(pybind11::init<const bool, const uint64_t, const int>())
+        .def(pybind11::init<const bool, const uint64_t, const int, bool>())
         .def("submit_read", &nogds_file_reader::submit_read)
         .def("wait_read", &nogds_file_reader::wait_read);
 
     pybind11::class_<gds_file_handle>(m, "gds_file_handle")
-        .def(pybind11::init<std::string, bool>());
+        .def(pybind11::init<std::string, bool, bool>());
 
     pybind11::class_<gds_file_reader>(m, "gds_file_reader")
-        .def(pybind11::init<const int>())
+        .def(pybind11::init<const int, bool>())
         .def("submit_read", &gds_file_reader::submit_read)
         .def("wait_read", &gds_file_reader::wait_read);
-}
-
-__attribute__((constructor))
-void init_fastsafetensors_lib() {
-    set_cpu_mode();
 }
