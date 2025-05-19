@@ -16,11 +16,7 @@ class GdsFileCopier:
         self.fh = 0
         self.copy_reqs: Dict[int, int] = {}
         self.aligned_length = 0
-        cufile_ver = fstcpp.cufile_version()
-        # GDS version 1.7 introduces support for non O_DIRECT file descriptors
-        self.o_direct = cufile_ver < 1700
-        if debug_log:
-            print(f"[DEBUG] o_direct={self.o_direct}, cufile_ver={cufile_ver}")
+        self.o_direct = False
 
     def set_o_direct(self, enable: bool):
         self.o_direct = enable

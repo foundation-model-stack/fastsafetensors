@@ -14,6 +14,10 @@ from .tensor_factory import LazyTensorFactory
 from .file_buffer import FilesBufferOnDevice
 
 initialized: bool = False
+loaded_nvidia: bool = False
+if not loaded_nvidia:
+    fstcpp.load_nvidia_functions()
+    loaded_nvidia = True
 
 class SafeTensorsFileLoader:
     r""" Load .safetensors files lazily.
@@ -45,12 +49,11 @@ class SafeTensorsFileLoader:
         self.pg = pg
         global initialized
         if not initialized:
-            fstcpp.load_nvidia_functions()
             fstcpp.set_debug_log(debug_log)
             node = get_device_numa_node(device.index)
             if node is not None:
                 fstcpp.set_numa_node(node)
-            if fstcpp.is_cufile_found() and not nogds: # TODO: init_gds should be called but too slow for parallel initialization
+            if False and fstcpp.is_cufile_found() and not nogds: # TODO: init_gds should be called but too slow for parallel initialization
                 if fstcpp.init_gds(bbuf_size_kb, max_pinned_memory_in_kb) != 0:
                     raise Exception(f"[FAIL] init_gds max_io_block_in_kb={max_io_block_in_kb}, max_pinned_memory_in_kb={max_pinned_memory_in_kb}")
                 self.need_gds_close = True
@@ -103,7 +106,7 @@ class SafeTensorsFileLoader:
                 else:
                     completed += 1
 
-    def copy_files_to_device(self, dtype: torch.dtype=None, use_buf_register: bool=False, max_copy_block_size: int=16*1024*1024*1024)->FilesBufferOnDevice:
+    def copy_files_to_device(self, dtype: torch.dtype=None, use_buf_register: bool=True, max_copy_block_size: int=16*1024*1024*1024)->FilesBufferOnDevice:
         """
         trigger copying all the files to device buffers.
         At this moment, we do not instantiate tensors but just creating copies at device buffers with or without GDS.

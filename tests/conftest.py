@@ -22,7 +22,7 @@ def input_files() -> List[str]:
     AutoModelForCausalLM.from_pretrained("gpt2")
     AutoTokenizer.from_pretrained("gpt2")
     src_files = []
-    for dir, _, files in os.walk(TF_DIR):
+    for dir, _, files in os.walk(os.path.join(TF_DIR, "models--gpt2")):
         for filename in files:
             if filename.endswith(".safetensors"):
                 src_files.append(f"{dir}/{filename}")
