@@ -22,7 +22,8 @@ class GdsFileCopier:
         self.o_direct = enable
 
     def submit_io(self, use_buf_register: bool, max_copy_block_size: int)->fstcpp.gds_device_buffer:
-        self.fh = fstcpp.gds_file_handle(self.metadata.src, self.o_direct, self.device.type == 'cuda')
+        dev_is_cuda = (self.metadata.framework == "pytorch" and self.device.type == 'cuda') or (self.metadata.framework == "paddle" and "gpu" in self.device)
+        self.fh = fstcpp.gds_file_handle(self.metadata.src, self.o_direct, dev_is_cuda)
         offset = self.metadata.header_length
         length = self.metadata.size_bytes - self.metadata.header_length
         head_bytes = offset % ALIGN

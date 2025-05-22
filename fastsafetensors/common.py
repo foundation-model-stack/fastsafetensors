@@ -155,7 +155,7 @@ class SafeTensorsMetadata:
         return SafeTensorsMetadata(string, n + 8, buffer_len, filename, keep_orig_dict=keep_orig_dict, framework=framework)
 
     @classmethod
-    def from_file(self, filename: str, framework: str):
+    def from_file(self, filename: str, framework: str="pytorch"):
         fd = os.open(filename, os.O_RDONLY, 0o644)
         ret = self.from_fd(fd, filename, keep_orig_dict=False, framework=framework)
         os.close(fd)
