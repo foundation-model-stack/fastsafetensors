@@ -14,9 +14,9 @@ import paddle
 import paddle.distributed as dist
 from fastsafetensors import SafeTensorsFileLoader
 dist.init_parallel_env()
-backend = "nccl" if paddle.is_compiled_with_cuda() else "gloo"
+backend = "nccl" if paddle.device.cuda.device_count() else "gloo"
 pg = dist.new_group(ranks=[0,1], backend=backend)
-device = "gpu:0" if paddle.is_compiled_with_cuda() else "cpu"
+device = "gpu" if paddle.device.cuda.device_count() else "cpu"
 loader = SafeTensorsFileLoader(pg, device, nogds=False, debug_log=True, framework="paddle")
 loader.add_filenames({0: ["a_paddle.safetensors"], 1:["b_paddle.safetensors"]}) # {rank: files}
 

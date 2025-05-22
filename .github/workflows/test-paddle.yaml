@@ -47,7 +47,8 @@ jobs:
           COVERAGE_FILE=.coverage_1 CUDA_VISIBLE_DEVICES="" pytest -s --cov=${LIBDIR} test_fastsafetensors.py > /tmp/pytest-log/1.log 2>&1
           COVERAGE_FILE=.coverage_2 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 --no-python pytest -s --cov=${LIBDIR} test_multi.py > /tmp/pytest-log/2.log 2>&1 &
           COVERAGE_FILE=.coverage_3 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 --no-python pytest -s --cov=${LIBDIR} test_multi.py > /tmp/pytest-log/3.log 2>&1
-          coverage combine .coverage_0 .coverage_1 .coverage_2 .coverage_3
+          python -m paddle.distributed.launch --nproc_per_node 2 run_distributed_paddle_test.py -s --cov=${LIBDIR} test_multi_paddle.py
+          coverage combine .coverage_0 .coverage_1 .coverage_2 .coverage_3 .coverage_4 .coverage_5
           coverage html
           mv htmlcov /tmp/pytest-log
       - name: upload pytest log

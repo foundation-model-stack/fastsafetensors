@@ -4,6 +4,7 @@ import torch
 import torch.distributed as dist
 from fastsafetensors import cpp as fstcpp
 from fastsafetensors import SingleGroup
+from fastsafetensors.common import paddle_loaded
 from typing import List
 
 TESTS_DIR = os.path.dirname(__file__)
@@ -37,6 +38,24 @@ def pg():
         PG = dist.group.WORLD
     else:
         PG = SingleGroup()
+    return PG
+
+@pytest.fixture(scope='session', autouse=True)
+def pg_paddle():
+    PG = SingleGroup()
+
+    if paddle_loaded:
+        # The following code can only be successfully
+        # executed by running the code using 
+        # `python -m paddle.distributed.launch`
+        try:
+            import paddle
+            import paddle.distributed as dist
+            dist.init_parallel_env()
+            backend = "nccl" if paddle.device.cuda.device_count() else "gloo"
+            PG = dist.new_group(ranks=[0,1], backend=backend)
+        except:
+            pass
     return PG
 
 @pytest.fixture(scope='session', autouse=True)

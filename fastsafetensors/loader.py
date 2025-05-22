@@ -71,8 +71,17 @@ class SafeTensorsFileLoader:
                 if device == "cpu":
                     d_id = None
                 else:
-                    d_id = device.split(":") # "gpu:0" or "gpu"
-                    d_id = int(d_id[1]) if len(d_id) == 2 else 0
+                    if isinstance(self.pg, SingleGroup):
+                        # For single (gpu:x, gpu)
+                        # gpu:x, like gpu:0, gpu:1, ...
+                        d_id = device.split(":")
+                        d_id = int(d_id[1]) if len(d_id) == 2 else 0
+                    else:                    
+                        # For distributed
+                        # The gpu determines the current rank
+                        # rank0 use gpu:0, rank1 use gpu:1
+                        d_id = self.pg.rank() % paddle.device.cuda.device_count()
+                        self.device = f"gpu:{d_id}"
             node = get_device_numa_node(d_id)
             if node is not None:
                 fstcpp.set_numa_node(node)
@@ -140,7 +149,7 @@ class SafeTensorsFileLoader:
             if self.device.type != "cpu":
                 torch.cuda.set_device(self.device)
         elif paddle_loaded and self.framework == "paddle":
-            if self.device != paddle.CPUPlace():
+            if "gpu" in self.device:
                 paddle.set_device(self.device)
 
         need_wait: List[LazyTensorFactory] = []
