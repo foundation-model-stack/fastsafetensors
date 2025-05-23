@@ -20,7 +20,7 @@ if not loaded_nvidia:
     fstcpp.load_nvidia_functions()
     loaded_nvidia = True
 
-support_framework = ["pytorch","paddle"]
+support_framework = ["pytorch","paddle", "pt"]
 
 class SafeTensorsFileLoader:
     r""" Load .safetensors files lazily.
@@ -171,7 +171,7 @@ class fastsafe_open:
 
     Args:
         filenames (:obj:`str`|`list[str]`|`dict[int, str]`): The filename(s) or rank-file map to open
-        framework (:obj:`str`): `pt` is only supported currently
+        framework (:obj:`str`): `pt` and `paddle` are only supported currently
         device (:obj:`str`, defaults to :obj:`"cpu"`): The device on which you want the tensors.
     """
 
@@ -180,11 +180,11 @@ class fastsafe_open:
                        device: Union[str, torch.device]="cpu",
                        nogds: bool=False,
                        debug_log: bool=False):
-        if framework != "pt":
+        if framework not in support_framework:
             raise NotImplementedError("pytorch is only a framework that current fastsafetensors supports")
-        if isinstance(device, str):
+        if isinstance(device, str) and framework == "pt":
             device = torch.device(device)
-        self.loader = SafeTensorsFileLoader(pg, device, nogds=nogds, debug_log=debug_log)
+        self.loader = SafeTensorsFileLoader(pg, device, nogds=nogds, debug_log=debug_log, framework= framework if framework != "pt" else "pytorch")
         if isinstance(filenames, str):
             filenames = [filenames]
         if isinstance(filenames, list):

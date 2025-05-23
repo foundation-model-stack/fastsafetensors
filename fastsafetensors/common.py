@@ -182,18 +182,18 @@ class SafeTensorsMetadata:
                     self.tensors[tensor_name].dtype = dtype
             elif self.framework == "paddle":
                 if t.dtype in need_workaround_dtypes:
-                    t2 = paddle.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, need_workaround_dtypes[t.dtype], device))
+                    t2 = paddle.utils.dlpack.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, need_workaround_dtypes[t.dtype], device))
                 else:
-                    t2 = paddle.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, t.dtype, device))
+                    t2 = paddle.utils.dlpack.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, t.dtype, device))
                 if dtype is not None and dtype != t.dtype:
                     if paddle_core.size_of_dtype(dtype) > paddle_core.size_of_dtype(t.dtype):
                         raise Exception(f"Online type conversion to larger sizes is not supported ({t.dtype} -> {dtype})")
                     t3 = t2.to(dtype=dtype)
                     if t.dtype in need_workaround_dtypes:
-                        t2 = paddle.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, need_workaround_dtypes[dtype], device))
+                        t2 = paddle.utils.dlpack.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, need_workaround_dtypes[dtype], device))
                     else:
-                        t2 = paddle.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, dtype, device))
-                    t2.copy_(t3)
+                        t2 = paddle.utils.dlpack.from_dlpack(from_cuda_buffer(dst_dev_ptr, t.shape, t.strides, dtype, device))
+                    paddle.assign(t3, output=t2)
                     self.tensors[tensor_name].dtype = dtype
             ret[tensor_name] = t2
         return ret

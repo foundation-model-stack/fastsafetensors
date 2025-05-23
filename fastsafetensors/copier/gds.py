@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import torch
+import paddle
 from .. import cpp as fstcpp
 from typing import Dict
 from ..common import alloc_tensor_memory, free_tensor_memory, SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN
@@ -16,7 +17,17 @@ class GdsFileCopier:
         self.fh = 0
         self.copy_reqs: Dict[int, int] = {}
         self.aligned_length = 0
-        self.o_direct = False
+        try:
+            if self.metadata.framework == "pytorch":
+                cuda_vers_list = torch.version.cuda.split('.')
+            elif self.metadata.framework == "paddle":
+                cuda_vers_list = paddle.version.cuda().split('.')
+            cudavers = list(map(int, cuda_vers_list))
+            # CUDA 12.2 (GDS version 1.7) introduces support for non O_DIRECT file descriptors
+            # Compatible with CUDA 11.x
+            self.o_direct = not (cudavers[0] > 12 or (cudavers[0] == 12 and cudavers[1] >= 2))
+        except:
+            self.o_direct = True
 
     def set_o_direct(self, enable: bool):
         self.o_direct = enable
