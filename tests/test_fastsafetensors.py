@@ -135,10 +135,16 @@ def test_memmove(fstcpp_log , framework="pytorch"):
     device, _ = get_and_check_device(framework)
     gbuf = alloc_tensor_memory(1024, device, framework=framework)
     tmp = alloc_tensor_memory(1024, device, framework=framework)
-    assert gbuf.memmove(0, 12, tmp, 1024) == 0
+    assert gbuf.memmove(0, 12, tmp, 256*3) == 0
+    # Confuse about this test : gbuf.memmove(0, 12, tmp, 1024)
+    # I think this test should start copying a section of 1024 memory 
+    # from the position of gbuf+12 to the position of gbuf+0. 
+    # However, this piece of memory itself is only 1024. 
+    # After offsetting by 12, there is no 1024 left in the remaining memory. 
+    # This part really puzzles me. So I change the moving size to 256*3 (<1024)
 
-# def test_memmove_for_paddle(fstcpp_log):
-#     test_memmove(fstcpp_log, "paddle")
+def test_memmove_for_paddle(fstcpp_log):
+    test_memmove(fstcpp_log, "paddle")
 
 def test_nogds_file_reader(fstcpp_log, input_files, framework="pytorch"):
     print("test_nogds_file_reader")
@@ -214,7 +220,7 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework="pytorch"):
     if framework == "pytorch":
         data_type = torch.float16
     elif framework == "paddle":
-        # There are some lack of accuracy in paddle.float16
+        # There are some lack of accuracy in paddle.float16 (about 1e-4)
         data_type = paddle.float32
     else:
         raise NotImplementedError(f"Do not support the framework: {framework}")
@@ -243,7 +249,7 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework="pytorch"):
     bufs.close()
     loader.close()
 
-def test_SafeTensorsFileLoader_for_paddle(fstcpp_log = None, input_files=['/data/llj/.testdata/transformers_cache/models--gpt2/snapshots/607a30d783dfa663caf39e06633721c8d4cfcd7e/model.safetensors']):
+def test_SafeTensorsFileLoader_for_paddle(fstcpp_log, input_files):
     test_SafeTensorsFileLoader(fstcpp_log, input_files,"paddle")
 
 def test_SafeTensorsFileLoaderNoGds(fstcpp_log, input_files, framework="pytorch"):
