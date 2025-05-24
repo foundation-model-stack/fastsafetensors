@@ -193,6 +193,8 @@ typedef struct ext_funcs {
     cudaError_t (*cudaHostAlloc)(void **, size_t, unsigned int);
     cudaError_t (*cudaFreeHost)(void *);
     cudaError_t (*cudaDeviceGetPCIBusId)(char *, int, int);
+    cudaError_t (*cudaDeviceMalloc)(void **, size_t);
+    cudaError_t (*cudaDeviceFree)(void *);
     int (*numa_run_on_node)(int);
 } ext_funcs_t;
 
