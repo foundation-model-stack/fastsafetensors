@@ -18,14 +18,13 @@ The offloading is also applied to other tensor manipulations such as type conver
 The above two design can be naturally extended to utilize device-to-device data transfers with GPU Direct Storage.
 The technology helps to minimize copy overheads from NVMe SSDs to GPU memory with host CPU and memory bypassed.
 
-Check more details in [doc/overview.md](doc/overview.md)
-
 ## Dependencies
 
-We currently test fastsafetensors only with python 3.11, pytorch 2.1, and cuda-12.
-Note: when using different versions of pytorch, you may require changes on build environments for libpytorch since it seems slightly changing ABIs.
+We currently test fastsafetensors with python 3.9-13, pytorch 2.1-2.7.
 
 ## Install from PyPi
+
+See https://pypi.org/project/fastsafetensors/
 
 ```bash
 pip install fastsafetensors
@@ -33,15 +32,13 @@ pip install fastsafetensors
 
 ## Local installation
 
-Prerequisites: Install torch, cuda, and numa headers
-
 ```bash
 make install
 ```
 
 ## Package build
 
-Prerequisites: Install Docker (libtorch 2.1, cuda, and numa are automatically pulled)
+Prerequisites: Docker
 
 ```bash
 make dist
@@ -57,28 +54,23 @@ make unittest
 
 ## Basic API usages
 
-`SafeTensorsFileLoader` is the primary entrypoint of the fastsafetensors library. To use it, pass either `SingleGroup()` for simple inference or `ProcessGroup()` (from `torch.distributed`) for tensor-parallel inference. The loader supports both CPU and CUDA devices, with optional GPU Direct Storage (GDS) support. You can specify the device and GDS settings using the `device` and `nogds` arguments, respectively. Note that if GDS is not available, the loader will fail to open files when `nogds=False`. For more information on enabling GDS, please refer to the NVIDIA documentation.
+`SafeTensorsFileLoader` is a low-level entrypoint. To use it, pass either `SingleGroup()` for simple inference or `ProcessGroup()` (from `torch.distributed`) for tensor-parallel inference. The loader supports both CPU and CUDA devices, with optional GPU Direct Storage (GDS) support. You can specify the device and GDS settings using the `device` and `nogds` arguments, respectively. Note that if GDS is not available, the loader will fail to open files when `nogds=False`. For more information on enabling GDS, please refer to the NVIDIA documentation.
 
 After creating a `SafeTensorsFileLoader` instance, first map target files and a rank using the `.add_filenames()` method. Then, call `.copy_file_to_device()` to trigger the actual file copies on aggregated GPU memory fragments and directly instantiate a group of Tensors. Once the files are loaded, you can retrieve a tensor using the `.get_tensor()` method. Additionally, you can obtain sharded tensors by `.get_sharded()`, which internally run collective operations in `torch.distributed`.
 
 Important: To release the GPU memory allocated for tensors, you must explicitly call the `.close()` method. This is because Fastsafetensors allows multiple tensors to share a limited number of GPU memory fragments. As a result, it is the user's responsibility to ensure that all tensors are properly released before calling `.close()`, which will then safely release the underlying GPU memory.
 
+`fastsafe_open` is an easier entrypoint. You can force turning off GDS and run in the fallback mode if `nogds==True`.
+
+```python
+with fastsafe_open(filenames=[filename], nogds=True, device="cpu", debug_log=True) as f:
+    for key in f.get_keys():
+        t = f.get_tensor(key).clone().detach() # clone if t is used outside
+```
+
 ## Example: single run
 
 examples/run_single.py:
-
-```python
-import torch
-from fastsafetensors import SafeTensorsFileLoader, SingleGroup
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-loader = SafeTensorsFileLoader(SingleGroup(), device, nogds=True, debug_log=True)
-loader.add_filenames({0: ["a.safetensors", "b.safetensors"]}) # {rank: files}
-fb = loader.copy_files_to_device()
-tensor_a0 = fb.get_tensor(tensor_name="a0")
-print(f"a0: {tensor_a0}")
-fb.close()
-loader.close()
-```
 
 ```
 cd examples
@@ -115,26 +107,6 @@ a0: tensor([[ 0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.],
 ```
 
 ## Example: parallel run
-
-examples/run_parallel.py:
-```python
-import torch
-import torch.distributed as dist
-from fastsafetensors import SafeTensorsFileLoader
-dist.init_process_group(backend="gloo")
-dist.barrier()
-pg = dist.group.WORLD
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-loader = SafeTensorsFileLoader(pg, device, nogds=True, debug_log=True)
-loader.add_filenames({0: ["a.safetensors"], 1:["b.safetensors"]}) # {rank: files}
-fb = loader.copy_files_to_device()
-tensor_a0 = fb.get_tensor(tensor_name="a0") # broadcast
-tensor_b0_sharded = fb.get_sharded(tensor_name="b0", dim=1) # partition and scatter
-print(f"RANK {pg.rank()}: tensor_a0={tensor_a0}")
-print(f"RANK {pg.rank()}: tensor_b0_sharded={tensor_b0_sharded}")
-fb.close()
-loader.close()
-```
 
 You can test the script with torchrun
 
