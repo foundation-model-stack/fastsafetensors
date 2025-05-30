@@ -1,4 +1,10 @@
 fastsafetensors is an efficient safetensors model loader.
+This library is tested with python 3.9-13 and pytorch 2.1-2.7.
+
+Disclaimer: This repository contains a research prototype. It should be used with caution.
+
+# Features
+
 We introduced three major features to optimize model loading performance:
 1. Batched, lazy tensor instantiations
 2. GPU offloading for sharding, type conversions, and device pointer alignment.
@@ -18,40 +24,6 @@ The offloading is also applied to other tensor manipulations such as type conver
 The above two design can be naturally extended to utilize device-to-device data transfers with GPU Direct Storage.
 The technology helps to minimize copy overheads from NVMe SSDs to GPU memory with host CPU and memory bypassed.
 
-## Dependencies
-
-We currently test fastsafetensors with python 3.9-13, pytorch 2.1-2.7.
-
-## Install from PyPi
-
-See https://pypi.org/project/fastsafetensors/
-
-```bash
-pip install fastsafetensors
-```
-
-## Local installation
-
-```bash
-make install
-```
-
-## Package build
-
-Prerequisites: Docker
-
-```bash
-make dist
-```
-
-## Unit tests
-
-After installing fastsafetensors with `pip` or `make install`, run
-
-```bash
-make unittest
-```
-
 ## Basic API usages
 
 `SafeTensorsFileLoader` is a low-level entrypoint. To use it, pass either `SingleGroup()` for simple inference or `ProcessGroup()` (from `torch.distributed`) for tensor-parallel inference. The loader supports both CPU and CUDA devices, with optional GPU Direct Storage (GDS) support. You can specify the device and GDS settings using the `device` and `nogds` arguments, respectively. Note that if GDS is not available, the loader will fail to open files when `nogds=False`. For more information on enabling GDS, please refer to the NVIDIA documentation.
@@ -60,7 +32,7 @@ After creating a `SafeTensorsFileLoader` instance, first map target files and a 
 
 Important: To release the GPU memory allocated for tensors, you must explicitly call the `.close()` method. This is because Fastsafetensors allows multiple tensors to share a limited number of GPU memory fragments. As a result, it is the user's responsibility to ensure that all tensors are properly released before calling `.close()`, which will then safely release the underlying GPU memory.
 
-`fastsafe_open` is an easier entrypoint. You can force turning off GDS and run in the fallback mode if `nogds==True`.
+`fastsafe_open` is an easier entrypoint. You can force turning off GDS and run in the fallback mode if `nogds==True`. However, users must be aware of the above tricky memory management model, which should be fixed in future releases.
 
 ```python
 with fastsafe_open(filenames=[filename], nogds=True, device="cpu", debug_log=True) as f:
@@ -68,144 +40,25 @@ with fastsafe_open(filenames=[filename], nogds=True, device="cpu", debug_log=Tru
         t = f.get_tensor(key).clone().detach() # clone if t is used outside
 ```
 
-## Example: single run
+## Code of Conduct
 
-examples/run_single.py:
+Please refer to [Foundation Model Stack Community Code of Conduct](https://github.com/foundation-model-stack/foundation-model-stack/blob/main/code-of-conduct.md).
 
-```
-cd examples
-python run_single.py
-```
+## Publication
 
-Example output:
+Takeshi Yoshimura, Tatsuhiro Chiba, Manish Sethi, Daniel Waddington, Swaminathan Sundararaman. (2025) Speeding up Model Loading with fastsafetensors (arXiv:2505.23072)[https://arxiv.org/abs/2505.23072] and IEEE CLOUD 2025.
 
-```
-add_filenames 1: path=a.safetensors
-[DEBUG] raw_device_pointer: raw_alloc: 0x7acf000, length=256, elapsed=3 us
-[DEBUG] nogds_file_reader.submit_read: cudaHostAlloc, size=1048576, elapsed=10 us
-[DEBUG] nogds_file_reader.submit_read #3, thread_id=1
-[DEBUG] nogds_file_reader._thread: read (mmap=0), fd=4, offset=104, count=256, c=256, copy=13 us, cuda_copy=0 us
-wait_io: tensor=a0
-a0: tensor([[ 0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.],
-        [ 1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.],
-        [ 2.,  2.,  2.,  2.,  2.,  2.,  2.,  2.],
-        [ 3.,  3.,  3.,  3.,  3.,  3.,  3.,  3.],
-        [ 4.,  4.,  4.,  4.,  4.,  4.,  4.,  4.],
-        [ 5.,  5.,  5.,  5.,  5.,  5.,  5.,  5.],
-        [ 6.,  6.,  6.,  6.,  6.,  6.,  6.,  6.],
-        [ 7.,  7.,  7.,  7.,  7.,  7.,  7.,  7.],
-        [ 8.,  8.,  8.,  8.,  8.,  8.,  8.,  8.],
-        [ 9.,  9.,  9.,  9.,  9.,  9.,  9.,  9.],
-        [10., 10., 10., 10., 10., 10., 10., 10.],
-        [11., 11., 11., 11., 11., 11., 11., 11.],
-        [12., 12., 12., 12., 12., 12., 12., 12.],
-        [13., 13., 13., 13., 13., 13., 13., 13.],
-        [14., 14., 14., 14., 14., 14., 14., 14.],
-        [15., 15., 15., 15., 15., 15., 15., 15.]], dtype=torch.float16)
-[DEBUG] ~nogds_file_reader: elapsed=28 us
-[DEBUG] ~raw_device_pointer: torch_raw_delete: 0x7acf000, elapsed=0 us
-```
 
-## Example: parallel run
+## Install from PyPI
 
-You can test the script with torchrun
+See https://pypi.org/project/fastsafetensors/
 
 ```bash
-cd examples
-torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 run_parallel.py &
-PIDS+=$($!)
-torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 run_parallel.py &
-PIDS+=$($!)
-wait ${PIDS[@]}
+pip install fastsafetensors
 ```
 
-Example output:
+## Install from source
 
-```
-add_filenames 1: path=a.safetensors
-[DEBUG] raw_device_pointer: raw_alloc: 0x6ba1000, length=256, elapsed=2 us
-[DEBUG] nogds_file_reader.submit_read: cudaHostAlloc, size=1048576, elapsed=10 us
-[DEBUG] nogds_file_reader.submit_read #3, thread_id=1
-[DEBUG] nogds_file_reader._thread: read (mmap=0), fd=15, offset=104, count=256, c=256, copy=15 us, cuda_copy=0 us
-wait_io: tensor=a0
-shuffle: broadcast, tensor_name=a0, shape=torch.Size([16, 8]), self.rank=0, pg.rank()=0, has_tensor=True
-add_filenames 2: path=b.safetensors
-[DEBUG] raw_device_pointer: raw_alloc: 0x7cbb000, length=256, elapsed=2 us
-[DEBUG] nogds_file_reader.submit_read: cudaHostAlloc, size=1048576, elapsed=12 us
-[DEBUG] nogds_file_reader.submit_read #3, thread_id=1
-[DEBUG] nogds_file_reader._thread: read (mmap=0), fd=15, offset=104, count=256, c=256, copy=15 us, cuda_copy=0 us
-wait_io: tensor=b0
-shuffle: broadcast, tensor_name=a0, shape=torch.Size([16, 8]), self.rank=0, pg.rank()=1, has_tensor=False
-_get_tensor: free_dev_ptrs, lidx=0, src=a.safetensorsshuffle: use cache, tensor_name=a0
-
-[DEBUG] ~raw_device_pointer: torch_raw_delete: 0x6ba1000, elapsed=0 us
-shuffle: use cache, tensor_name=a0
-_get_tensor: free_dev_ptrs, lidx=0, src=a.safetensors
-shuffle: scatter, tensor_name=b0, shape=torch.Size([16, 8])->torch.Size([16, 4]), self.rank=1, pg.rank()=0, rank_slices=[(slice(None, None, None), slice(0, 4, 1)), (slice(None, None, None), slice(4, 8, 1))], len(scatter_list)=0
-shuffle: scatter, tensor_name=b0, shape=torch.Size([16, 8])->torch.Size([16, 4]), self.rank=1, pg.rank()=1, rank_slices=[(slice(None, None, None), slice(0, 4, 1)), (slice(None, None, None), slice(4, 8, 1))], len(scatter_list)=2
-_get_tensor: free_dev_ptrs, lidx=0, src=b.safetensors
-[DEBUG] ~raw_device_pointer: torch_raw_delete: 0x7cbb000, elapsed=0 us
-RANK 0: tensor_a0=tensor([[ 0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.],
-        [ 1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.],
-        [ 2.,  2.,  2.,  2.,  2.,  2.,  2.,  2.],
-        [ 3.,  3.,  3.,  3.,  3.,  3.,  3.,  3.],
-        [ 4.,  4.,  4.,  4.,  4.,  4.,  4.,  4.],
-        [ 5.,  5.,  5.,  5.,  5.,  5.,  5.,  5.],
-        [ 6.,  6.,  6.,  6.,  6.,  6.,  6.,  6.],
-        [ 7.,  7.,  7.,  7.,  7.,  7.,  7.,  7.],
-        [ 8.,  8.,  8.,  8.,  8.,  8.,  8.,  8.],
-        [ 9.,  9.,  9.,  9.,  9.,  9.,  9.,  9.],
-        [10., 10., 10., 10., 10., 10., 10., 10.],
-        [11., 11., 11., 11., 11., 11., 11., 11.],
-        [12., 12., 12., 12., 12., 12., 12., 12.],
-        [13., 13., 13., 13., 13., 13., 13., 13.],
-        [14., 14., 14., 14., 14., 14., 14., 14.],
-        [15., 15., 15., 15., 15., 15., 15., 15.]], dtype=torch.float16)RANK 1: tensor_a0=tensor([[ 0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.],
-        [ 1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.],
-        [ 2.,  2.,  2.,  2.,  2.,  2.,  2.,  2.],
-        [ 3.,  3.,  3.,  3.,  3.,  3.,  3.,  3.],
-        [ 4.,  4.,  4.,  4.,  4.,  4.,  4.,  4.],
-        [ 5.,  5.,  5.,  5.,  5.,  5.,  5.,  5.],
-        [ 6.,  6.,  6.,  6.,  6.,  6.,  6.,  6.],
-        [ 7.,  7.,  7.,  7.,  7.,  7.,  7.,  7.],
-        [ 8.,  8.,  8.,  8.,  8.,  8.,  8.,  8.],
-        [ 9.,  9.,  9.,  9.,  9.,  9.,  9.,  9.],
-        [10., 10., 10., 10., 10., 10., 10., 10.],
-        [11., 11., 11., 11., 11., 11., 11., 11.],
-        [12., 12., 12., 12., 12., 12., 12., 12.],
-        [13., 13., 13., 13., 13., 13., 13., 13.],
-        [14., 14., 14., 14., 14., 14., 14., 14.],
-        [15., 15., 15., 15., 15., 15., 15., 15.]], dtype=torch.float16)
-
-RANK 1: tensor_b0_sharded=tensor([[ 0.,  0.,  0.,  0.],
-        [ 1.,  1.,  1.,  1.],
-        [ 2.,  2.,  2.,  2.],
-        [ 3.,  3.,  3.,  3.],
-        [ 4.,  4.,  4.,  4.],
-        [ 5.,  5.,  5.,  5.],
-        [ 6.,  6.,  6.,  6.],
-        [ 7.,  7.,  7.,  7.],
-        [ 8.,  8.,  8.,  8.],
-        [ 9.,  9.,  9.,  9.],
-        [10., 10., 10., 10.],
-        [11., 11., 11., 11.],
-        [12., 12., 12., 12.],
-        [13., 13., 13., 13.],
-        [14., 14., 14., 14.],
-        [15., 15., 15., 15.]], dtype=torch.float16)RANK 0: tensor_b0_sharded=tensor([[ 0.,  0.,  0.,  0.],
-        [ 1.,  1.,  1.,  1.],
-        [ 2.,  2.,  2.,  2.],
-        [ 3.,  3.,  3.,  3.],
-        [ 4.,  4.,  4.,  4.],
-        [ 5.,  5.,  5.,  5.],
-        [ 6.,  6.,  6.,  6.],
-        [ 7.,  7.,  7.,  7.],
-        [ 8.,  8.,  8.,  8.],
-        [ 9.,  9.,  9.,  9.],
-        [10., 10., 10., 10.],
-        [11., 11., 11., 11.],
-        [12., 12., 12., 12.],
-        [13., 13., 13., 13.],
-        [14., 14., 14., 14.],
-        [15., 15., 15., 15.]], dtype=torch.float16)
+```bash
+pip install .
 ```
