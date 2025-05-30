@@ -45,7 +45,20 @@ upload:
 	python3 -m twine upload -u __token__ dist/fastsafetensors-$(shell grep version pyproject.toml | sed -e 's/version = "\([0-9.]\+\)"/\1/g')*
 
 perf/dist:
-	cd perf && python3 -m build
+	cd perf && pip install .
 
+.PHONY: format
+format:
+	black8 .
+	isort .
+
+.PHONY: lint
+lint:
+	black --check .
+	isort --check-only .
+	flake8 . --select=E9,F63,F7,F82
+	mypy . --ignore-missing-imports
+
+.PHONY: clean
 clean:
 	rm -rf dist build fastsafetensors.egg-info
