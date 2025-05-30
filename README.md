@@ -46,7 +46,7 @@ Please refer to [Foundation Model Stack Community Code of Conduct](https://githu
 
 ## Publication
 
-Takeshi Yoshimura, Tatsuhiro Chiba, Manish Sethi, Daniel Waddington, Swaminathan Sundararaman. (2025) Speeding up Model Loading with fastsafetensors (arXiv:2505.23072)[https://arxiv.org/abs/2505.23072] and IEEE CLOUD 2025.
+Takeshi Yoshimura, Tatsuhiro Chiba, Manish Sethi, Daniel Waddington, Swaminathan Sundararaman. (2025) Speeding up Model Loading with fastsafetensors [arXiv:2505.23072](https://arxiv.org/abs/2505.23072) and IEEE CLOUD 2025.
 
 
 ## Install from PyPI
