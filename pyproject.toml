@@ -11,6 +11,7 @@ requires-python = ">= 3.9"
 dependencies = [
     "typer>=0.9.0",
     "torch>=2.1",
+    "paddlepaddle-gpu>=3.0.0"
 ]
 
 [project.optional-dependencies]
