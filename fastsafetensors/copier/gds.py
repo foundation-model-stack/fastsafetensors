@@ -4,7 +4,9 @@
 import torch
 from .. import cpp as fstcpp
 from typing import Dict
-from ..common import alloc_tensor_memory, free_tensor_memory, SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN
+from ..common import alloc_tensor_memory, free_tensor_memory, SafeTensorsMetadata, ALIGN, CUDA_PTR_ALIGN, paddle_loaded
+if paddle_loaded:
+    import paddle
 
 class GdsFileCopier:
     def __init__(self, metadata: SafeTensorsMetadata, device: torch.device, reader: fstcpp.gds_file_reader, debug_log: bool=False):
@@ -16,13 +18,24 @@ class GdsFileCopier:
         self.fh = 0
         self.copy_reqs: Dict[int, int] = {}
         self.aligned_length = 0
-        self.o_direct = False
+        try:
+            if self.metadata.framework == "pytorch":
+                cuda_vers_list = torch.version.cuda.split('.')
+            elif paddle_loaded and self.metadata.framework == "paddle":
+                cuda_vers_list = paddle.version.cuda().split('.')
+            cudavers = list(map(int, cuda_vers_list))
+            # CUDA 12.2 (GDS version 1.7) introduces support for non O_DIRECT file descriptors
+            # Compatible with CUDA 11.x
+            self.o_direct = not (cudavers[0] > 12 or (cudavers[0] == 12 and cudavers[1] >= 2))
+        except:
+            self.o_direct = True
 
     def set_o_direct(self, enable: bool):
         self.o_direct = enable
 
     def submit_io(self, use_buf_register: bool, max_copy_block_size: int)->fstcpp.gds_device_buffer:
-        self.fh = fstcpp.gds_file_handle(self.metadata.src, self.o_direct, self.device.type == 'cuda')
+        dev_is_cuda = (self.metadata.framework == "pytorch" and self.device.type == 'cuda') or (paddle_loaded and self.metadata.framework == "paddle" and "gpu" in self.device)
+        self.fh = fstcpp.gds_file_handle(self.metadata.src, self.o_direct, dev_is_cuda)
         offset = self.metadata.header_length
         length = self.metadata.size_bytes - self.metadata.header_length
         head_bytes = offset % ALIGN
@@ -34,7 +47,7 @@ class GdsFileCopier:
             aligned_length = length + head_bytes
         aligned_offset = offset - head_bytes
 
-        gbuf = alloc_tensor_memory(aligned_length, self.device)
+        gbuf = alloc_tensor_memory(aligned_length, self.device, self.metadata.framework)
         if use_buf_register:
             count = 0
             while count < aligned_length:
@@ -75,7 +88,7 @@ class GdsFileCopier:
         if not noalign and not self.metadata.aligned and self.aligned_length > 0:
             misaligned_bytes = self.metadata.header_length % CUDA_PTR_ALIGN
             length = 1024*1024*1024
-            tmp_gbuf = alloc_tensor_memory(length, self.device)
+            tmp_gbuf = alloc_tensor_memory(length, self.device, self.metadata.framework)
             count = 0
             while count + misaligned_bytes < self.aligned_length:
                 l = self.aligned_length - misaligned_bytes - count
@@ -85,6 +98,6 @@ class GdsFileCopier:
                     print("wait_io: fix misalignment, src=0x{:x}, misaligned_bytes={}, count={}, tmp=0x{:x}".format(gbuf.get_base_address(), misaligned_bytes, count, tmp_gbuf.get_base_address()))
                 gbuf.memmove(count, misaligned_bytes + count, tmp_gbuf, l)
                 count += l
-            free_tensor_memory(tmp_gbuf, self.device)
+            free_tensor_memory(tmp_gbuf, self.device, self.metadata.framework)
             self.aligned_offset += misaligned_bytes
         return self.metadata.get_tensors(gbuf, self.device, self.aligned_offset, dtype=dtype)
