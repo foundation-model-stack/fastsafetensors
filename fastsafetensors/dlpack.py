@@ -7,14 +7,15 @@
 import ctypes
 from typing import Dict, List, Tuple
 
+from .st_types import STDevice, STDeviceType, STDType
+
 _c_str_dltensor = b"dltensor"
 
 
 class DLDevice(ctypes.Structure):
-    def __init__(self, device: str):
-        dev_split = device.split(":")
-        self.device_type = self.TYPE_MAP[dev_split[0]]
-        self.device_id = 0 if len(dev_split) <= 1 else dev_split[1]
+    def __init__(self, dev: STDevice):
+        self.device_type = self.STDeviceToDL[dev.type]
+        self.device_id = dev.index if dev.index is not None else 0
 
     kDLCPU = 1
     kDLCUDA = 2
@@ -22,45 +23,57 @@ class DLDevice(ctypes.Structure):
         ("device_type", ctypes.c_int),
         ("device_id", ctypes.c_int),
     ]
-    TYPE_MAP = {"cpu": kDLCPU, "cuda": kDLCUDA, "gpu": kDLCUDA}
+
+    STDeviceToDL = {
+        STDeviceType.CPU: kDLCPU,
+        STDeviceType.CUDA: kDLCUDA,
+        STDeviceType.GPU: kDLCUDA,
+    }
 
 
-class DLDataTypeCode(ctypes.c_uint8):
+class c_DLDataType(ctypes.Structure):
+    def __init__(self, dtype: STDType):
+        (self.type_code, self.bits, self.lanes) = self.STDataToDL[dtype]
+
     kDLInt = 0
     kDLUInt = 1
     kDLFloat = 2
     kDLBfloat = 4
-
-    def __str__(self):
-        return {
-            self.kDLInt: "int",
-            self.kDLUInt: "uint",
-            self.kDLFloat: "float",
-            self.kDLBfloat: "bfloat",
-        }[self.value]
-
-
-class DLDataType(ctypes.Structure):
+    kDLBool = 6
     _fields_ = [
-        ("type_code", DLDataTypeCode),
+        ("type_code", ctypes.c_uint8),
         ("bits", ctypes.c_uint8),
         ("lanes", ctypes.c_uint16),
     ]
-    TYPE_MAP: Dict[str, Tuple[int, int, int]] = {
-        "BOOL": (6, 8, 1),
-        "I8": (0, 8, 1),
-        "I16": (0, 16, 1),
-        "I32": (0, 32, 1),
-        "I64": (0, 64, 1),
-        "U8": (1, 8, 1),
-        "U16": (1, 16, 1),
-        "U32": (1, 32, 1),
-        "U64": (1, 64, 1),
-        "F16": (2, 16, 1),
-        "F32": (2, 32, 1),
-        "F64": (2, 64, 1),
-        "BF16": (4, 16, 1),
+
+    STDataToDL: Dict[STDType, tuple[int, int, int]] = {
+        STDType.BOOL: (kDLBool, 8, 1),
+        STDType.I8: (kDLInt, 8, 1),
+        STDType.I16: (kDLInt, 16, 1),
+        STDType.I32: (kDLInt, 32, 1),
+        STDType.I64: (kDLInt, 64, 1),
+        STDType.U8: (kDLUInt, 8, 1),
+        STDType.U16: (kDLUInt, 16, 1),
+        STDType.U32: (kDLUInt, 32, 1),
+        STDType.U64: (kDLUInt, 64, 1),
+        STDType.F16: (kDLFloat, 16, 1),
+        STDType.F32: (kDLFloat, 32, 1),
+        STDType.F64: (kDLFloat, 64, 1),
+        STDType.BF16: (kDLBfloat, 16, 1),
     }
+
+
+class _Holder:
+    def __init__(self, shape: List[int], strides: List[int]):
+        self.shape = (ctypes.c_int64 * len(shape))(*shape)
+        self.strides = (ctypes.c_int64 * len(strides))(*strides)
+
+    def _as_manager_ctx(self) -> ctypes.c_void_p:
+        py_obj = ctypes.py_object(self)
+        py_obj_ptr = ctypes.pointer(py_obj)
+        ctypes.pythonapi.Py_IncRef(py_obj)
+        ctypes.pythonapi.Py_IncRef(ctypes.py_object(py_obj_ptr))
+        return ctypes.cast(py_obj_ptr, ctypes.c_void_p)
 
 
 class DLTensor(ctypes.Structure):
@@ -68,11 +81,20 @@ class DLTensor(ctypes.Structure):
         ("data", ctypes.c_void_p),
         ("device", DLDevice),
         ("ndim", ctypes.c_int),
-        ("dtype", DLDataType),
+        ("dtype", c_DLDataType),
         ("shape", ctypes.POINTER(ctypes.c_int64)),
         ("strides", ctypes.POINTER(ctypes.c_int64)),
         ("byte_offset", ctypes.c_uint64),
     ]
+
+    def __init__(self, dev_ptr: int, dev: STDevice, dtype: STDType, holder: _Holder):
+        self.data = dev_ptr
+        self.device = DLDevice(dev)
+        self.ndim = len(holder.shape)
+        self.dtype = c_DLDataType(dtype)
+        self.shape = holder.shape
+        self.strides = holder.strides
+        self.byte_offset = 0
 
     @property
     def itemsize(self):
@@ -112,6 +134,24 @@ class DLManagedTensor(ctypes.Structure):
         ("deleter", ctypes.CFUNCTYPE(None, ctypes.c_void_p)),
     ]
 
+    def as_py(
+        self,
+        dev_ptr: int,
+        shape: List[int],
+        strides: List[int],
+        dtype: STDType,
+        dev: STDevice,
+    ):
+        holder = _Holder(shape, strides)
+        self.dl_tensor = DLTensor(dev_ptr, dev, dtype, holder)
+        self.manager_ctx = holder._as_manager_ctx()
+        self.deleter = _numpy_cuda_buffer_deleter
+        return ctypes.pythonapi.PyCapsule_New(
+            ctypes.byref(self),
+            _c_str_dltensor,
+            _numpy_pycapsule_deleter,
+        )
+
     @property
     def __array_interface__(self):
         return self.dl_tensor.__array_interface__
@@ -128,23 +168,12 @@ ctypes.pythonapi.PyCapsule_New.argtypes = [
 ]
 
 
-class _Holder:
-    def __init__(self, shape: List[int], strides: List[int]):
-        self.shape = (ctypes.c_int64 * len(shape))(*shape)
-        self.strides = (ctypes.c_int64 * len(strides))(*strides)
-
-    def _as_manager_ctx(self) -> ctypes.c_void_p:
-        py_obj = ctypes.py_object(self)
-        py_obj_ptr = ctypes.pointer(py_obj)
-        ctypes.pythonapi.Py_IncRef(py_obj)
-        ctypes.pythonapi.Py_IncRef(ctypes.py_object(py_obj_ptr))
-        return ctypes.cast(py_obj_ptr, ctypes.c_void_p)
-
-
 @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
 def _numpy_cuda_buffer_deleter(handle: ctypes.c_void_p) -> None:
     """A function to deallocate the memory of a cuda buffer."""
-    dl_managed_tensor = DLManagedTensor.from_address(handle)
+    dl_managed_tensor = DLManagedTensor.from_address(
+        handle.value if handle.value else 0
+    )
     py_obj_ptr = ctypes.cast(
         dl_managed_tensor.manager_ctx, ctypes.POINTER(ctypes.py_object)
     )
@@ -167,25 +196,10 @@ def _numpy_pycapsule_deleter(handle: ctypes.c_void_p) -> None:
 
 
 def from_cuda_buffer(
-    dev_ptr: int, shape: List[int], strides: List[int], dtype: str, device: str
+    dev_ptr: int, shape: List[int], strides: List[int], dtype: STDType, dev: STDevice
 ):
-    holder = _Holder(shape, strides)
     size = ctypes.c_size_t(ctypes.sizeof(DLManagedTensor))
     dl_managed_tensor = DLManagedTensor.from_address(
         ctypes.pythonapi.PyMem_RawMalloc(size)
     )
-    dl_managed_tensor.dl_tensor.data = dev_ptr
-    dl_managed_tensor.dl_tensor.device = DLDevice(device)
-    dl_managed_tensor.dl_tensor.ndim = len(holder.shape)
-    dl_managed_tensor.dl_tensor.dtype = DLDataType.TYPE_MAP[dtype]
-    dl_managed_tensor.dl_tensor.shape = holder.shape
-    dl_managed_tensor.dl_tensor.strides = holder.strides
-    dl_managed_tensor.dl_tensor.byte_offset = 0
-    dl_managed_tensor.manager_ctx = holder._as_manager_ctx()
-    dl_managed_tensor.deleter = _numpy_cuda_buffer_deleter
-    pycapsule = ctypes.pythonapi.PyCapsule_New(
-        ctypes.byref(dl_managed_tensor),
-        _c_str_dltensor,
-        _numpy_pycapsule_deleter,
-    )
-    return pycapsule
+    return dl_managed_tensor.as_py(dev_ptr, shape, strides, dtype, dev)

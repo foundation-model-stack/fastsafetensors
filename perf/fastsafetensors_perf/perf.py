@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Tuple, Union
 import torch
 import torch.distributed as dist
 import typer
-from fastsafetensors import SafeTensorsFileLoader, SingleGroup, str_to_dtype
+from fastsafetensors import SafeTensorsFileLoader, SingleGroup
 from safetensors import safe_open
 
 app = typer.Typer()
@@ -266,10 +266,13 @@ def stop_sysstat(id: int):
         torch.cuda.memory._record_memory_history(enabled=None)
 
 
-def as_torch_dtype(dtype_str: str) -> Union[torch.dtype, None]:
+def as_safetensors_dtype(dtype_str: str) -> Union[str, None]:
     if dtype_str == "auto":
         return None
-    return str_to_dtype(dtype_str)
+    from fastsfaetensors.common import TYPE_MAP
+    if dtype_str not in TYPE_MAP:
+        raise Exception(f"unsupported type: {dtype_str}. supported types: {TYPE_MAP.keys()}")
+    return dtype_str
 
 
 def get_size(tensor: torch.Tensor) -> int:
@@ -408,7 +411,7 @@ def run_mmap_sharded_internal(
         for f in files:
             filenames.append(f)
     (key_pats, layer_prefix) = get_key_pats(sten_collection_json, model_name)
-    torch_dtype = as_torch_dtype(dtype)
+    torch_dtype = as_safetensors_dtype(dtype)
 
     t0 = time.time_ns()
     fb = FilesBufferOnMmap(
@@ -445,7 +448,7 @@ def run_mmap(
 ):
     if cache_drop:
         drop_cache(model_name, sten_collection_json, world_size)
-    torch_dtype = as_torch_dtype(dtype)
+    torch_dtype = as_safetensors_dtype(dtype)
     if sysstat_enabled:
         stat_id = start_sysstat(
             model_name,
@@ -587,7 +590,7 @@ def run_gds_sharded_internal(
     key_dim = get_key_dim(loader.get_keys(), key_pats, layer_prefix)
     t1 = time.time_ns()
     fb = loader.copy_files_to_device(
-        dtype=as_torch_dtype(dtype),
+        dtype=as_safetensors_dtype(dtype),
         use_buf_register=use_buf_register,
         max_copy_block_size=int(max_block_size_mb * 1024 * 1024),
     )
@@ -626,7 +629,7 @@ def run_gds(
 ):
     if cache_drop:
         drop_cache(model_name, sten_collection_json, world_size)
-    torch_dtype = as_torch_dtype(dtype)
+    torch_dtype = as_safetensors_dtype(dtype)
     if sysstat_enabled:
         stat_id = start_sysstat(
             model_name,
