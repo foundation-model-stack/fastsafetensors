@@ -1,11 +1,13 @@
 import os
+from typing import List
+
 import pytest
 import torch
 import torch.distributed as dist
-from fastsafetensors import cpp as fstcpp
+
 from fastsafetensors import SingleGroup
+from fastsafetensors import cpp as fstcpp
 from fastsafetensors.common import paddle_loaded
-from typing import List
 
 TESTS_DIR = os.path.dirname(__file__)
 REPO_ROOT = os.path.dirname(os.path.dirname(TESTS_DIR))
