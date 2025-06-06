@@ -228,7 +228,7 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework="pytorch"):
     if framework == "pytorch":
         data_type = torch.float16
     elif framework == "paddle":
-        # There are some lack of accuracy in paddle.float16 (about 1e-4)
+        # There are some lack of accuracy in paddle.float16 (about 1e-4) in cpu.
         data_type = paddle.float32
     else:
         raise NotImplementedError(f"Do not support the framework: {framework}")
