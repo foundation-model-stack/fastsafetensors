@@ -1,13 +1,15 @@
 # Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache-2.0
 
-from .common import (
-    SafeTensorsMetadata,
-    TensorFrame,
-    alloc_tensor_memory,
-    free_tensor_memory,
-    get_device_numa_node,
-)
+from .common import SafeTensorsMetadata, TensorFrame, get_device_numa_node
 from .file_buffer import FilesBufferOnDevice
 from .loader import SafeTensorsFileLoader, fastsafe_open
-from .st_types import SingleGroup, STDevice, STDeviceType, STEnv
+
+loaded_nvidia: bool = False
+if not loaded_nvidia:
+    from . import cpp
+
+    cpp.load_nvidia_functions()
+    if cpp.init_gds() != 0:
+        raise Exception(f"[FAIL] init_gds()")
+    loaded_nvidia = True

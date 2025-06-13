@@ -1,121 +1,31 @@
 # Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache-2.0
 
-from dataclasses import dataclass
-
-import torch
-
-from .st_types import STDevice, STDeviceType, STDType, STEnv, get_dtype_size
-
-try:
-    import paddle
-    from paddle.framework import core as paddle_core
-
-    paddle_loaded = True
-except:
-    paddle_loaded = False
-if paddle_loaded:
-    import numpy
-
 import json
 import os
+import platform
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 from . import cpp as fstcpp
 from .dlpack import from_cuda_buffer
-
-ALIGN: int = fstcpp.get_alignment_size()
-CUDA_PTR_ALIGN: int = 16
-
-try:
-    CUDA_VER = str(torch.version.cuda if not paddle_loaded else paddle.version.cuda())
-except:
-    CUDA_VER = "0.0"
-
-dtype_convert: Dict[STEnv, Dict[STDType, Any]] = {
-    STEnv.Pytorch: {
-        STDType.BOOL: torch.bool,
-        STDType.U8: torch.uint8,
-        STDType.I8: torch.int8,
-        STDType.F8_E5M2: torch.float8_e5m2,
-        STDType.F8_E4M3: torch.float8_e4m3fn,
-        STDType.I16: torch.int16,
-        STDType.U16: torch.int16,
-        STDType.I32: torch.int32,
-        STDType.U32: torch.int32,
-        STDType.I64: torch.int64,
-        STDType.U64: torch.int64,
-        STDType.F16: torch.float16,
-        STDType.BF16: torch.bfloat16,
-        STDType.F32: torch.float32,
-        STDType.F64: torch.float64,
-    }
-}
-
-if paddle_loaded:
-    dtype_convert[STEnv.Paddle] = {
-        STDType.BOOL: paddle.bool,
-        STDType.I8: paddle.uint8,
-        STDType.I8: paddle.int8,
-        STDType.F8_E5M2: paddle.float8_e5m2,
-        STDType.F8_E4M3: paddle.float8_e4m3fn,
-        STDType.I16: paddle.int16,
-        STDType.U16: paddle.bfloat16,
-        STDType.I32: paddle.int32,
-        STDType.U32: paddle.int32,
-        STDType.I64: paddle.int64,
-        STDType.U64: paddle.int64,
-        STDType.F16: paddle.float16,
-        STDType.BF16: paddle.bfloat16,
-        STDType.F32: paddle.float32,
-        STDType.F64: paddle.float64,
-    }
-
-need_workaround_dtypes: Dict[STDType, STDType] = {
-    STDType.F8_E5M2: STDType.I8,
-    STDType.F8_E4M3: STDType.I8,
-}
+from .frameworks import FRAMEWORK, TensorBase
+from .st_types import Device, DType
 
 
-def get_device_numa_node(device: Optional[int]):
-    if device is None:
-        return
+def get_device_numa_node(device: Optional[int]) -> Optional[int]:
+    if device is None or platform.system() != "Linux":
+        return None
     pci_addr = fstcpp.get_device_pci_bus(device)
     if pci_addr == "":
-        # raise Exception(f"get_device_numa_node, get_device_pci_bus failed, device={device}")
-        return
+        return None
     bus_addr = ":".join(pci_addr.split(":")[:2]).lower()
     syspath = f"/sys/class/pci_bus/{bus_addr}/device/numa_node"
     if not os.path.exists(syspath):
-        return 0
+        return None
     with open(syspath) as f:
         return int(f.read().strip())
-
-
-def alloc_tensor_memory(
-    length: int, dev: STDevice, framework: STEnv = STEnv.Pytorch
-) -> fstcpp.gds_device_buffer:
-    dev_is_gpu = True
-    if framework == STEnv.Pytorch and dev.type == STDeviceType.CUDA:
-        rbuf = torch.cuda.caching_allocator_alloc(length)
-    elif paddle_loaded and framework == STEnv.Paddle and dev.type == STDeviceType.GPU:
-        rbuf = fstcpp.gpu_malloc(length)
-    else:
-        dev_is_gpu = False
-        rbuf = fstcpp.cpu_malloc(length)
-    return fstcpp.gds_device_buffer(rbuf, length, dev_is_gpu)
-
-
-def free_tensor_memory(
-    gbuf: fstcpp.gds_device_buffer, dev: STDevice, framework: STEnv = STEnv.Pytorch
-):
-    if framework == STEnv.Pytorch and dev.type == STDeviceType.CUDA:
-        torch.cuda.caching_allocator_delete(gbuf.get_base_address())
-    elif paddle_loaded and framework == STEnv.Paddle and dev.type == STDeviceType.GPU:
-        fstcpp.gpu_free(gbuf.get_base_address())
-    else:
-        fstcpp.cpu_free(gbuf.get_base_address())
 
 
 class SafeTensorsMetadata:
@@ -126,17 +36,15 @@ class SafeTensorsMetadata:
         size_bytes: int,
         src: str = "",
         keep_orig_dict: bool = False,
-        framework: STEnv = STEnv.Pytorch,
     ):
         self.src = src
-        self.framework = framework
         ser = json.loads(string, object_pairs_hook=OrderedDict)
         self.metadata = ser.get("__metadata__", "")
         if self.metadata:
             del ser["__metadata__"]
         self.tensors: Dict[str, TensorFrame] = {}
         self.header_length = header_length
-        self.aligned = header_length % CUDA_PTR_ALIGN == 0
+        self.aligned = header_length % FRAMEWORK.get_device_ptr_align() == 0
         if keep_orig_dict:
             self.ser = ser
 
@@ -158,12 +66,7 @@ class SafeTensorsMetadata:
             nelements = 1
             for sh in t.shape:
                 nelements *= sh
-            real_dtype = dtype_convert[self.framework][t.dtype]
-            if self.framework == STEnv.Pytorch:
-                t_dtype_size = real_dtype.itemsize
-            elif paddle_loaded and self.framework == STEnv.Paddle:
-                t_dtype_size = paddle_core.size_of_dtype(real_dtype)
-            nbytes = nelements * t_dtype_size
+            nbytes = nelements * FRAMEWORK.get_dtype_size(t.dtype)
             if (e - s) != nbytes:
                 raise Exception(
                     f"validate(tensor {k}): TensorInvalidInfo, e-s={e-s}, nbytes={nbytes}, src={src}"
@@ -203,7 +106,6 @@ class SafeTensorsMetadata:
         fd: int,
         filename: str,
         keep_orig_dict: bool = False,
-        framework: STEnv = STEnv.Pytorch,
     ):
         status = os.fstat(fd)
         buffer_len = status.st_size
@@ -230,25 +132,23 @@ class SafeTensorsMetadata:
             buffer_len,
             filename,
             keep_orig_dict=keep_orig_dict,
-            framework=framework,
         )
 
     @classmethod
-    def from_file(self, filename: str, framework: STEnv = STEnv.Pytorch):
+    def from_file(self, filename: str):
         fd = os.open(filename, os.O_RDONLY, 0o644)
-        ret = self.from_fd(fd, filename, keep_orig_dict=False, framework=framework)
+        ret = self.from_fd(fd, filename, keep_orig_dict=False)
         os.close(fd)
         return ret
 
     def get_tensors(
         self,
         gbuf: fstcpp.gds_device_buffer,
-        device: STDevice,
+        device: Device,
         copy_start_offset: int,
-        dtype: STDType = STDType.AUTO,
-    ) -> Dict[str, torch.Tensor]:
+        dtype: DType = DType.AUTO,
+    ) -> Dict[str, TensorBase]:
         ret = {}
-        converter = dtype_convert[self.framework]
         for tensor_name, t in self.tensors.items():
             dst_dev_ptr = (
                 gbuf.get_base_address()
@@ -256,9 +156,7 @@ class SafeTensorsMetadata:
                 + t.data_offsets[0]
                 - copy_start_offset
             )
-            disk_dtype = t.dtype
-            if disk_dtype in need_workaround_dtypes:
-                disk_dtype = need_workaround_dtypes[disk_dtype]
+            disk_dtype = FRAMEWORK.as_workaround_dtype(t.dtype)
             dl_tensor = from_cuda_buffer(
                 dst_dev_ptr,
                 t.shape,
@@ -266,29 +164,17 @@ class SafeTensorsMetadata:
                 disk_dtype,
                 device,
             )
-            real_disk_dtype = converter[t.dtype]
-            if self.framework == STEnv.Pytorch:
-                t2 = torch.from_dlpack(dl_tensor)
-                if disk_dtype != t.dtype:
-                    t2 = t2.view(real_disk_dtype)
-            elif self.framework == STEnv.Paddle:
-                t2 = paddle.utils.dlpack.from_dlpack(dl_tensor)
-                if disk_dtype != t.dtype:
-                    t2_np = t2.numpy().view(numpy.int8)
-                    t2 = paddle.to_tensor(t2_np, dtype=real_disk_dtype)
-            else:
-                raise Exception(f"framework is not supported: {self.framework}")
+            t2 = FRAMEWORK.from_dlpack(dl_tensor, device, disk_dtype)
+            if disk_dtype != t.dtype:
+                t2 = t2.view(t.dtype)
 
-            if dtype != STDType.AUTO and dtype != t.dtype:
-                if get_dtype_size(dtype) > get_dtype_size(t.dtype):
+            if dtype != DType.AUTO and dtype != t.dtype:
+                if FRAMEWORK.get_dtype_size(dtype) > FRAMEWORK.get_dtype_size(t.dtype):
                     raise Exception(
                         f"Online type conversion to larger sizes is not supported ({t.dtype} -> {dtype})"
                     )
-                real_req_dtype = converter[dtype]
-                t3 = t2.to(dtype=real_req_dtype)
-                conv_dtype: STDType = dtype
-                if conv_dtype in need_workaround_dtypes:
-                    conv_dtype = need_workaround_dtypes[conv_dtype]
+                t3 = t2.to(dtype=dtype)
+                conv_dtype: DType = FRAMEWORK.as_workaround_dtype(dtype)
                 dl_tensor = from_cuda_buffer(
                     dst_dev_ptr,
                     t.shape,
@@ -296,19 +182,10 @@ class SafeTensorsMetadata:
                     conv_dtype,
                     device,
                 )
-                if self.framework == STEnv.Pytorch:
-                    t2 = torch.from_dlpack(dl_tensor)
-                    if dtype != conv_dtype:
-                        t2 = t2.view(real_req_dtype)
-                    t2.copy_(t3)
-                elif self.framework == STEnv.Paddle:
-                    t2 = paddle.utils.dlpack.from_dlpack(dl_tensor)
-                    if dtype != conv_dtype:
-                        x_np = t2.numpy().view(numpy.int8)
-                        t2 = paddle.to_tensor(x_np, dtype=real_req_dtype)
-                    paddle.assign(t3, output=t2)
-                else:
-                    raise Exception(f"framework is not supported: {self.framework}")
+                t2 = FRAMEWORK.from_dlpack(dl_tensor, device, conv_dtype)
+                if dtype != conv_dtype:
+                    t2 = t2.view(dtype)
+                FRAMEWORK.copy_tensor(t2, t3)
                 self.tensors[tensor_name].dtype = dtype
             ret[tensor_name] = t2
         return ret
@@ -319,7 +196,7 @@ class SafeTensorsMetadata:
 
 @dataclass
 class TensorFrame:
-    dtype: STDType
+    dtype: DType
     shape: List[int]
     data_offsets: List[int]
     strides: List[int]
@@ -339,7 +216,7 @@ class TensorFrame:
             strides.append(s)
             offsets.append(0)
         return TensorFrame(
-            STDType(entry["dtype"]), shape, data_offsets, strides, offsets, False
+            DType(entry["dtype"]), shape, data_offsets, strides, offsets, False
         )
 
     def __repr__(self) -> str:

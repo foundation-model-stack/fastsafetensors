@@ -2,17 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections import OrderedDict
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
-import torch
-import torch.distributed as dist
-
-from .common import dtype_convert, paddle_loaded
-from .st_types import SingleGroup, STDevice, STDeviceType, STDType, STEnv
+from .frameworks import FRAMEWORK, ProcessGroupBase, TensorBase
+from .st_types import Device, DType
 from .tensor_factory import LazyTensorFactory
-
-if paddle_loaded:
-    import paddle
 
 
 class FilesBufferOnDevice:
@@ -27,7 +21,7 @@ class FilesBufferOnDevice:
 
     Args:
         rank_loaders (Dict<rank, list(LazyTensorFacotry)>): Tensor factories per rank, which hold device pointers for buffers.
-        pg (dist.ProcessGroup): process group for pytorch distributed. SingleGroup is available for single GPU use-cases.
+        pg (ProcessGroupBase): process group for calling distributed ops.
         auto_mem_delete (bool): automatically release device buffers when all the tensors are shuffled.
 
     Examples:
@@ -37,9 +31,8 @@ class FilesBufferOnDevice:
     def __init__(
         self,
         rank_loaders: Dict[int, List[LazyTensorFactory]],
-        pg: Union[dist.ProcessGroup, SingleGroup],
+        pg: ProcessGroupBase,
         auto_mem_delete: bool = True,
-        framework: STEnv = STEnv.Pytorch,
     ):
         self.rank_loaders: Dict[int, List[LazyTensorFactory]] = rank_loaders
         self.key_to_rank_lidx: Dict[str, Tuple[int, int]] = {}
@@ -54,13 +47,7 @@ class FilesBufferOnDevice:
                         )
                     self.key_to_rank_lidx[key] = (rank, lidx)
                 self.instantiated[rank][lidx] = {}
-        self.framework = framework
-        if self.framework == STEnv.Pytorch or isinstance(pg, SingleGroup):
-            self.pg = pg
-            self.group = None
-        elif paddle_loaded and self.framework == STEnv.Paddle:
-            self.pg = pg.process_group
-            self.group = pg
+        self.pg = pg
         self.auto_mem_delete = auto_mem_delete and self.pg.size() > 1
 
     def close(self):
@@ -89,10 +76,10 @@ class FilesBufferOnDevice:
         rank: int,
         lidx: int,
         tensor_name: str,
-        ret: torch.Tensor,
-        device: Optional[STDevice],
-        dtype: STDType,
-    ) -> torch.Tensor:
+        ret: TensorBase,
+        device: Optional[Device],
+        dtype: DType,
+    ) -> TensorBase:
         loader = self.rank_loaders[rank][lidx]
         if self.auto_mem_delete:
             self.instantiated[rank][lidx][tensor_name] = True
@@ -102,42 +89,30 @@ class FilesBufferOnDevice:
                         f"_get_tensor: free_dev_ptrs, lidx={lidx}, src={loader.metadata.src}"
                     )
                 loader.free_dev_ptrs()
-        to_dev: Optional[str] = None
-        if device is not None and (
-            device != STDevice(STDeviceType(ret.device.type), ret.device.index)
-        ):
-            to_dev = device.as_str()
-        to_dtype: Optional[torch.dtype] = None
-        if dtype != STDType.AUTO and (dtype != ret.dtype):
-            to_dtype = dtype_convert[self.framework][dtype]
-        if to_dev is not None or to_dtype is not None:
-            ret = ret.to(device=to_dev, dtype=to_dtype)
-        return ret
+        return ret.to(device=device, dtype=dtype)
 
     def get_sharded(
         self,
         tensor_name: str,
         dim: int,
-        device: Optional[STDevice] = None,
-        dtype: STDType = STDType.AUTO,
-    ) -> torch.Tensor:
+        device: Optional[Device] = None,
+        dtype: DType = DType.AUTO,
+    ) -> TensorBase:
         """
         partition a tensor instance with the key tensor_name at the dimension dim and return it.
         In multi-process loading, this eventually calls torch.distributed.scatter.
         A special dim is -1, which broadcast a tensor to all the ranks (== get_tensor()).
         """
         (rank, lidix) = self._get_rank_lidx(tensor_name)
-        t = self.rank_loaders[rank][lidix].shuffle(
-            self.pg, tensor_name, dim, group=self.group
-        )
+        t = self.rank_loaders[rank][lidix].shuffle(self.pg, tensor_name, dim)
         return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
 
     def get_tensor(
         self,
         tensor_name: str,
-        device: Optional[STDevice] = None,
-        dtype: STDType = STDType.AUTO,
-    ) -> torch.Tensor:
+        device: Optional[Device] = None,
+        dtype: DType = DType.AUTO,
+    ) -> TensorBase:
         """
         get a tensor instance with the key tensor_name from a local or remote rank.
         In multi-process loading, this eventually calls torch.distributed.broadcast.
@@ -150,9 +125,9 @@ class FilesBufferOnDevice:
         self,
         tensor_name: str,
         dst_rank: int,
-        device: Optional[STDevice] = None,
-        dtype: STDType = STDType.AUTO,
-    ) -> Optional[torch.Tensor]:
+        device: Optional[Device] = None,
+        dtype: DType = DType.AUTO,
+    ) -> Optional[TensorBase]:
         """
         push a tensor instance with the key tensor_name from a rank to a destination rank dst_rank.
         In multi-process loading, this eventually calls torch.distributed.send if the rank has the tensor instance.
@@ -160,9 +135,7 @@ class FilesBufferOnDevice:
         Other ranks do nothing.
         """
         (rank, lidix) = self._get_rank_lidx(tensor_name)
-        t = self.rank_loaders[rank][lidix].push(
-            self.pg, tensor_name, dst_rank, rank, group=self.group
-        )
+        t = self.rank_loaders[rank][lidix].push(self.pg, tensor_name, dst_rank, rank)
         if t:
             return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
         return None
@@ -170,22 +143,20 @@ class FilesBufferOnDevice:
     def get_sharded_packed_qkv(
         self,
         tensor_name: str,
-        device: Optional[STDevice] = None,
-        dtype: STDType = STDType.AUTO,
-    ) -> torch.Tensor:
+        device: Optional[Device] = None,
+        dtype: DType = DType.AUTO,
+    ) -> TensorBase:
         (rank, lidix) = self._get_rank_lidx(tensor_name)
-        t = self.rank_loaders[rank][lidix].shuffle_packed_qkv(
-            self.pg, tensor_name, group=self.group
-        )
+        t = self.rank_loaders[rank][lidix].shuffle_packed_qkv(self.pg, tensor_name)
         return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
 
     def get_multi_cols(
         self,
         tensor_names: List[str],
         dim: int,
-        device: Optional[STDevice] = None,
-        dtype: STDType = STDType.AUTO,
-    ) -> torch.Tensor:
+        device: Optional[Device] = None,
+        dtype: DType = DType.AUTO,
+    ) -> TensorBase:
         rank_lidixs: Dict[Tuple[int, int], List[str]] = {}
         for tensor_name in tensor_names:
             ranklidx = self._get_rank_lidx(tensor_name)
@@ -193,19 +164,17 @@ class FilesBufferOnDevice:
                 rank_lidixs[ranklidx].append(tensor_name)
             else:
                 rank_lidixs[ranklidx] = [tensor_name]
-        ts: List[torch.Tensor] = []
+        ts: List[TensorBase] = []
         for (rank, lidix), tns in sorted(rank_lidixs.items(), key=lambda x: x[0]):
             ts.append(
-                self.rank_loaders[rank][lidix].shuffle_multi_cols(
-                    self.pg, tns, dim, group=self.group
-                )
+                self.rank_loaders[rank][lidix].shuffle_multi_cols(self.pg, tns, dim)
             )
         if len(ts) == 1:
             # fastpath: tensors at the same layer are often in the same file
             return self._get_tensor(
                 rank, lidix, rank_lidixs[(rank, lidix)][0], ts[0], device, dtype
             )
-        ret = torch.cat(ts, dim=dim)
+        ret = FRAMEWORK.concat_tensors(ts, dim=dim)
         if self.auto_mem_delete:
             for tensor_name in tensor_names:
                 (rank, lidx) = self._get_rank_lidx(tensor_name)
@@ -217,28 +186,14 @@ class FilesBufferOnDevice:
                             f"get_multi_cols: free_dev_ptrs, rank={rank}, lidx={lidx}, src={loader.metadata.src}"
                         )
                     loader.free_dev_ptrs()
-        to_dev: Optional[str] = None
-        if device is not None and (
-            device != STDevice(STDeviceType(ret.device.type), ret.device.index)
-        ):
-            to_dev = device.as_str()
-        to_dtype: Optional[torch.dtype] = None
-        if dtype != STDType.AUTO and (dtype != ret.dtype):
-            to_dtype = dtype_convert[self.framework][dtype]
-        if to_dev is not None or to_dtype is not None:
-            ret = ret.to(device=to_dev, dtype=to_dtype)
-        return ret
+        return ret.to(device=device, dtype=dtype)
 
-    def as_dict(
-        self, tensor_shard_dim: OrderedDict[str, int]
-    ) -> Dict[str, torch.Tensor]:
-        tensors: Dict[str, torch.Tensor] = {}
+    def as_dict(self, tensor_shard_dim: OrderedDict[str, int]) -> Dict[str, TensorBase]:
+        tensors: Dict[str, TensorBase] = {}
         for tensor_name, dim in tensor_shard_dim.items():
             (rank, lidx) = self._get_rank_lidx(tensor_name)
             loader = self.rank_loaders[rank][lidx]
-            tensors[tensor_name] = loader.shuffle(
-                self.pg, tensor_name, dim, group=self.group
-            )
+            tensors[tensor_name] = loader.shuffle(self.pg, tensor_name, dim)
             if self.auto_mem_delete:
                 self.instantiated[rank][lidx][tensor_name] = True
                 if len(self.instantiated[rank][lidx]) == len(loader.metadata.tensors):

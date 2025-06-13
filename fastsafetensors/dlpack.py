@@ -5,16 +5,16 @@
 # to add from_cuda_buffer()
 
 import ctypes
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
-from .st_types import STDevice, STDeviceType, STDType
+from .st_types import Device, DeviceType, DType
 
 _c_str_dltensor = b"dltensor"
 
 
 class DLDevice(ctypes.Structure):
-    def __init__(self, dev: STDevice):
-        self.device_type = self.STDeviceToDL[dev.type]
+    def __init__(self, dev: Device):
+        self.device_type = self.DeviceToDL[dev.type]
         self.device_id = dev.index if dev.index is not None else 0
 
     kDLCPU = 1
@@ -24,15 +24,15 @@ class DLDevice(ctypes.Structure):
         ("device_id", ctypes.c_int),
     ]
 
-    STDeviceToDL = {
-        STDeviceType.CPU: kDLCPU,
-        STDeviceType.CUDA: kDLCUDA,
-        STDeviceType.GPU: kDLCUDA,
+    DeviceToDL = {
+        DeviceType.CPU: kDLCPU,
+        DeviceType.CUDA: kDLCUDA,
+        DeviceType.GPU: kDLCUDA,
     }
 
 
 class c_DLDataType(ctypes.Structure):
-    def __init__(self, dtype: STDType):
+    def __init__(self, dtype: DType):
         (self.type_code, self.bits, self.lanes) = self.STDataToDL[dtype]
 
     kDLInt = 0
@@ -46,20 +46,20 @@ class c_DLDataType(ctypes.Structure):
         ("lanes", ctypes.c_uint16),
     ]
 
-    STDataToDL: Dict[STDType, tuple[int, int, int]] = {
-        STDType.BOOL: (kDLBool, 8, 1),
-        STDType.I8: (kDLInt, 8, 1),
-        STDType.I16: (kDLInt, 16, 1),
-        STDType.I32: (kDLInt, 32, 1),
-        STDType.I64: (kDLInt, 64, 1),
-        STDType.U8: (kDLUInt, 8, 1),
-        STDType.U16: (kDLUInt, 16, 1),
-        STDType.U32: (kDLUInt, 32, 1),
-        STDType.U64: (kDLUInt, 64, 1),
-        STDType.F16: (kDLFloat, 16, 1),
-        STDType.F32: (kDLFloat, 32, 1),
-        STDType.F64: (kDLFloat, 64, 1),
-        STDType.BF16: (kDLBfloat, 16, 1),
+    STDataToDL: Dict[DType, tuple[int, int, int]] = {
+        DType.BOOL: (kDLBool, 8, 1),
+        DType.I8: (kDLInt, 8, 1),
+        DType.I16: (kDLInt, 16, 1),
+        DType.I32: (kDLInt, 32, 1),
+        DType.I64: (kDLInt, 64, 1),
+        DType.U8: (kDLUInt, 8, 1),
+        DType.U16: (kDLUInt, 16, 1),
+        DType.U32: (kDLUInt, 32, 1),
+        DType.U64: (kDLUInt, 64, 1),
+        DType.F16: (kDLFloat, 16, 1),
+        DType.F32: (kDLFloat, 32, 1),
+        DType.F64: (kDLFloat, 64, 1),
+        DType.BF16: (kDLBfloat, 16, 1),
     }
 
 
@@ -87,7 +87,7 @@ class DLTensor(ctypes.Structure):
         ("byte_offset", ctypes.c_uint64),
     ]
 
-    def __init__(self, dev_ptr: int, dev: STDevice, dtype: STDType, holder: _Holder):
+    def __init__(self, dev_ptr: int, dev: Device, dtype: DType, holder: _Holder):
         self.data = dev_ptr
         self.device = DLDevice(dev)
         self.ndim = len(holder.shape)
@@ -139,8 +139,8 @@ class DLManagedTensor(ctypes.Structure):
         dev_ptr: int,
         shape: List[int],
         strides: List[int],
-        dtype: STDType,
-        dev: STDevice,
+        dtype: DType,
+        dev: Device,
     ):
         holder = _Holder(shape, strides)
         self.dl_tensor = DLTensor(dev_ptr, dev, dtype, holder)
@@ -196,7 +196,7 @@ def _numpy_pycapsule_deleter(handle: ctypes.c_void_p) -> None:
 
 
 def from_cuda_buffer(
-    dev_ptr: int, shape: List[int], strides: List[int], dtype: STDType, dev: STDevice
+    dev_ptr: int, shape: List[int], strides: List[int], dtype: DType, dev: Device
 ):
     size = ctypes.c_size_t(ctypes.sizeof(DLManagedTensor))
     dl_managed_tensor = DLManagedTensor.from_address(

@@ -3,7 +3,6 @@ import sys
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 from fastsafetensors import SafeTensorsMetadata
-from fastsafetensors.common import CUDA_PTR_ALIGN
 import shutil
 from copy import deepcopy
 import json
@@ -24,6 +23,7 @@ def fix_sten_file(src_file: str, dst_file: str):
     dst_header_len = len(dst_header_str) + 8
     head_pad = 0
     need_copy = True
+    CUDA_PTR_ALIGN = meta.framework.get_device_ptr_align()
     if dst_header_len % CUDA_PTR_ALIGN > 0:
         head_pad = CUDA_PTR_ALIGN - dst_header_len % CUDA_PTR_ALIGN
         if head_pad < min_head_pad_len:
