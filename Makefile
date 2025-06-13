@@ -6,7 +6,6 @@ CONCMD := docker
 ifdef PODMAN
 	CONCMD = podman
 endif
-FST_DIR := $(shell python3 -c "import os; os.chdir('/tmp'); import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))")
 
 .PHONY: install
 install:
@@ -14,11 +13,13 @@ install:
 
 .PHONY: unittest
 unittest:
-	COVERAGE_FILE=.coverage_0 pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py
-	COVERAGE_FILE=.coverage_1 CUDA_VISIBLE_DEVICES="" pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py
-	COVERAGE_FILE=.coverage_2 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 --no-python pytest -s --cov=${FST_DIR} tests/test_multi.py > /tmp/2.log 2>&1 &
-	COVERAGE_FILE=.coverage_3 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 --no-python pytest -s --cov=${FST_DIR} tests/test_multi.py > /tmp/3.log 2>&1
-	coverage combine .coverage_0 .coverage_1 .coverage_2 .coverage_3
+	FST_DIR=$$(python3 -c "import os; os.chdir('/tmp'); import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))") && \
+	export TEST_FASTSAFETENSORS_FRAMEWORK=pytorch && \
+	COVERAGE_FILE=.coverage_0 pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py && \
+	COVERAGE_FILE=.coverage_1 CUDA_VISIBLE_DEVICES="" pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py && \
+	COVERAGE_FILE=.coverage_2 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 --no-python pytest -s --cov=${FST_DIR} tests/test_multi.py > /tmp/2.log 2>&1 & \
+	COVERAGE_FILE=.coverage_3 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 --no-python pytest -s --cov=${FST_DIR} tests/test_multi.py > /tmp/3.log 2>&1 && \
+	coverage combine .coverage_0 .coverage_1 .coverage_2 .coverage_3 && \
 	coverage html
 
 .PHONY: integrationtest
@@ -45,7 +46,20 @@ upload:
 	python3 -m twine upload -u __token__ dist/fastsafetensors-$(shell grep version pyproject.toml | sed -e 's/version = "\([0-9.]\+\)"/\1/g')*
 
 perf/dist:
-	cd perf && python3 -m build
+	cd perf && pip install .
 
+.PHONY: format
+format:
+	black8 .
+	isort .
+
+.PHONY: lint
+lint:
+	black --check .
+	isort --check-only .
+	flake8 . --select=E9,F63,F7,F82
+	mypy . --ignore-missing-imports
+
+.PHONY: clean
 clean:
 	rm -rf dist build fastsafetensors.egg-info

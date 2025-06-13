@@ -241,7 +241,7 @@ void set_debug_log(bool _debug_log)
     debug_log = _debug_log;
 }
 
-int init_gds(uint64_t _max_direct_io_size_in_kb, uint64_t max_pinned_memory_size_in_kb)
+int init_gds()
 {
     CUfileError_t err;
 
@@ -253,32 +253,9 @@ int init_gds(uint64_t _max_direct_io_size_in_kb, uint64_t max_pinned_memory_size
             return -1;
         }
     }
-
-    std::chrono::steady_clock::time_point begin_set_dio = std::chrono::steady_clock::now();
-    if (cuda_fns.cuFileDriverSetMaxDirectIOSize) {
-        err = cuda_fns.cuFileDriverSetMaxDirectIOSize(_max_direct_io_size_in_kb);
-        if (err.err != CU_FILE_SUCCESS) {
-            std::fprintf(stderr, "init_gds: cuFileDriverGetProperties(%ld) returned an error = %d\n", _max_direct_io_size_in_kb, err.err);
-            close_gds();
-            return -1;
-        }
-    }
-
-    std::chrono::steady_clock::time_point begin_set_pin = std::chrono::steady_clock::now();
-    if (cuda_fns.cuFileDriverSetMaxPinnedMemSize) {
-        err = cuda_fns.cuFileDriverSetMaxPinnedMemSize(max_pinned_memory_size_in_kb);
-        if (err.err != CU_FILE_SUCCESS) {
-            std::fprintf(stderr, "init_gds: cuFileDriverSetMaxPinnedMemSize(%ld) returned an error = %d\n", max_pinned_memory_size_in_kb, err.err);
-            close_gds();
-            return -1;
-        }
-    }
     if (debug_log) {
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] init_gds: cuFileDriverOpen=%ld us, cuFileDriverSetMaxDirectIOSize=%ld us, cuFileDriverSetMaxPinnedMemSize=%ld us, elapsed=%ld us\n",
-            std::chrono::duration_cast<std::chrono::microseconds>(begin_set_dio - begin).count(),
-            std::chrono::duration_cast<std::chrono::microseconds>(begin_set_pin - begin_set_dio).count(),
-            std::chrono::duration_cast<std::chrono::microseconds>(end - begin_set_pin).count(),
+        std::printf("[DEBUG] init_gds: cuFileDriverOpen=%ld us\n",
             std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
     }
     return 0;

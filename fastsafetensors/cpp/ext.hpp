@@ -61,7 +61,7 @@ typedef struct CUfileDrvProps {
 
 int get_alignment_size();
 void set_debug_log(bool _debug_log);
-int init_gds(uint64_t _max_direct_io_size_in_kb, uint64_t max_pinned_memory_size_in_kb);
+int init_gds();
 int close_gds();
 std::string get_device_pci_bus(int deviceId);
 int set_numa_node(int numa_node);
