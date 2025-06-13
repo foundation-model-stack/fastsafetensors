@@ -2,16 +2,26 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-import torch
 from safetensors import safe_open
 
+from fastsafetensors import SafeTensorsFileLoader
 from fastsafetensors import cpp as fstcpp
-from fastsafetensors import SafeTensorsFileLoader, SingleGroup, SafeTensorsMetadata
+from fastsafetensors.frameworks import FRAMEWORK
+
 
 def test_shuffle(fstcpp_log, input_files, pg):
     print("test_shuffle")
-    device = torch.device(f"cuda:0" if fstcpp.is_cuda_found() else "cpu")
-    loader = SafeTensorsFileLoader(pg, device, nogds=True, debug_log=True)
+    if FRAMEWORK.get_name() == "pytorch":
+        rank = pg.rank()
+        world_size = pg.size()
+        device = "cuda:0" if fstcpp.is_cuda_found() else "cpu"
+    elif FRAMEWORK.get_name() == "paddle":
+        rank = pg.process_group.rank()
+        world_size = pg.process_group.size()
+        device = "gpu:0" if fstcpp.is_cuda_found() else "cpu"
+    else:
+        raise Exception(f"Unknown framework: {FRAMEWORK.get_name()}")
+    loader = SafeTensorsFileLoader(device=device, pg=pg, nogds=True, debug_log=True)
     loader.add_filenames({0: input_files})
     bufs = loader.copy_files_to_device()
     key_dims = {key: -1 for key in loader.get_keys()}
@@ -19,7 +29,7 @@ def test_shuffle(fstcpp_log, input_files, pg):
         key_dims[f"h.{i}.mlp.c_proj.weight"] = 0
         key_dims[f"h.{i}.mlp.c_fc.weight"] = 1
     tensors = bufs.as_dict(key_dims)
-    with safe_open(input_files[0], framework="pt") as f:
+    with safe_open(input_files[0], framework=FRAMEWORK.get_name()) as f:
         for key in tensors.keys():
             dim = key_dims[key]
             if dim == 0 or dim == 1:
@@ -27,17 +37,19 @@ def test_shuffle(fstcpp_log, input_files, pg):
                 rank_slices = ()
                 shape = t.get_shape()
                 size = shape[dim]
-                block_size = (size + pg.size() - 1) // pg.size()
+                block_size = (size + world_size - 1) // world_size
                 for i in range(0, len(shape)):
                     if i < dim:
-                        rank_slices += (slice(None,None,None),)
+                        rank_slices += (slice(None, None, None),)
                     elif i == dim:
-                        rank_slices += (slice(pg.rank() * block_size, (pg.rank() + 1) * block_size, 1),)
+                        rank_slices += (
+                            slice(rank * block_size, (rank + 1) * block_size, 1),
+                        )
                         break
                 t = t[rank_slices]
                 t = t.clone().detach()
             else:
                 t = f.get_tensor(key)
-            assert torch.all(t.to(device=device).eq(tensors[key]))
+            assert FRAMEWORK.is_equal(tensors[key], t.to(device=device))
     bufs.close()
     loader.close()

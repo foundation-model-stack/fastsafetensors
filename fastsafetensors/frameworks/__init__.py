@@ -100,6 +100,10 @@ K = TypeVar("K", bound=ProcessGroupBase)
 
 class FrameworkOpBase(ABC, Generic[T, K]):
     @abstractmethod
+    def get_name(self) -> str:
+        pass
+
+    @abstractmethod
     def get_device(self, device: str, pg: K) -> Device:
         pass
 
@@ -151,6 +155,13 @@ class FrameworkOpBase(ABC, Generic[T, K]):
     def get_process_group(self, pg: Optional[Any]) -> ProcessGroupBase:
         pass
 
+    @abstractmethod
+    def is_equal(self, wrapped: T, real: Any) -> bool:
+        pass
+
+    @abstractmethod
+    def randn(self, s: tuple, dtype: DType) -> T:
+        pass
 
 @dataclass
 class NoTensor(TensorBase):
@@ -219,6 +230,9 @@ class NoProcessGroup(ProcessGroupBase[NoTensor]):
 
 
 class NoOp(FrameworkOpBase[NoTensor, NoProcessGroup]):
+    def get_name(self) -> str:
+        raise NotImplementedError("call init_framework_op()")
+        
     def get_device(self, device: str, pg: NoProcessGroup) -> Device:
         raise NotImplementedError("call init_framework_op()")
 
@@ -290,6 +304,11 @@ class NoOp(FrameworkOpBase[NoTensor, NoProcessGroup]):
     def get_process_group(self, pg: Optional[Any]) -> NoProcessGroup:
         raise NotImplementedError("call init_framework_op()")
 
+    def is_equal(self, one: NoTensor, two: NoTensor) -> bool:
+        raise NotImplementedError("call init_framework_op()")
+
+    def randn(self, s: tuple, dtype: DType) -> NoTensor:
+        raise NotImplementedError("call init_framework_op()")
 
 nop: FrameworkOpBase = NoOp()
 FRAMEWORK: FrameworkOpBase = nop
@@ -305,7 +324,7 @@ def init_framework_op(name: str):
 
         FRAMEWORK = TorchOp()
     elif name == "paddle":
-        from .paddle import PaddleOp
+        from ._paddle import PaddleOp
 
         FRAMEWORK = PaddleOp()
     raise Exception(f"Unknown framework name: {name}")

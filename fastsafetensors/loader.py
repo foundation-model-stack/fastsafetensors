@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, OrderedDict, Tuple, Union
 from . import cpp as fstcpp
 from .common import SafeTensorsMetadata, TensorFrame, get_device_numa_node
 from .file_buffer import FilesBufferOnDevice
-from .frameworks import FRAMEWORK, init_framework_op
+from .frameworks import FRAMEWORK, init_framework_op, TensorBase
 from .st_types import DeviceType, DType
 from .tensor_factory import LazyTensorFactory
 
@@ -205,8 +205,11 @@ class fastsafe_open:
     def keys(self) -> List[str]:
         return list(self.fb.key_to_rank_lidx.keys())
 
+    def get_tensor_wrapped(self, name: str) -> TensorBase:
+        return self.fb.get_tensor(name)
+
     def get_tensor(self, name: str) -> Any:
-        return self.fb.get_tensor(name).get_raw()
+        return self.get_tensor_wrapped(name).get_raw()
 
     def __enter__(self):
         return self
