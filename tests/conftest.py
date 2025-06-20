@@ -4,11 +4,8 @@ from typing import List
 import pytest
 
 from fastsafetensors import cpp as fstcpp
-from fastsafetensors import frameworks
-from fastsafetensors.frameworks import init_framework_op
+from fastsafetensors.frameworks import get_framework_op, FrameworkOpBase
 from fastsafetensors.st_types import Device
-
-init_framework_op(os.getenv("TEST_FASTSAFETENSORS_FRAMEWORK", "please set"))
 
 TESTS_DIR = os.path.dirname(__file__)
 REPO_ROOT = os.path.dirname(os.path.dirname(TESTS_DIR))
@@ -18,20 +15,25 @@ TMP_DIR = os.path.join(DATA_DIR, "tmp")
 os.makedirs(TF_DIR, 0o777, True)
 os.makedirs(TMP_DIR, 0o777, True)
 
+FRAMEWORK = get_framework_op(os.getenv("TEST_FASTSAFETENSORS_FRAMEWORK", "please set"))
+
+@pytest.fixture(scope="session", autouse=True)
+def framework() -> FrameworkOpBase:
+    return FRAMEWORK
 
 @pytest.fixture(scope="session", autouse=True)
 def input_files() -> List[str]:
-    os.environ["HF_HOME"] = TF_DIR
-    os.environ["HUGGINGFACE_HUB_CACHE"] = TF_DIR
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    AutoModelForCausalLM.from_pretrained("gpt2")
-    AutoTokenizer.from_pretrained("gpt2")
+    gpt_dir = os.path.join(TF_DIR, "models--gpt2")
+    if not os.path.exists(gpt_dir):
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        AutoModelForCausalLM.from_pretrained("gpt2", trust_remote_code=True, use_safetensors=True, cache_dir=TF_DIR)
+        AutoTokenizer.from_pretrained("gpt2", cache_dir=TF_DIR)
     src_files = []
-    for dir, _, files in os.walk(os.path.join(TF_DIR, "models--gpt2")):
+    for dir, _, files in os.walk(gpt_dir):
         for filename in files:
             if filename.endswith(".safetensors"):
                 src_files.append(f"{dir}/{filename}")
+                print(src_files[-1])
     return src_files
 
 
@@ -39,34 +41,30 @@ def input_files() -> List[str]:
 def pg():
     world_size = int(os.getenv("WORLD_SIZE", "1"))
     if world_size > 1:
-        if frameworks.OP.get_name() == "pytorch":
+        if FRAMEWORK.get_name() == "pytorch":
             import torch.distributed as dist
 
             dist.init_process_group(backend="gloo")
             dist.barrier()
-            return frameworks.OP.get_process_group(dist.group.WORLD)
-        elif frameworks.OP.get_name() == "paddle":
+            return dist.group.WORLD
+        elif FRAMEWORK.get_name() == "paddle":
             # The following code can only be successfully
             # executed by running the code using
             # `python -m paddle.distributed.launch`
-            import paddle
             import paddle.distributed as dist
 
             dist.init_parallel_env()
-            backend = "nccl" if paddle.device.cuda.device_count() else "gloo"
-            frameworks.OP.get_process_group(
-                dist.new_group(ranks=list(range(world_size)), backend=backend)
-            )
-    return frameworks.OP.get_process_group(None)
+            return dist.new_group(ranks=list(range(world_size)), backend="gloo")
+    return None
 
 
 @pytest.fixture(scope="session", autouse=True)
 def dev_init() -> None:
     if fstcpp.is_cuda_found():
-        dev_str = "cuda:0" if frameworks.OP.get_name() == "pytorch" else "gpu:0"
+        dev_str = "cuda:0" if FRAMEWORK.get_name() == "pytorch" else "gpu:0"
     else:
         dev_str = "cpu"
-    frameworks.OP.set_device(Device.from_str(dev_str))
+    FRAMEWORK.set_device(Device.from_str(dev_str))
 
 
 @pytest.fixture(scope="function")

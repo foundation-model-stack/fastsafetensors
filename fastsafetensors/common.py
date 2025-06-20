@@ -10,8 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 from . import cpp as fstcpp
 from .dlpack import from_cuda_buffer
-from . import frameworks
-from .frameworks import TensorBase
+from .frameworks import TensorBase, FrameworkOpBase
 from .st_types import Device, DType
 
 
@@ -35,17 +34,19 @@ class SafeTensorsMetadata:
         string: str,
         header_length: int,
         size_bytes: int,
+        framework: FrameworkOpBase,
         src: str = "",
         keep_orig_dict: bool = False,
     ):
         self.src = src
+        self.framework = framework
         ser = json.loads(string, object_pairs_hook=OrderedDict)
         self.metadata = ser.get("__metadata__", "")
         if self.metadata:
             del ser["__metadata__"]
         self.tensors: Dict[str, TensorFrame] = {}
         self.header_length = header_length
-        self.aligned = header_length % frameworks.OP.get_device_ptr_align() == 0
+        self.aligned = header_length % framework.get_device_ptr_align() == 0
         if keep_orig_dict:
             self.ser = ser
 
@@ -67,7 +68,7 @@ class SafeTensorsMetadata:
             nelements = 1
             for sh in t.shape:
                 nelements *= sh
-            nbytes = nelements * frameworks.OP.get_dtype_size(t.dtype)
+            nbytes = nelements * framework.get_dtype_size(t.dtype)
             if (e - s) != nbytes:
                 raise Exception(
                     f"validate(tensor {k}): TensorInvalidInfo, e-s={e-s}, nbytes={nbytes}, src={src}"
@@ -79,7 +80,7 @@ class SafeTensorsMetadata:
             )
 
     @classmethod
-    def from_buffer(self, buf: int, buffer_len: int, filename: str):
+    def from_buffer(self, buf: int, buffer_len: int, filename: str, framework: FrameworkOpBase):
         if buffer_len < 8:
             raise Exception(
                 f"from_buffer: HeaderTooSmall, filename={filename}, buffer_len={buffer_len}"
@@ -99,13 +100,14 @@ class SafeTensorsMetadata:
         # NOTE: Add when we move to 0.4.0
         # if string.startswith('{'):
         #    raise Exception(f"{filename}: InvalidHeaderStart")
-        return SafeTensorsMetadata(string, n + 8, buffer_len)
+        return SafeTensorsMetadata(string, n + 8, buffer_len, framework)
 
     @classmethod
     def from_fd(
         self,
         fd: int,
         filename: str,
+        framework: FrameworkOpBase,
         keep_orig_dict: bool = False,
     ):
         status = os.fstat(fd)
@@ -131,14 +133,15 @@ class SafeTensorsMetadata:
             string,
             n + 8,
             buffer_len,
+            framework,
             filename,
             keep_orig_dict=keep_orig_dict,
         )
 
     @classmethod
-    def from_file(self, filename: str):
+    def from_file(self, filename: str, framework: FrameworkOpBase):
         fd = os.open(filename, os.O_RDONLY, 0o644)
-        ret = self.from_fd(fd, filename, keep_orig_dict=False)
+        ret = self.from_fd(fd, filename, framework=framework, keep_orig_dict=False)
         os.close(fd)
         return ret
 
@@ -157,7 +160,7 @@ class SafeTensorsMetadata:
                 + t.data_offsets[0]
                 - copy_start_offset
             )
-            disk_dtype = frameworks.OP.as_workaround_dtype(t.dtype)
+            disk_dtype = self.framework.as_workaround_dtype(t.dtype)
             dl_tensor = from_cuda_buffer(
                 dst_dev_ptr,
                 t.shape,
@@ -165,17 +168,17 @@ class SafeTensorsMetadata:
                 disk_dtype,
                 device,
             )
-            t2 = frameworks.OP.from_dlpack(dl_tensor, device, disk_dtype)
+            t2 = self.framework.from_dlpack(dl_tensor, device, disk_dtype)
             if disk_dtype != t.dtype:
                 t2 = t2.view(t.dtype)
 
             if dtype != DType.AUTO and dtype != t.dtype:
-                if frameworks.OP.get_dtype_size(dtype) > frameworks.OP.get_dtype_size(t.dtype):
+                if self.framework.get_dtype_size(dtype) > self.framework.get_dtype_size(t.dtype):
                     raise Exception(
                         f"Online type conversion to larger sizes is not supported ({t.dtype} -> {dtype})"
                     )
                 t3 = t2.to(dtype=dtype)
-                conv_dtype: DType = frameworks.OP.as_workaround_dtype(dtype)
+                conv_dtype: DType = self.framework.as_workaround_dtype(dtype)
                 dl_tensor = from_cuda_buffer(
                     dst_dev_ptr,
                     t.shape,
@@ -183,10 +186,10 @@ class SafeTensorsMetadata:
                     conv_dtype,
                     device,
                 )
-                t2 = frameworks.OP.from_dlpack(dl_tensor, device, conv_dtype)
+                t2 = self.framework.from_dlpack(dl_tensor, device, conv_dtype)
                 if dtype != conv_dtype:
                     t2 = t2.view(dtype)
-                frameworks.OP.copy_tensor(t2, t3)
+                self.framework.copy_tensor(t2, t3)
                 self.tensors[tensor_name].dtype = dtype
             ret[tensor_name] = t2
         return ret

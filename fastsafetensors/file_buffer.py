@@ -4,8 +4,7 @@
 from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 
-from . import frameworks
-from .frameworks import ProcessGroupBase, TensorBase
+from .frameworks import ProcessGroupBase, TensorBase, FrameworkOpBase
 from .st_types import Device, DType
 from .tensor_factory import LazyTensorFactory
 
@@ -33,8 +32,10 @@ class FilesBufferOnDevice:
         self,
         rank_loaders: Dict[int, List[LazyTensorFactory]],
         pg: ProcessGroupBase,
+        framework: FrameworkOpBase,
         auto_mem_delete: bool = True,
     ):
+        self.framework = framework
         self.rank_loaders: Dict[int, List[LazyTensorFactory]] = rank_loaders
         self.key_to_rank_lidx: Dict[str, Tuple[int, int]] = {}
         self.instantiated: Dict[int, Dict[int, Dict[str, bool]]] = {}  # rank, key name
@@ -175,7 +176,7 @@ class FilesBufferOnDevice:
             return self._get_tensor(
                 rank, lidix, rank_lidixs[(rank, lidix)][0], ts[0], device, dtype
             )
-        ret = frameworks.OP.concat_tensors(ts, dim=dim)
+        ret = self.framework.concat_tensors(ts, dim=dim)
         if self.auto_mem_delete:
             for tensor_name in tensor_names:
                 (rank, lidx) = self._get_rank_lidx(tensor_name)

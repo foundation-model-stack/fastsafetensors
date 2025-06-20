@@ -2,26 +2,25 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-from safetensors import safe_open
 
 from fastsafetensors import SafeTensorsFileLoader
 from fastsafetensors import cpp as fstcpp
-from fastsafetensors import frameworks
 
-
-def test_shuffle(fstcpp_log, input_files, pg):
+def test_shuffle(fstcpp_log, input_files, pg, framework):
     print("test_shuffle")
-    if frameworks.OP.get_name() == "pytorch":
+    if framework.get_name() == "pytorch":
+        from safetensors.torch import load_file
         rank = pg.rank()
         world_size = pg.size()
         device = "cuda:0" if fstcpp.is_cuda_found() else "cpu"
-    elif frameworks.OP.get_name() == "paddle":
+    elif framework.get_name() == "paddle":
+        from safetensors.paddle import load_file
         rank = pg.process_group.rank()
         world_size = pg.process_group.size()
         device = "gpu:0" if fstcpp.is_cuda_found() else "cpu"
     else:
-        raise Exception(f"Unknown framework: {frameworks.OP.get_name()}")
-    loader = SafeTensorsFileLoader(device=device, pg=pg, nogds=True, debug_log=True)
+        raise Exception(f"Unknown framework: {framework.get_name()}")
+    loader = SafeTensorsFileLoader(device=device, pg=pg, nogds=True, framework=framework.get_name(), debug_log=True)
     loader.add_filenames({0: input_files})
     bufs = loader.copy_files_to_device()
     key_dims = {key: -1 for key in loader.get_keys()}
@@ -29,27 +28,50 @@ def test_shuffle(fstcpp_log, input_files, pg):
         key_dims[f"h.{i}.mlp.c_proj.weight"] = 0
         key_dims[f"h.{i}.mlp.c_fc.weight"] = 1
     tensors = bufs.as_dict(key_dims)
-    with safe_open(input_files[0], framework=frameworks.OP.get_name()) as f:
-        for key in tensors.keys():
-            dim = key_dims[key]
-            if dim == 0 or dim == 1:
-                t = f.get_slice(key)
-                rank_slices = ()
-                shape = t.get_shape()
-                size = shape[dim]
-                block_size = (size + world_size - 1) // world_size
-                for i in range(0, len(shape)):
-                    if i < dim:
-                        rank_slices += (slice(None, None, None),)
-                    elif i == dim:
-                        rank_slices += (
-                            slice(rank * block_size, (rank + 1) * block_size, 1),
-                        )
-                        break
-                t = t[rank_slices]
-                t = t.clone().detach()
-            else:
-                t = f.get_tensor(key)
-            assert frameworks.OP.is_equal(tensors[key], t.to(device=device))
+    f = load_file(input_files[0])
+    origs = {}
+    for key in tensors.keys():
+        dim = key_dims[key]
+        if dim == 0 or dim == 1:
+            t = f[key]
+            rank_slices = ()
+            shape = t.shape
+            size = shape[dim]
+            block_size = (size + world_size - 1) // world_size
+            for i in range(0, len(shape)):
+                if i < dim:
+                    rank_slices += (slice(None, None, None),)
+                elif i == dim:
+                    rank_slices += (
+                        slice(rank * block_size, (rank + 1) * block_size, 1),
+                    )
+                    break
+            t = t[rank_slices]
+            t = t.clone().detach()
+        else:
+            t = f[key]
+        t = t.to(device=device)
+        origs[key] = t
+        assert framework.is_equal(tensors[key], t)
+
+    #TODO
+    #bufs.close()
+    #loader.reset()
+
+    #loader.add_filenames({0: input_files})
+    #bufs = loader.copy_files_to_device()
+    #pushed = bufs.push_tensor("h.3.attn.c_proj.bias", 1)
+    #assert rank == 1 and pushed.get_raw() != None
+    #assert rank == 0 and pushed == None
+
+    #tensors2 = bufs.get_tensor("h.3.attn.c_proj.bias") # cached load
+    #assert framework.is_equal(tensors2, origs["h.3.attn.c_proj.bias"])
+
     bufs.close()
     loader.close()
+
+if __name__ == "__main__":
+    import sys
+    import os
+    os.environ["PADDLE_DISTRI_BACKEND"] = "gloo"
+    sys.exit(pytest.main(sys.argv[1:]))

@@ -52,10 +52,6 @@ T = TypeVar("T", bound=TensorBase)
 
 class ProcessGroupBase(ABC, Generic[T]):
     @abstractmethod
-    def is_single(self) -> bool:
-        pass
-
-    @abstractmethod
     def size(self) -> int:
         pass
 
@@ -163,169 +159,18 @@ class FrameworkOpBase(ABC, Generic[T, K]):
     def randn(self, s: tuple, dtype: DType) -> T:
         pass
 
-@dataclass
-class NoTensor(TensorBase):
-    def get_raw(self) -> Any:
-        raise NotImplementedError("call init_framework_op()")
+    @abstractmethod
+    def support_fp8(self) -> bool:
+        pass
 
-    def contiguous(self) -> "NoTensor":
-        raise NotImplementedError("call init_framework_op()")
-
-    def to(
-        self,
-        device: Optional[Device] = None,
-        dtype: DType = DType.AUTO,
-    ) -> "NoTensor":
-        raise NotImplementedError("call init_framework_op()")
-
-    def clone(self) -> "NoTensor":
-        raise NotImplementedError("call init_framework_op()")
-
-    def detach(self) -> "NoTensor":
-        raise NotImplementedError("call init_framework_op()")
-
-    def view(self, dtype: DType) -> "NoTensor":
-        raise NotImplementedError("call init_framework_op()")
-
-    def __getitem__(self, _val) -> "NoTensor":
-        raise NotImplementedError("call init_framework_op()")
-
-
-class NoProcessGroup(ProcessGroupBase[NoTensor]):
-    def is_single(self) -> bool:
-        raise NotImplementedError("call init_framework_op()")
-
-    def size(self) -> int:
-        raise NotImplementedError("call init_framework_op()")
-
-    def rank(self) -> int:
-        raise NotImplementedError("call init_framework_op()")
-
-    def broadcast(self, dst: T, rank: int) -> None:
-        raise NotImplementedError("call init_framework_op()")
-
-    def scatter(
-        self,
-        dst: T,
-        scatter_list: List[T],
-        src: int,
-    ) -> None:
-        raise NotImplementedError("call init_framework_op()")
-
-    def send(
-        self,
-        t: T,
-        dst_rank: int,
-        tag: int,
-    ) -> None:
-        raise NotImplementedError("call init_framework_op()")
-
-    def recv(
-        self,
-        t: T,
-        src_rank: int,
-        tag: int,
-    ) -> None:
-        raise NotImplementedError("call init_framework_op()")
-
-
-class NoOp(FrameworkOpBase[NoTensor, NoProcessGroup]):
-    def get_name(self) -> str:
-        raise NotImplementedError("call init_framework_op()")
-        
-    def get_device(self, device: str, pg: NoProcessGroup) -> Device:
-        raise NotImplementedError("call init_framework_op()")
-
-    def set_device(self, device: Device) -> None:
-        raise NotImplementedError("call init_framework_op()")
-
-    def alloc_tensor_memory(self, length: int, dev: Device) -> gds_device_buffer:
-        raise NotImplementedError("call init_framework_op()")
-
-    def free_tensor_memory(self, gbuf: gds_device_buffer, dev: Device) -> None:
-        raise NotImplementedError("call init_framework_op()")
-
-    def get_empty_tensor(
-        self, shape: List[int], dtype: DType, device: Device
-    ) -> NoTensor:
-        raise NotImplementedError("call init_framework_op()")
-
-    def concat_tensors(self, tensors: List[NoTensor], dim: int) -> NoTensor:
-        raise NotImplementedError("call init_framework_op()")
-
-    def copy_tensor(self, dst: NoTensor, src: NoTensor) -> None:
-        raise NotImplementedError("call init_framework_op()")
-
-    def get_dtype_size(self, dtype: DType) -> int:
-        raise NotImplementedError("call init_framework_op()")
-
-    def from_dlpack(self, dl_tensor: Any, device: Device, dtype: DType) -> NoTensor:
-        raise NotImplementedError("call init_framework_op()")
-
-    def get_cuda_ver(self) -> str:
-        raise NotImplementedError("call init_framework_op()")
-
-    def get_device_ptr_align(self) -> int:
-        raise NotImplementedError("call init_framework_op()")
-
-    def as_workaround_dtype(self, dtype: DType) -> DType:
-        raise NotImplementedError("call init_framework_op()")
-
-    def broadcast(self, dst: NoTensor, rank: int, group: NoProcessGroup):
-        raise NotImplementedError("call init_framework_op()")
-
-    def scatter(
-        self,
-        dst: NoTensor,
-        scatter_list: List[NoTensor],
-        src: int,
-        group: NoProcessGroup,
-    ):
-        raise NotImplementedError("call init_framework_op()")
-
-    def send(
-        self,
-        t: NoTensor,
-        dst_rank: int,
-        group: NoProcessGroup,
-        tag: int,
-    ):
-        raise NotImplementedError("call init_framework_op()")
-
-    def recv(
-        self,
-        t: NoTensor,
-        src_rank: int,
-        group: NoProcessGroup,
-        tag: int,
-    ):
-        raise NotImplementedError("call init_framework_op()")
-
-    def get_process_group(self, pg: Optional[Any]) -> NoProcessGroup:
-        raise NotImplementedError("call init_framework_op()")
-
-    def is_equal(self, one: NoTensor, two: NoTensor) -> bool:
-        raise NotImplementedError("call init_framework_op()")
-
-    def randn(self, s: tuple, dtype: DType) -> NoTensor:
-        raise NotImplementedError("call init_framework_op()")
-
-nop: FrameworkOpBase = NoOp()
-OP: FrameworkOpBase = nop
-
-
-def init_framework_op(name: str):
-    global nop
-    global OP
-    if OP != nop:
-        return
+def get_framework_op(name: str) -> FrameworkOpBase:
     if name == "pt" or name == "pytorch" or name == "torch":
         from ._torch import TorchOp
 
-        OP = TorchOp()
+        return TorchOp()
     elif name == "paddle":
         from ._paddle import PaddleOp
 
-        OP = PaddleOp()
+        return PaddleOp()
     else:
         raise Exception(f"Unknown framework name: {name}")

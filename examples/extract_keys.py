@@ -4,13 +4,13 @@ import sys
 import torch
 from safetensors import safe_open
 
-from fastsafetensors import SafeTensorsFileLoader, SingleGroup
+from fastsafetensors import SafeTensorsFileLoader
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("specify a directory containing safetensors files")
         sys.exit(1)
-    loader = SafeTensorsFileLoader(SingleGroup(), torch.device("cpu"), nogds=True)
+    loader = SafeTensorsFileLoader(device="cpu", nogds=True)
     input_file_or_dir = sys.argv[1]
     src_files = {0: []}
     orig_keys = {}

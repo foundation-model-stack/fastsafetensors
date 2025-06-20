@@ -5,6 +5,7 @@ try:
     import paddle
     import paddle.distributed as pdist
     from paddle.framework import core as paddle_core
+    from paddle.distributed.communication.group import Group
 except ImportError as e:
     raise ImportError(
         "could not import paddle, paddle_core, or numpy. Please install them."
@@ -21,8 +22,6 @@ dtype_convert: Dict[DType, Any] = {
     DType.BOOL: paddle.bool,
     DType.I8: paddle.uint8,
     DType.I8: paddle.int8,
-    DType.F8_E5M2: paddle.float8_e5m2,
-    DType.F8_E4M3: paddle.float8_e4m3fn,
     DType.I16: paddle.int16,
     DType.U16: paddle.bfloat16,
     DType.I32: paddle.int32,
@@ -39,6 +38,10 @@ need_workaround_dtypes: Dict[DType, DType] = {
     DType.F8_E4M3: DType.I8,
 }
 
+if hasattr(paddle, 'float8_e5m2'):
+    dtype_convert[DType.F8_E5M2] = paddle.float8_e5m2
+if hasattr(paddle, 'float8_e4m3fn'):
+    dtype_convert[DType.F8_E4M3] = paddle.float8_e4m3fn
 
 @dataclass
 class PaddleTensor(TensorBase):
@@ -87,20 +90,17 @@ class PaddleTensor(TensorBase):
 
 @dataclass
 class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
-    real_pg: Optional[pdist.ProcessGroup]
-
-    def is_single(self) -> bool:
-        return self.real_pg is not None
+    real_pg: Optional[Group]
 
     def size(self) -> int:
-        return self.real_pg.size() if self.real_pg else 1
+        return self.real_pg.process_group.size() if self.real_pg else 1
 
     def rank(self) -> int:
         return self.real_pg.process_group.rank() if self.real_pg else 0
 
     def broadcast(self, dst: PaddleTensor, rank: int) -> None:
         if self.real_pg:
-            pdist.broadcast(dst.real_tensor, rank, group=self.real_pg.process_group)
+            pdist.broadcast(dst.real_tensor, rank, group=self.real_pg)
 
     def scatter(
         self,
@@ -112,9 +112,9 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
             sl = [t.real_tensor for t in scatter_list]
             pdist.scatter(
                 dst.real_tensor,
-                scatter_list=sl,
+                tensor_list=sl,
                 src=src,
-                group=self.real_pg.process_group,
+                group=self.real_pg,
             )
 
     def send(
@@ -124,7 +124,7 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
         tag: int,
     ) -> None:
         if self.real_pg:
-            pdist.send(t.get_raw(), dst_rank, group=self.real_pg.process_group)
+            pdist.send(t.get_raw(), dst_rank, group=self.real_pg)
 
     def recv(
         self,
@@ -133,7 +133,7 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
         tag: int,
     ) -> None:
         if self.real_pg:
-            pdist.recv(t.real_tensor, src_rank, group=self.real_pg.process_group)
+            pdist.recv(t.real_tensor, src_rank, group=self.real_pg)
 
 
 class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
@@ -144,13 +144,16 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
         try:
             dev_split = device.split(":", 1)
             dev_type = DeviceType(dev_split[0].lower())
-            dev_index: int = 0
-            if len(dev_split) > 0:
-                dev_index = int(dev_split[1])
+            if dev_type == DeviceType.CPU:
+                dev_index = None
+            else:
+                dev_index: int = 0
+                if len(dev_split) > 1:
+                    dev_index = int(dev_split[1])
         except ValueError:
             raise ValueError(f"Unknown device: {device}")
 
-        if pg.real_pg is None:
+        if paddle.device.cuda.device_count() > 0 and pg.real_pg is not None:
             # For single (gpu:x, gpu)
             # gpu:x, like gpu:0, gpu:1, ...
             # For distributed
@@ -218,8 +221,8 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
         return dtype
 
     def get_process_group(self, pg: Optional[Any]) -> PaddleProcessGroup:
-        if pg is not None and not isinstance(pg, pdist.ProcessGroup):
-            raise Exception("pg must be an instance of paddle.distributed.ProcessGroup")
+        if pg is not None and not isinstance(pg, Group):
+            raise Exception("pg must be an instance of paddle.distributed.communication.group.Group")
         return PaddleProcessGroup(pg)
 
     # for testing
@@ -228,5 +231,8 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
             return paddle.all(wrapped.real_tensor.equal(real))
         raise Exception("real is not paddle.Tensor")
 
-    def randn(self, s: tuple, dtype: DType) -> PaddleTensor:
-        return paddle.randn(s, dtype=dtype_convert[dtype])
+    def randn(self, s: tuple, device: Device, dtype: DType) -> PaddleTensor:
+        return PaddleTensor(device, dtype, paddle.randn(s, dtype=dtype_convert[dtype]).to(device=device.as_str()))
+
+    def support_fp8(self) -> bool:
+        return DType.F8_E5M2 in dtype_convert

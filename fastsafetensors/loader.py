@@ -9,7 +9,7 @@ from . import cpp as fstcpp
 from .common import SafeTensorsMetadata, TensorFrame, get_device_numa_node
 from .file_buffer import FilesBufferOnDevice
 from . import frameworks
-from .frameworks import init_framework_op, TensorBase
+from .frameworks import get_framework_op, TensorBase
 from .st_types import DeviceType, DType
 from .tensor_factory import LazyTensorFactory
 
@@ -44,17 +44,16 @@ class SafeTensorsFileLoader:
         bbuf_size_kb: int = 16 * 1024,
         max_threads: int = 16,
         nogds: bool = False,
-        set_numa: bool = False,
+        set_numa: bool = True,
         debug_log: bool = False,
         framework="pytorch",
     ):
-        init_framework_op(framework)
-        self.pg = frameworks.OP.get_process_group(pg)
-        self.device = frameworks.OP.get_device(device, self.pg)
+        self.framework = get_framework_op(framework)
+        self.pg = self.framework.get_process_group(pg)
+        self.device = self.framework.get_device(device, self.pg)
         self.debug_log = debug_log
         self.meta: Dict[str, Tuple[SafeTensorsMetadata, int]] = {}
         self.frames = OrderedDict[str, TensorFrame]()
-        self.nogds = nogds
         global gl_set_numa
         if not gl_set_numa and set_numa:
             node = get_device_numa_node(self.device.index)
@@ -71,16 +70,12 @@ class SafeTensorsFileLoader:
                 UserWarning,
             )
             nogds = True
-        self.reader: Optional[
-            Union[fstcpp.nogds_file_reader, fstcpp.gds_file_reader]
-        ] = None
         if nogds:
             self.reader = fstcpp.nogds_file_reader(
                 False, bbuf_size_kb, max_threads, device_is_not_cpu
             )
         else:
             self.reader = fstcpp.gds_file_reader(max_threads, device_is_not_cpu)
-        self.nogds = nogds
 
     def reset(self):
         self.frames = {}
@@ -108,7 +103,7 @@ class SafeTensorsFileLoader:
                 next_idx = rank_next_idx[rank]
                 if next_idx < len(filenames[rank]):
                     realpath = filenames[rank][next_idx]  # os.path.realpath(filename)
-                    metadata = SafeTensorsMetadata.from_file(realpath)
+                    metadata = SafeTensorsMetadata.from_file(realpath, self.framework)
                     self.meta[realpath] = (metadata, rank)
                     self.frames.update(metadata.tensors)
                     if self.debug_log and rank == self.pg.rank():
@@ -128,7 +123,7 @@ class SafeTensorsFileLoader:
         At this moment, we do not instantiate tensors but just creating copies at device buffers with or without GDS.
         Users can instantiate and/or partition tensors with FilesBufferOnDevice returned by this function.
         """
-        frameworks.OP.set_device(self.device)
+        self.framework.set_device(self.device)
 
         need_wait: List[LazyTensorFactory] = []
         factories: Dict[int, List[LazyTensorFactory]] = {}
@@ -147,8 +142,8 @@ class SafeTensorsFileLoader:
                 self_rank,
                 factory_idx_bits,
                 lidx,
-                self.nogds,
                 self.reader,
+                self.framework,
                 self.debug_log,
             )
             factory.submit_io(use_buf_register, max_copy_block_size)
@@ -157,8 +152,8 @@ class SafeTensorsFileLoader:
                 need_wait.append(factory)
             lidx += 1
         for factory in need_wait:
-            factory.wait_io(dtype=dtype, noalign=self.nogds)
-        return FilesBufferOnDevice(factories, pg=self.pg)
+            factory.wait_io(dtype=dtype, noalign=isinstance(self.reader, fstcpp.nogds_file_reader))
+        return FilesBufferOnDevice(factories, pg=self.pg, framework=self.framework)
 
 
 class fastsafe_open:

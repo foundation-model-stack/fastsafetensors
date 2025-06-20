@@ -11,15 +11,31 @@ endif
 install:
 	pip install . --no-cache-dir --no-build-isolation
 
-.PHONY: unittest
+.PHONY: unittest unittest-paddle htmlcov
+
+FST_DIR := $(shell python3 -c "import os; os.chdir('/tmp'); import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))")
+
 unittest:
-	FST_DIR=$$(python3 -c "import os; os.chdir('/tmp'); import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))") && \
-	export TEST_FASTSAFETENSORS_FRAMEWORK=pytorch && \
-	COVERAGE_FILE=.coverage_0 pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py && \
-	COVERAGE_FILE=.coverage_1 CUDA_VISIBLE_DEVICES="" pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py && \
-	COVERAGE_FILE=.coverage_2 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 --no-python pytest -s --cov=${FST_DIR} tests/test_multi.py > /tmp/2.log 2>&1 & \
-	COVERAGE_FILE=.coverage_3 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 --no-python pytest -s --cov=${FST_DIR} tests/test_multi.py > /tmp/3.log 2>&1 && \
-	coverage combine .coverage_0 .coverage_1 .coverage_2 .coverage_3 && \
+	@FST_DIR=$(FST_DIR); \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_0 pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_1 CUDA_VISIBLE_DEVICES="" pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_2 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 tests/test_multi.py --cov=$(FST_DIR) -s tests/test_multi.py > /tmp/2.log 2>&1 & \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_3 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 tests/test_multi.py --cov=$(FST_DIR) -s tests/test_multi.py > /tmp/3.log 2>&1 && \
+	wait
+
+unittest-paddle:
+	@FST_DIR=$(FST_DIR); \
+	TEST_FASTSAFETENSORS_FRAMEWORK=paddle COVERAGE_FILE=.coverage_4 CUDA_VISIBLE_DEVICES="" pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=paddle COVERAGE_FILE=.coverage_5 CUDA_VISIBLE_DEVICES="" WORLD_SIZE=2 python3 -m paddle.distributed.launch --nnodes 2 --master 127.0.0.1:1234 --rank 0 tests/test_multi.py --cov=$(FST_DIR) -s tests/test_multi.py > /tmp/2.log 2>&1 & \
+	TEST_FASTSAFETENSORS_FRAMEWORK=paddle COVERAGE_FILE=.coverage_6 CUDA_VISIBLE_DEVICES="" WORLD_SIZE=2 python3 -m paddle.distributed.launch --nnodes 2 --master 127.0.0.1:1234 --rank 1 tests/test_multi.py --cov=$(FST_DIR) -s tests/test_multi.py > /tmp/3.log 2>&1 && \
+	wait
+
+unittest-paddle-gpu:
+	@FST_DIR=$(FST_DIR); \
+	TEST_FASTSAFETENSORS_FRAMEWORK=paddle COVERAGE_FILE=.coverage_7 pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py
+
+htmlcov:
+	coverage combine .coverage_* && \
 	coverage html
 
 .PHONY: integrationtest

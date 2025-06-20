@@ -25,17 +25,22 @@ dtype_convert: Dict[DType, Any] = {
     DType.BF16: torch.bfloat16,
     DType.F32: torch.float32,
     DType.F64: torch.float64,
-    # Pytorch >=2.3.0
-    DType.F8_E5M2: torch.float8_e5m2,
-    DType.F8_E4M3: torch.float8_e4m3fn,
-    DType.U16: torch.uint16,
-    DType.U32: torch.uint32,
-    DType.U64: torch.uint64,
 }
 need_workaround_dtypes: Dict[DType, DType] = {
     DType.F8_E5M2: DType.I8,
     DType.F8_E4M3: DType.I8,
 }
+
+if hasattr(torch, 'float8_e5m2'):
+    dtype_convert[DType.F8_E5M2] = torch.float8_e5m2
+if hasattr(torch, 'float8_e4m3fn'):
+    dtype_convert[DType.F8_E4M3] = torch.float8_e4m3fn
+if hasattr(torch, 'uint16'):
+    dtype_convert[DType.U16] = torch.uint16
+if hasattr(torch, 'uint32'):
+    dtype_convert[DType.U32] = torch.uint32
+if hasattr(torch, 'uint64'):
+    dtype_convert[DType.U64] = torch.uint64
 
 
 @dataclass
@@ -86,9 +91,6 @@ class TorchTensor(TensorBase):
 @dataclass
 class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
     real_pg: Optional[dist.ProcessGroup]
-
-    def is_single(self) -> bool:
-        return self.real_pg is not None
 
     def size(self) -> int:
         return self.real_pg.size() if self.real_pg else 1
@@ -204,3 +206,6 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
 
     def randn(self, s: tuple, device: Device, dtype: DType) -> TorchTensor:
         return TorchTensor(device, dtype, torch.randn(s, device=device.as_str(), dtype=dtype_convert[dtype]))
+
+    def support_fp8(self) -> bool:
+        return DType.F8_E5M2 in dtype_convert
