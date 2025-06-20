@@ -6,11 +6,11 @@ import pytest
 from safetensors import safe_open
 
 from fastsafetensors import SafeTensorsFileLoader
-from fastsafetensors.frameworks import FRAMEWORK
+from fastsafetensors import frameworks
 
 
 def test_shuffle_paddle(fstcpp_log, input_files, pg):
-    if FRAMEWORK.get_name() != "paddle":
+    if frameworks.OP.get_name() != "paddle":
         return
     device = "gpu" if paddle.device.cuda.device_count() else "cpu"
     loader = SafeTensorsFileLoader(

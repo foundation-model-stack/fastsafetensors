@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Optional, OrderedDict, Tuple, Union
 from . import cpp as fstcpp
 from .common import SafeTensorsMetadata, TensorFrame, get_device_numa_node
 from .file_buffer import FilesBufferOnDevice
-from .frameworks import FRAMEWORK, init_framework_op, TensorBase
+from . import frameworks
+from .frameworks import init_framework_op, TensorBase
 from .st_types import DeviceType, DType
 from .tensor_factory import LazyTensorFactory
 
@@ -48,8 +49,8 @@ class SafeTensorsFileLoader:
         framework="pytorch",
     ):
         init_framework_op(framework)
-        self.pg = FRAMEWORK.get_process_group(pg)
-        self.device = FRAMEWORK.get_device(device, self.pg)
+        self.pg = frameworks.OP.get_process_group(pg)
+        self.device = frameworks.OP.get_device(device, self.pg)
         self.debug_log = debug_log
         self.meta: Dict[str, Tuple[SafeTensorsMetadata, int]] = {}
         self.frames = OrderedDict[str, TensorFrame]()
@@ -61,7 +62,7 @@ class SafeTensorsFileLoader:
                 fstcpp.set_numa_node(node)
             gl_set_numa = True
         fstcpp.set_debug_log(debug_log)
-        device_is_not_cpu = self.device != DeviceType.CPU
+        device_is_not_cpu = self.device.type != DeviceType.CPU
         if device_is_not_cpu and not fstcpp.is_cuda_found():
             raise Exception("[FAIL] libcudart.so does not exist")
         if not fstcpp.is_cufile_found() and not nogds:
@@ -127,7 +128,7 @@ class SafeTensorsFileLoader:
         At this moment, we do not instantiate tensors but just creating copies at device buffers with or without GDS.
         Users can instantiate and/or partition tensors with FilesBufferOnDevice returned by this function.
         """
-        FRAMEWORK.set_device(self.device)
+        frameworks.OP.set_device(self.device)
 
         need_wait: List[LazyTensorFactory] = []
         factories: Dict[int, List[LazyTensorFactory]] = {}

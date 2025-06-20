@@ -311,20 +311,21 @@ class NoOp(FrameworkOpBase[NoTensor, NoProcessGroup]):
         raise NotImplementedError("call init_framework_op()")
 
 nop: FrameworkOpBase = NoOp()
-FRAMEWORK: FrameworkOpBase = nop
+OP: FrameworkOpBase = nop
 
 
 def init_framework_op(name: str):
     global nop
-    global FRAMEWORK
-    if FrameworkOpBase is not nop:
+    global OP
+    if OP != nop:
         return
-    if name == "pt" or name == "pytorch":
-        from .torch import TorchOp
+    if name == "pt" or name == "pytorch" or name == "torch":
+        from ._torch import TorchOp
 
-        FRAMEWORK = TorchOp()
+        OP = TorchOp()
     elif name == "paddle":
         from ._paddle import PaddleOp
 
-        FRAMEWORK = PaddleOp()
-    raise Exception(f"Unknown framework name: {name}")
+        OP = PaddleOp()
+    else:
+        raise Exception(f"Unknown framework name: {name}")

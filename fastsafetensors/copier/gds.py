@@ -5,7 +5,8 @@ from typing import Dict, Optional
 
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata
-from ..frameworks import FRAMEWORK, TensorBase
+from .. import frameworks
+from ..frameworks import TensorBase
 from ..st_types import Device, DeviceType, DType
 
 
@@ -25,7 +26,7 @@ class GdsFileCopier:
         self.fh: Optional[fstcpp.gds_file_handle] = None
         self.copy_reqs: Dict[int, int] = {}
         self.aligned_length = 0
-        cudavers = list(map(int, FRAMEWORK.get_cuda_ver().split(".")))
+        cudavers = list(map(int, frameworks.OP.get_cuda_ver().split(".")))
         # CUDA 12.2 (GDS version 1.7) introduces support for non O_DIRECT file descriptors
         # Compatible with CUDA 11.x
         self.o_direct = not (
@@ -54,7 +55,7 @@ class GdsFileCopier:
             aligned_length = length + head_bytes
         aligned_offset = offset - head_bytes
 
-        gbuf = FRAMEWORK.alloc_tensor_memory(aligned_length, self.device)
+        gbuf = frameworks.OP.alloc_tensor_memory(aligned_length, self.device)
         if use_buf_register:
             count = 0
             while count < aligned_length:
@@ -112,10 +113,10 @@ class GdsFileCopier:
         self.copy_reqs = {}
         if not noalign and not self.metadata.aligned and self.aligned_length > 0:
             misaligned_bytes = (
-                self.metadata.header_length % FRAMEWORK.get_device_ptr_align()
+                self.metadata.header_length % frameworks.OP.get_device_ptr_align()
             )
             length = 1024 * 1024 * 1024
-            tmp_gbuf = FRAMEWORK.alloc_tensor_memory(length, self.device)
+            tmp_gbuf = frameworks.OP.alloc_tensor_memory(length, self.device)
             count = 0
             while count + misaligned_bytes < self.aligned_length:
                 l = self.aligned_length - misaligned_bytes - count
@@ -132,7 +133,7 @@ class GdsFileCopier:
                     )
                 gbuf.memmove(count, misaligned_bytes + count, tmp_gbuf, l)
                 count += l
-            FRAMEWORK.free_tensor_memory(tmp_gbuf, self.device)
+            frameworks.OP.free_tensor_memory(tmp_gbuf, self.device)
             self.aligned_offset += misaligned_bytes
         return self.metadata.get_tensors(
             gbuf, self.device, self.aligned_offset, dtype=dtype

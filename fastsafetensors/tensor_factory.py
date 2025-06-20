@@ -8,7 +8,8 @@ from . import cpp as fstcpp
 from .common import SafeTensorsMetadata
 from .copier.gds import GdsFileCopier
 from .copier.nogds import NoGdsFileCopier
-from .frameworks import FRAMEWORK, ProcessGroupBase, TensorBase
+from . import frameworks
+from .frameworks import ProcessGroupBase, TensorBase
 from .st_types import Device, DType
 
 
@@ -96,7 +97,7 @@ class LazyTensorFactory:
                 f"push: recv, tensor_name={tensor_name}, shape={frame.shape}, src_rank={src_rank}, pg.rank()={pg.rank()}, tag={tag}"
             )
 
-        t = FRAMEWORK.get_empty_tensor(frame.shape, frame.dtype, self.device)
+        t = frameworks.OP.get_empty_tensor(frame.shape, frame.dtype, self.device)
         pg.recv(t, src_rank, tag=tag)
         return t
 
@@ -113,7 +114,7 @@ class LazyTensorFactory:
             if tensor_name in self.tensors:
                 dst = self.tensors[tensor_name].clone().detach()
             else:
-                dst = FRAMEWORK.get_empty_tensor(frame.shape, frame.dtype, self.device)
+                dst = frameworks.OP.get_empty_tensor(frame.shape, frame.dtype, self.device)
             if self.debug_log:
                 print(
                     f"shuffle: broadcast, tensor_name={tensor_name}, shape={frame.shape}, self.rank={self.rank}, pg.rank()={pg.rank()}, has_tensor={tensor_name in self.tensors}"
@@ -134,7 +135,7 @@ class LazyTensorFactory:
                         break
             scatter_list: List[TensorBase] = []
             new_frame = frame[rank_slices[pg.rank()]]
-            dst = FRAMEWORK.get_empty_tensor(
+            dst = frameworks.OP.get_empty_tensor(
                 new_frame.shape, new_frame.dtype, self.device
             )
             if self.rank == pg.rank():
@@ -187,7 +188,7 @@ class LazyTensorFactory:
                         )
                     )
                 ]
-                cat_res = FRAMEWORK.concat_tensors([q, k, v], dim=0)
+                cat_res = frameworks.OP.concat_tensors([q, k, v], dim=0)
                 scatter_list.append(cat_res)
         if pg.size() == 1:
             self.shuffled[tensor_name] = scatter_list[0]
@@ -198,7 +199,7 @@ class LazyTensorFactory:
             print(
                 f"shuffle_packed_qkv: scatter, tensor_name={tensor_name}, shape={frame.shape}->{new_shape}, self.rank={self.rank}, pg.rank()={pg.rank()}, len(scatter_list)={len(scatter_list)}"
             )
-        dst = FRAMEWORK.get_empty_tensor(list(new_shape), frame.dtype, self.device)
+        dst = frameworks.OP.get_empty_tensor(list(new_shape), frame.dtype, self.device)
         pg.scatter(dst, scatter_list=scatter_list, src=self.rank)
         self.shuffled[tensor_name] = dst
         return dst
@@ -229,26 +230,26 @@ class LazyTensorFactory:
                         t[(slice(rank * block_size, (rank + 1) * block_size, 1))]
                     )
         if pg.size() == 1:
-            return FRAMEWORK.concat_tensors(rank_tensors[self.rank], dim=dim)
+            return frameworks.OP.concat_tensors(rank_tensors[self.rank], dim=dim)
         scatter_list: List[TensorBase] = []
 
         if len(rank_tensors[0]) > 0:
             for rank in range(0, pg.size()):
                 scatter_list.append(
-                    FRAMEWORK.concat_tensors(rank_tensors[rank], dim=dim)
+                    frameworks.OP.concat_tensors(rank_tensors[rank], dim=dim)
                 )
         if self.debug_log:
             print(
                 f"shuffle_multi_cols: scatter, tensor_name={tensor_name}, shape={frame.shape}->{new_shape}, self.rank={self.rank}, pg.rank()={pg.rank()}, len(scatter_list)={len(scatter_list)}"
             )
-        dst = FRAMEWORK.get_empty_tensor(new_shape, frame.dtype, self.device)
+        dst = frameworks.OP.get_empty_tensor(new_shape, frame.dtype, self.device)
         pg.scatter(dst, scatter_list=scatter_list, src=self.rank)
         return dst
 
     def free_dev_ptrs(self):
         self.tensors = {}
         if self.gbuf is not None:
-            FRAMEWORK.free_tensor_memory(self.gbuf, self.device)
+            frameworks.OP.free_tensor_memory(self.gbuf, self.device)
             self.gbuf = None
 
     def shuffle_all(

@@ -145,7 +145,7 @@ class DLManagedTensor(ctypes.Structure):
         holder = _Holder(shape, strides)
         self.dl_tensor = DLTensor(dev_ptr, dev, dtype, holder)
         self.manager_ctx = holder._as_manager_ctx()
-        self.deleter = _numpy_cuda_buffer_deleter
+        self.deleter = _numpy_buffer_deleter
         return ctypes.pythonapi.PyCapsule_New(
             ctypes.byref(self),
             _c_str_dltensor,
@@ -169,11 +169,9 @@ ctypes.pythonapi.PyCapsule_New.argtypes = [
 
 
 @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
-def _numpy_cuda_buffer_deleter(handle: ctypes.c_void_p) -> None:
+def _numpy_buffer_deleter(handle: ctypes.c_void_p) -> None:
     """A function to deallocate the memory of a cuda buffer."""
-    dl_managed_tensor = DLManagedTensor.from_address(
-        handle.value if handle.value else 0
-    )
+    dl_managed_tensor = DLManagedTensor.from_address(handle)
     py_obj_ptr = ctypes.cast(
         dl_managed_tensor.manager_ctx, ctypes.POINTER(ctypes.py_object)
     )
@@ -191,7 +189,7 @@ def _numpy_pycapsule_deleter(handle: ctypes.c_void_p) -> None:
         dl_managed_tensor = ctypes.pythonapi.PyCapsule_GetPointer(
             pycapsule, _c_str_dltensor
         )
-        _numpy_cuda_buffer_deleter(dl_managed_tensor)
+        _numpy_buffer_deleter(dl_managed_tensor)
         ctypes.pythonapi.PyCapsule_SetDestructor(pycapsule, None)
 
 

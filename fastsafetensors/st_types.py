@@ -18,11 +18,9 @@ class Device:
     index: Optional[int] = None
 
     def as_str(self) -> str:
-        return (
-            f"{self.type.value}:{self.index}"
-            if self.index is not None
-            else self.type.value
-        )
+        if self.index is None:
+            return self.type.value
+        return f"{self.type.value}:{self.index}"
 
     @classmethod
     def from_str(cls, s: str) -> "Device":
@@ -42,7 +40,7 @@ class Device:
                 dev_type = DeviceType(s.lower())
             except ValueError:
                 raise ValueError(f"Unknown device type: {s}")
-            return cls(type=dev_type, index=0)
+            return cls(type=dev_type, index=None)
 
 
 class DType(Enum):

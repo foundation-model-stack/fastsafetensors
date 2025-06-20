@@ -4,7 +4,8 @@ from typing import List
 import pytest
 
 from fastsafetensors import cpp as fstcpp
-from fastsafetensors.frameworks import FRAMEWORK, init_framework_op
+from fastsafetensors import frameworks
+from fastsafetensors.frameworks import init_framework_op
 from fastsafetensors.st_types import Device
 
 init_framework_op(os.getenv("TEST_FASTSAFETENSORS_FRAMEWORK", "please set"))
@@ -38,13 +39,13 @@ def input_files() -> List[str]:
 def pg():
     world_size = int(os.getenv("WORLD_SIZE", "1"))
     if world_size > 1:
-        if FRAMEWORK.get_name() == "pytorch":
+        if frameworks.OP.get_name() == "pytorch":
             import torch.distributed as dist
 
             dist.init_process_group(backend="gloo")
             dist.barrier()
-            return FRAMEWORK.get_process_group(dist.group.WORLD)
-        elif FRAMEWORK.get_name() == "paddle":
+            return frameworks.OP.get_process_group(dist.group.WORLD)
+        elif frameworks.OP.get_name() == "paddle":
             # The following code can only be successfully
             # executed by running the code using
             # `python -m paddle.distributed.launch`
@@ -53,19 +54,19 @@ def pg():
 
             dist.init_parallel_env()
             backend = "nccl" if paddle.device.cuda.device_count() else "gloo"
-            FRAMEWORK.get_process_group(
+            frameworks.OP.get_process_group(
                 dist.new_group(ranks=list(range(world_size)), backend=backend)
             )
-    return FRAMEWORK.get_process_group(None)
+    return frameworks.OP.get_process_group(None)
 
 
 @pytest.fixture(scope="session", autouse=True)
 def dev_init() -> None:
     if fstcpp.is_cuda_found():
-        dev_str = "cuda:0" if FRAMEWORK.get_name() == "pytorch" else "gpu:0"
+        dev_str = "cuda:0" if frameworks.OP.get_name() == "pytorch" else "gpu:0"
     else:
         dev_str = "cpu"
-    FRAMEWORK.set_device(Device.from_str(dev_str))
+    frameworks.OP.set_device(Device.from_str(dev_str))
 
 
 @pytest.fixture(scope="function")

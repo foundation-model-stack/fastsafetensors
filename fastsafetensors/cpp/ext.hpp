@@ -96,7 +96,7 @@ public:
     void * _get_raw_pointer(uint64_t offset, uint64_t length) const { // not exposed to python
         if (this->_length < offset + length) {
             char msg[256];
-            snprintf(msg, 256, "out of bound access: 0x%p, length=%ld, request offset=%ld, request length=%ld", this->_devPtr_base->get_raw(), this->_length, offset, length);
+            snprintf(msg, 256, "out of bound access: 0x%p, length=%" PRIu64 ", request offset=%" PRIu64 ", request length=%" PRIu64, this->_devPtr_base->get_raw(), this->_length, offset, length);
             throw std::out_of_range(msg);
         }
         return reinterpret_cast<void *>(this->_devPtr_base->get_uintptr() + offset);
@@ -127,8 +127,8 @@ private:
 public:
     nogds_file_reader(const bool use_mmap, const uint64_t bbuf_size_kb, const uint64_t max_threads, bool use_cuda):
         _next_thread_id(1), _threads(nullptr), _fns(use_cuda?&cuda_fns:&cpu_fns),
-        _s(thread_states_t{_read_buffer: nullptr, _use_mmap: use_mmap,
-            _bbuf_size_kb: (bbuf_size_kb + max_threads - 1)/max_threads, _max_threads: max_threads})
+        _s(thread_states_t{._read_buffer = nullptr, ._use_mmap = use_mmap,
+            ._bbuf_size_kb = (bbuf_size_kb + max_threads - 1)/max_threads, ._max_threads = max_threads})
          {}
 
     static void _thread(const int thread_id, ext_funcs_t *fns, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off, thread_states_t *s); // not exposed to python
@@ -172,7 +172,7 @@ private:
     thread_states_t _s;
     ext_funcs_t *_fns;
 public:
-    gds_file_reader(const int max_threads, bool use_cuda): _next_id(1), _threads(nullptr), _s(thread_states_t{_max_threads: max_threads}), _fns(use_cuda?&cuda_fns:&cpu_fns) {}
+    gds_file_reader(const int max_threads, bool use_cuda): _next_id(1), _threads(nullptr), _s(thread_states_t{._max_threads = max_threads}), _fns(use_cuda?&cuda_fns:&cpu_fns) {}
     static void _thread(const int thread_id, ext_funcs_t *fns, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, thread_states_t *s);
     const int submit_read(const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length);
     const ssize_t wait_read(const int id);

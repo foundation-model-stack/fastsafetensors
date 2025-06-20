@@ -4,7 +4,8 @@
 from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 
-from .frameworks import FRAMEWORK, ProcessGroupBase, TensorBase
+from . import frameworks
+from .frameworks import ProcessGroupBase, TensorBase
 from .st_types import Device, DType
 from .tensor_factory import LazyTensorFactory
 
@@ -174,7 +175,7 @@ class FilesBufferOnDevice:
             return self._get_tensor(
                 rank, lidix, rank_lidixs[(rank, lidix)][0], ts[0], device, dtype
             )
-        ret = FRAMEWORK.concat_tensors(ts, dim=dim)
+        ret = frameworks.OP.concat_tensors(ts, dim=dim)
         if self.auto_mem_delete:
             for tensor_name in tensor_names:
                 (rank, lidx) = self._get_rank_lidx(tensor_name)

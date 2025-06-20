@@ -6,7 +6,8 @@ from typing import Dict, List
 
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata
-from ..frameworks import FRAMEWORK, TensorBase
+from .. import frameworks
+from ..frameworks import TensorBase
 from ..st_types import Device, DType
 
 
@@ -33,7 +34,7 @@ class NoGdsFileCopier:
         self, use_buf_register: bool, max_copy_block_size: int
     ) -> fstcpp.gds_device_buffer:
         total_length = self.metadata.size_bytes - self.metadata.header_length
-        gbuf = FRAMEWORK.alloc_tensor_memory(total_length, self.device)
+        gbuf = frameworks.OP.alloc_tensor_memory(total_length, self.device)
         count = 0
         while count < total_length:
             l = total_length - count
