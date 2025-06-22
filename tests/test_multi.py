@@ -6,21 +6,26 @@ import pytest
 from fastsafetensors import SafeTensorsFileLoader
 from fastsafetensors import cpp as fstcpp
 
+
 def test_shuffle(fstcpp_log, input_files, pg, framework):
     print("test_shuffle")
     if framework.get_name() == "pytorch":
         from safetensors.torch import load_file
+
         rank = pg.rank()
         world_size = pg.size()
         device = "cuda:0" if fstcpp.is_cuda_found() else "cpu"
     elif framework.get_name() == "paddle":
         from safetensors.paddle import load_file
+
         rank = pg.process_group.rank()
         world_size = pg.process_group.size()
         device = "gpu:0" if fstcpp.is_cuda_found() else "cpu"
     else:
         raise Exception(f"Unknown framework: {framework.get_name()}")
-    loader = SafeTensorsFileLoader(device=device, pg=pg, nogds=True, framework=framework.get_name(), debug_log=True)
+    loader = SafeTensorsFileLoader(
+        device=device, pg=pg, nogds=True, framework=framework.get_name(), debug_log=True
+    )
     loader.add_filenames({0: input_files})
     bufs = loader.copy_files_to_device()
     key_dims = {key: -1 for key in loader.get_keys()}
@@ -54,24 +59,26 @@ def test_shuffle(fstcpp_log, input_files, pg, framework):
         origs[key] = t
         assert framework.is_equal(tensors[key], t)
 
-    #TODO
-    #bufs.close()
-    #loader.reset()
+    # TODO
+    # bufs.close()
+    # loader.reset()
 
-    #loader.add_filenames({0: input_files})
-    #bufs = loader.copy_files_to_device()
-    #pushed = bufs.push_tensor("h.3.attn.c_proj.bias", 1)
-    #assert rank == 1 and pushed.get_raw() != None
-    #assert rank == 0 and pushed == None
+    # loader.add_filenames({0: input_files})
+    # bufs = loader.copy_files_to_device()
+    # pushed = bufs.push_tensor("h.3.attn.c_proj.bias", 1)
+    # assert rank == 1 and pushed.get_raw() != None
+    # assert rank == 0 and pushed == None
 
-    #tensors2 = bufs.get_tensor("h.3.attn.c_proj.bias") # cached load
-    #assert framework.is_equal(tensors2, origs["h.3.attn.c_proj.bias"])
+    # tensors2 = bufs.get_tensor("h.3.attn.c_proj.bias") # cached load
+    # assert framework.is_equal(tensors2, origs["h.3.attn.c_proj.bias"])
 
     bufs.close()
     loader.close()
 
+
 if __name__ == "__main__":
-    import sys
     import os
+    import sys
+
     os.environ["PADDLE_DISTRI_BACKEND"] = "gloo"
     sys.exit(pytest.main(sys.argv[1:]))

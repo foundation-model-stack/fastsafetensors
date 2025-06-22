@@ -14,8 +14,9 @@ from typing import Any, Dict, List, Tuple, Union
 import torch
 import torch.distributed as dist
 import typer
-from fastsafetensors import SafeTensorsFileLoader, SingleGroup
 from safetensors import safe_open
+
+from fastsafetensors import SafeTensorsFileLoader, SingleGroup
 
 app = typer.Typer()
 
@@ -188,18 +189,23 @@ def get_key_dim(
     #    ret[key] = dim
     return ret
 
+
 class MyProc:
-    def __init__(self, popen: Union[subprocess.Popen, None]=None):
+    def __init__(self, popen: Union[subprocess.Popen, None] = None):
         self.popen: Union[subprocess.Popen, None] = popen
+
     def terminate(self):
         if self.popen:
             self.popen.terminate()
+
     def kill(self):
         if self.popen:
             self.popen.kill()
+
     def wait(self, timeout=Union[int, None]):
         if self.popen:
             return self.popen.wait(timeout=timeout)
+
 
 mon_procs: Dict[int, Tuple[MyProc, MyProc, Any, str]] = {}
 
@@ -232,15 +238,19 @@ def start_sysstat(
         dool_cmd.append("--nvidia-gpu")
     dool_cmd += ["--output", dool_file]
     try:
-        dool = MyProc(subprocess.Popen(
-            dool_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        ))
+        dool = MyProc(
+            subprocess.Popen(
+                dool_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        )
     except:
         dool = MyProc()
     try:
-        iostat = MyProc(subprocess.Popen(
-            ["iostat", "1"], stdout=iostat_f, stderr=subprocess.DEVNULL
-        ))
+        iostat = MyProc(
+            subprocess.Popen(
+                ["iostat", "1"], stdout=iostat_f, stderr=subprocess.DEVNULL
+            )
+        )
     except:
         iostat = MyProc()
     id = len(mon_procs)
@@ -270,8 +280,11 @@ def as_safetensors_dtype(dtype_str: str) -> Union[str, None]:
     if dtype_str == "auto":
         return None
     from fastsfaetensors.common import TYPE_MAP
+
     if dtype_str not in TYPE_MAP:
-        raise Exception(f"unsupported type: {dtype_str}. supported types: {TYPE_MAP.keys()}")
+        raise Exception(
+            f"unsupported type: {dtype_str}. supported types: {TYPE_MAP.keys()}"
+        )
     return dtype_str
 
 

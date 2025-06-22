@@ -7,6 +7,7 @@
 # PIDS+=$($!)
 # wait ${PIDS[@]}
 
+
 def run_torch():
     import torch
     import torch.distributed as dist
@@ -16,6 +17,7 @@ def run_torch():
     pg = dist.group.WORLD
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     return pg, device
+
 
 def run_paddle():
     import paddle
@@ -27,6 +29,7 @@ def run_paddle():
     device = "gpu" if paddle.device.cuda.device_count() else "cpu"
     return pg, device
 
+
 runs = {
     "torch": run_torch,
     "paddle": run_paddle,
@@ -34,6 +37,7 @@ runs = {
 
 if __name__ == "__main__":
     import sys
+
     from fastsafetensors import SafeTensorsFileLoader
 
     framework = "torch"

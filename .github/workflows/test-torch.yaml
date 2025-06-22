@@ -58,8 +58,8 @@ jobs:
           mkdir -p /tmp/pytest-log
           export TEST_FASTSAFETENSORS_FRAMEWORK=pytorch
           COVERAGE_FILE=.coverage_0 pytest -s --cov=${LIBDIR} test_fastsafetensors.py > /tmp/pytest-log/0.log 2>&1
-          COVERAGE_FILE=.coverage_1 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 tests/test_multi.py --cov=$(FST_DIR) -s tests/test_multi.py > /tmp/pytest-log/1.log 2>&1 &
-          COVERAGE_FILE=.coverage_2 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 tests/test_multi.py --cov=$(FST_DIR) -s tests/test_multi.py > /tmp/pytest-log/2.log 2>&1
+          COVERAGE_FILE=.coverage_1 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 tests/test_multi.py --cov=$(LIBDIR) -s tests/test_multi.py > /tmp/pytest-log/1.log 2>&1 &
+          COVERAGE_FILE=.coverage_2 torchrun --nnodes=2 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 tests/test_multi.py --cov=$(LIBDIR) -s tests/test_multi.py > /tmp/pytest-log/2.log 2>&1
           coverage combine .coverage_*
           coverage html
           mv htmlcov /tmp/pytest-log

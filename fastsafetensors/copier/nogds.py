@@ -6,7 +6,7 @@ from typing import Dict, List
 
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata
-from ..frameworks import TensorBase, FrameworkOpBase
+from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DType
 
 

@@ -4,7 +4,7 @@
 from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 
-from .frameworks import ProcessGroupBase, TensorBase, FrameworkOpBase
+from .frameworks import FrameworkOpBase, ProcessGroupBase, TensorBase
 from .st_types import Device, DType
 from .tensor_factory import LazyTensorFactory
 

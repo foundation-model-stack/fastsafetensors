@@ -31,15 +31,15 @@ need_workaround_dtypes: Dict[DType, DType] = {
     DType.F8_E4M3: DType.I8,
 }
 
-if hasattr(torch, 'float8_e5m2'):
+if hasattr(torch, "float8_e5m2"):
     dtype_convert[DType.F8_E5M2] = torch.float8_e5m2
-if hasattr(torch, 'float8_e4m3fn'):
+if hasattr(torch, "float8_e4m3fn"):
     dtype_convert[DType.F8_E4M3] = torch.float8_e4m3fn
-if hasattr(torch, 'uint16'):
+if hasattr(torch, "uint16"):
     dtype_convert[DType.U16] = torch.uint16
-if hasattr(torch, 'uint32'):
+if hasattr(torch, "uint32"):
     dtype_convert[DType.U32] = torch.uint32
-if hasattr(torch, 'uint64'):
+if hasattr(torch, "uint64"):
     dtype_convert[DType.U64] = torch.uint64
 
 
@@ -205,7 +205,11 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
         raise Exception("real is not torch.Tensor")
 
     def randn(self, s: tuple, device: Device, dtype: DType) -> TorchTensor:
-        return TorchTensor(device, dtype, torch.randn(s, device=device.as_str(), dtype=dtype_convert[dtype]))
+        return TorchTensor(
+            device,
+            dtype,
+            torch.randn(s, device=device.as_str(), dtype=dtype_convert[dtype]),
+        )
 
     def support_fp8(self) -> bool:
         return DType.F8_E5M2 in dtype_convert

@@ -3,19 +3,23 @@
 
 import os
 from collections import OrderedDict
-from typing import List, Tuple, Dict, Any
+from typing import Any, Dict, List, Tuple
 
 import pytest
+
 from fastsafetensors import SafeTensorsFileLoader, SafeTensorsMetadata
-from fastsafetensors.frameworks import FrameworkOpBase
 from fastsafetensors import cpp as fstcpp
 from fastsafetensors import fastsafe_open
 from fastsafetensors.copier.gds import GdsFileCopier
 from fastsafetensors.copier.nogds import NoGdsFileCopier
 from fastsafetensors.dlpack import from_cuda_buffer
-from fastsafetensors.st_types import DType, Device, DeviceType
+from fastsafetensors.frameworks import FrameworkOpBase
+from fastsafetensors.st_types import Device, DeviceType, DType
 
-def load_safetensors_file(filename: str, device: Device, framework: FrameworkOpBase) -> Dict[str, Any]:
+
+def load_safetensors_file(
+    filename: str, device: Device, framework: FrameworkOpBase
+) -> Dict[str, Any]:
     if framework.get_name() == "pytorch":
         from safetensors.torch import load_file
     elif framework.get_name() == "paddle":
@@ -24,7 +28,13 @@ def load_safetensors_file(filename: str, device: Device, framework: FrameworkOpB
         raise Exception(f"unkown framework: {framework.get_name()}")
     return load_file(filename, device.as_str())
 
-def save_safetensors_file(tensors: Dict[str, Any], filename: str, metadata: Dict[str, str], framework: FrameworkOpBase) -> None:
+
+def save_safetensors_file(
+    tensors: Dict[str, Any],
+    filename: str,
+    metadata: Dict[str, str],
+    framework: FrameworkOpBase,
+) -> None:
     if framework.get_name() == "pytorch":
         from safetensors.torch import save_file
     elif framework.get_name() == "paddle":
@@ -32,6 +42,7 @@ def save_safetensors_file(tensors: Dict[str, Any], filename: str, metadata: Dict
     else:
         raise Exception(f"unkown framework: {framework.get_name()}")
     save_file(tensors, filename, metadata)
+
 
 def get_and_check_device(framework: FrameworkOpBase):
     dev_is_gpu = fstcpp.is_cuda_found()
@@ -60,6 +71,7 @@ def run_nogds_file_read(
     os.close(fd)
     return (meta, gbuf)
 
+
 def test_device(fstcpp_log) -> None:
     print("test_device")
     with pytest.raises(ValueError, match="Unknown device type: aaaa"):
@@ -74,13 +86,16 @@ def test_device(fstcpp_log) -> None:
     cpu = Device(DeviceType.CPU, None)
     assert cpu.type == DeviceType.CPU and cpu.index == None
 
+
 def test_framework(fstcpp_log) -> None:
     print("test_framework")
     try:
         from fastsafetensors.frameworks._torch import TorchOp
+
         torch = TorchOp()
         t = torch.get_empty_tensor([1], DType.F16, Device.from_str("cpu"))
         from fastsafetensors.frameworks._paddle import PaddleOp
+
         paddle = PaddleOp()
         t2 = paddle.get_empty_tensor([1], DType.F16, Device.from_str("cpu"))
         with pytest.raises(Exception):
@@ -90,6 +105,7 @@ def test_framework(fstcpp_log) -> None:
         assert torch.get_cuda_ver() == paddle.get_cuda_ver()
     except:
         pytest.skip("test_framework requires installing all frameworks")
+
 
 def test_load_metadata_and_dlpack(fstcpp_log, input_files, framework) -> None:
     print("test_load_metadata_and_dlpack")
@@ -241,18 +257,25 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
     device, _ = get_and_check_device(framework)
     if framework.get_name() == "pytorch":
         import torch
+
         data_type = DType.F16
         data_type_real = torch.float16
     elif framework.get_name() == "paddle":
         # There are some lack of accuracy in paddle.float16 (about 1e-4) in cpu.
         import paddle
+
         data_type = DType.F32
         data_type_real = paddle.float32
     else:
         raise NotImplementedError(
             f"Do not support the framework: {framework.get_name()}"
         )
-    loader = SafeTensorsFileLoader(device=device.as_str(), framework=framework.get_name(), nogds=False, debug_log=True)
+    loader = SafeTensorsFileLoader(
+        device=device.as_str(),
+        framework=framework.get_name(),
+        nogds=False,
+        debug_log=True,
+    )
     loader.add_filenames({0: input_files})
     bufs = loader.copy_files_to_device(
         dtype=data_type, use_buf_register=True, max_copy_block_size=256 * 1024 * 1024
@@ -276,7 +299,12 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
 
 def test_SafeTensorsFileLoaderNoGds(fstcpp_log, input_files, framework) -> None:
     device, _ = get_and_check_device(framework)
-    loader = SafeTensorsFileLoader(device=device.as_str(), framework=framework.get_name(), nogds=True, debug_log=True)
+    loader = SafeTensorsFileLoader(
+        device=device.as_str(),
+        framework=framework.get_name(),
+        nogds=True,
+        debug_log=True,
+    )
     loader.add_filenames({0: input_files})
     bufs = loader.copy_files_to_device()
     key_dims = OrderedDict({key: -1 for key in loader.get_keys()})
@@ -307,28 +335,47 @@ def test_fastsafe_open(fstcpp_log, input_files, framework) -> None:
     for k, t in weight_iterator():
         assert framework.is_equal(t, tensors[k])
 
-    with fastsafe_open(input_files[0], device=device.as_str(), nogds=True, framework=framework.get_name()) as f:
+    with fastsafe_open(
+        input_files[0],
+        device=device.as_str(),
+        nogds=True,
+        framework=framework.get_name(),
+    ) as f:
         for filename in f.metadata().keys():
             assert filename in input_files
 
-    with fastsafe_open({0: input_files}, device=device.as_str(), nogds=True, framework=framework.get_name()) as f:
+    with fastsafe_open(
+        {0: input_files},
+        device=device.as_str(),
+        nogds=True,
+        framework=framework.get_name(),
+    ) as f:
         for k in f.keys():
             t = f.get_tensor(k)
             if framework.get_name() == "pytorch":
                 import torch
+
                 assert isinstance(t, torch.Tensor)
             elif framework.get_name() == "paddle":
                 import paddle
+
                 assert isinstance(t, paddle.Tensor)
             break
 
-def _test_type(tmp_dir, dtype: DType, device: Device, framework: FrameworkOpBase) -> None:
+
+def _test_type(
+    tmp_dir, dtype: DType, device: Device, framework: FrameworkOpBase
+) -> None:
     filename = os.path.join(tmp_dir, f"a.safetensors")
     t0 = framework.randn((8, 16), device=device, dtype=DType.F32).to(dtype=dtype)
     save_safetensors_file({f"a": t0.get_raw()}, filename, {"fst": "sample"}, framework)
     t2 = load_safetensors_file(filename, device, framework)
     with fastsafe_open(
-        filenames=[filename], nogds=True, device=device.as_str(), framework=framework.get_name(), debug_log=True
+        filenames=[filename],
+        nogds=True,
+        device=device.as_str(),
+        framework=framework.get_name(),
+        debug_log=True,
     ) as f:
         for key in f.keys():
             t1 = f.get_tensor_wrapped(key).clone().detach()
@@ -342,12 +389,14 @@ def test_int8(fstcpp_log, tmp_dir, framework) -> None:
     device, _ = get_and_check_device(framework)
     _test_type(tmp_dir, DType.I8, device, framework)
 
+
 def test_float8_e5m2(fstcpp_log, tmp_dir, framework) -> None:
     if not framework.support_fp8():
         pytest.skip("FP8 is not supported")
         return
     device, _ = get_and_check_device(framework)
     _test_type(tmp_dir, DType.F8_E5M2, device, framework)
+
 
 def test_float8_e4m3fn(fstcpp_log, tmp_dir, framework) -> None:
     if not framework.support_fp8():

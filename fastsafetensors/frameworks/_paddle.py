@@ -4,8 +4,8 @@
 try:
     import paddle
     import paddle.distributed as pdist
-    from paddle.framework import core as paddle_core
     from paddle.distributed.communication.group import Group
+    from paddle.framework import core as paddle_core
 except ImportError as e:
     raise ImportError(
         "could not import paddle, paddle_core, or numpy. Please install them."
@@ -38,10 +38,11 @@ need_workaround_dtypes: Dict[DType, DType] = {
     DType.F8_E4M3: DType.I8,
 }
 
-if hasattr(paddle, 'float8_e5m2'):
+if hasattr(paddle, "float8_e5m2"):
     dtype_convert[DType.F8_E5M2] = paddle.float8_e5m2
-if hasattr(paddle, 'float8_e4m3fn'):
+if hasattr(paddle, "float8_e4m3fn"):
     dtype_convert[DType.F8_E4M3] = paddle.float8_e4m3fn
+
 
 @dataclass
 class PaddleTensor(TensorBase):
@@ -222,7 +223,9 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
 
     def get_process_group(self, pg: Optional[Any]) -> PaddleProcessGroup:
         if pg is not None and not isinstance(pg, Group):
-            raise Exception("pg must be an instance of paddle.distributed.communication.group.Group")
+            raise Exception(
+                "pg must be an instance of paddle.distributed.communication.group.Group"
+            )
         return PaddleProcessGroup(pg)
 
     # for testing
@@ -232,7 +235,11 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
         raise Exception("real is not paddle.Tensor")
 
     def randn(self, s: tuple, device: Device, dtype: DType) -> PaddleTensor:
-        return PaddleTensor(device, dtype, paddle.randn(s, dtype=dtype_convert[dtype]).to(device=device.as_str()))
+        return PaddleTensor(
+            device,
+            dtype,
+            paddle.randn(s, dtype=dtype_convert[dtype]).to(device=device.as_str()),
+        )
 
     def support_fp8(self) -> bool:
         return DType.F8_E5M2 in dtype_convert

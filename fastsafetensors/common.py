@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 from . import cpp as fstcpp
 from .dlpack import from_cuda_buffer
-from .frameworks import TensorBase, FrameworkOpBase
+from .frameworks import FrameworkOpBase, TensorBase
 from .st_types import Device, DType
 
 
@@ -80,7 +80,9 @@ class SafeTensorsMetadata:
             )
 
     @classmethod
-    def from_buffer(self, buf: int, buffer_len: int, filename: str, framework: FrameworkOpBase):
+    def from_buffer(
+        self, buf: int, buffer_len: int, filename: str, framework: FrameworkOpBase
+    ):
         if buffer_len < 8:
             raise Exception(
                 f"from_buffer: HeaderTooSmall, filename={filename}, buffer_len={buffer_len}"
@@ -173,7 +175,9 @@ class SafeTensorsMetadata:
                 t2 = t2.view(t.dtype)
 
             if dtype != DType.AUTO and dtype != t.dtype:
-                if self.framework.get_dtype_size(dtype) > self.framework.get_dtype_size(t.dtype):
+                if self.framework.get_dtype_size(dtype) > self.framework.get_dtype_size(
+                    t.dtype
+                ):
                     raise Exception(
                         f"Online type conversion to larger sizes is not supported ({t.dtype} -> {dtype})"
                     )

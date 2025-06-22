@@ -6,10 +6,10 @@ import warnings
 from typing import Any, Dict, List, Optional, OrderedDict, Tuple, Union
 
 from . import cpp as fstcpp
+from . import frameworks
 from .common import SafeTensorsMetadata, TensorFrame, get_device_numa_node
 from .file_buffer import FilesBufferOnDevice
-from . import frameworks
-from .frameworks import get_framework_op, TensorBase
+from .frameworks import TensorBase, get_framework_op
 from .st_types import DeviceType, DType
 from .tensor_factory import LazyTensorFactory
 
@@ -152,7 +152,9 @@ class SafeTensorsFileLoader:
                 need_wait.append(factory)
             lidx += 1
         for factory in need_wait:
-            factory.wait_io(dtype=dtype, noalign=isinstance(self.reader, fstcpp.nogds_file_reader))
+            factory.wait_io(
+                dtype=dtype, noalign=isinstance(self.reader, fstcpp.nogds_file_reader)
+            )
         return FilesBufferOnDevice(factories, pg=self.pg, framework=self.framework)
 
 

@@ -8,7 +8,7 @@ from . import cpp as fstcpp
 from .common import SafeTensorsMetadata
 from .copier.gds import GdsFileCopier
 from .copier.nogds import NoGdsFileCopier
-from .frameworks import ProcessGroupBase, TensorBase, FrameworkOpBase
+from .frameworks import FrameworkOpBase, ProcessGroupBase, TensorBase
 from .st_types import Device, DType
 
 
@@ -31,9 +31,13 @@ class LazyTensorFactory:
         self.copier: Optional[Union[NoGdsFileCopier, GdsFileCopier]] = None
         if local_rank:
             if isinstance(reader, fstcpp.nogds_file_reader):
-                self.copier = NoGdsFileCopier(metadata, device, reader, framework, debug_log)
+                self.copier = NoGdsFileCopier(
+                    metadata, device, reader, framework, debug_log
+                )
             else:
-                self.copier = GdsFileCopier(metadata, device, reader, framework, debug_log)
+                self.copier = GdsFileCopier(
+                    metadata, device, reader, framework, debug_log
+                )
         self.tensors: Dict[str, TensorBase] = {}
         self.shuffled: Dict[str, TensorBase] = {}
         self.gbuf: Optional[fstcpp.gds_device_buffer] = None
@@ -114,7 +118,9 @@ class LazyTensorFactory:
             if tensor_name in self.tensors:
                 dst = self.tensors[tensor_name].clone().detach()
             else:
-                dst = self.framework.get_empty_tensor(frame.shape, frame.dtype, self.device)
+                dst = self.framework.get_empty_tensor(
+                    frame.shape, frame.dtype, self.device
+                )
             if self.debug_log:
                 print(
                     f"shuffle: broadcast, tensor_name={tensor_name}, shape={frame.shape}, self.rank={self.rank}, pg.rank()={pg.rank()}, has_tensor={tensor_name in self.tensors}"

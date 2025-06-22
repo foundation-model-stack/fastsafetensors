@@ -163,6 +163,7 @@ class FrameworkOpBase(ABC, Generic[T, K]):
     def support_fp8(self) -> bool:
         pass
 
+
 def get_framework_op(name: str) -> FrameworkOpBase:
     if name == "pt" or name == "pytorch" or name == "torch":
         from ._torch import TorchOp

@@ -4,7 +4,7 @@ from typing import List
 import pytest
 
 from fastsafetensors import cpp as fstcpp
-from fastsafetensors.frameworks import get_framework_op, FrameworkOpBase
+from fastsafetensors.frameworks import FrameworkOpBase, get_framework_op
 from fastsafetensors.st_types import Device
 
 TESTS_DIR = os.path.dirname(__file__)
@@ -17,16 +17,21 @@ os.makedirs(TMP_DIR, 0o777, True)
 
 FRAMEWORK = get_framework_op(os.getenv("TEST_FASTSAFETENSORS_FRAMEWORK", "please set"))
 
+
 @pytest.fixture(scope="session", autouse=True)
 def framework() -> FrameworkOpBase:
     return FRAMEWORK
+
 
 @pytest.fixture(scope="session", autouse=True)
 def input_files() -> List[str]:
     gpt_dir = os.path.join(TF_DIR, "models--gpt2")
     if not os.path.exists(gpt_dir):
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        AutoModelForCausalLM.from_pretrained("gpt2", trust_remote_code=True, use_safetensors=True, cache_dir=TF_DIR)
+
+        AutoModelForCausalLM.from_pretrained(
+            "gpt2", trust_remote_code=True, use_safetensors=True, cache_dir=TF_DIR
+        )
         AutoTokenizer.from_pretrained("gpt2", cache_dir=TF_DIR)
     src_files = []
     for dir, _, files in os.walk(gpt_dir):
