@@ -12,7 +12,8 @@ def drop_cache(model_dir: str):
         if f.suffix == ".safetensors":
             fd = os.open(f.resolve(), os.O_RDONLY)
             s = os.fstat(fd)
-            os.posix_fadvise(fd, 0, s.st_size, os.POSIX_FADV_DONTNEED)
+            if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
+                os.posix_fadvise(fd, 0, s.st_size, os.POSIX_FADV_DONTNEED)  # type: ignore[attr-defined]
             os.close(fd)
             print(f"DROP_CACHE: {f}, {s.st_size/1024/1024/1024} GiB")
             total += s.st_size

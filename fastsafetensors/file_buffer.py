@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections import OrderedDict
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .frameworks import FrameworkOpBase, ProcessGroupBase, TensorBase
 from .st_types import Device, DType
@@ -81,7 +81,7 @@ class FilesBufferOnDevice:
         ret: TensorBase,
         device: Optional[Device],
         dtype: DType,
-    ) -> TensorBase:
+    ) -> Any:
         loader = self.rank_loaders[rank][lidx]
         if self.auto_mem_delete:
             self.instantiated[rank][lidx][tensor_name] = True
@@ -91,7 +91,7 @@ class FilesBufferOnDevice:
                         f"_get_tensor: free_dev_ptrs, lidx={lidx}, src={loader.metadata.src}"
                     )
                 loader.free_dev_ptrs()
-        return ret.to(device=device, dtype=dtype)
+        return ret.to(device=device, dtype=dtype).get_raw()
 
     def get_sharded(
         self,
@@ -99,7 +99,7 @@ class FilesBufferOnDevice:
         dim: int,
         device: Optional[Device] = None,
         dtype: DType = DType.AUTO,
-    ) -> TensorBase:
+    ) -> Any:
         """
         partition a tensor instance with the key tensor_name at the dimension dim and return it.
         In multi-process loading, this eventually calls torch.distributed.scatter.
@@ -114,7 +114,7 @@ class FilesBufferOnDevice:
         tensor_name: str,
         device: Optional[Device] = None,
         dtype: DType = DType.AUTO,
-    ) -> TensorBase:
+    ) -> Any:
         """
         get a tensor instance with the key tensor_name from a local or remote rank.
         In multi-process loading, this eventually calls torch.distributed.broadcast.
@@ -129,7 +129,7 @@ class FilesBufferOnDevice:
         dst_rank: int,
         device: Optional[Device] = None,
         dtype: DType = DType.AUTO,
-    ) -> Optional[TensorBase]:
+    ) -> Optional[Any]:
         """
         push a tensor instance with the key tensor_name from a rank to a destination rank dst_rank.
         In multi-process loading, this eventually calls torch.distributed.send if the rank has the tensor instance.
@@ -147,7 +147,7 @@ class FilesBufferOnDevice:
         tensor_name: str,
         device: Optional[Device] = None,
         dtype: DType = DType.AUTO,
-    ) -> TensorBase:
+    ) -> Any:
         (rank, lidix) = self._get_rank_lidx(tensor_name)
         t = self.rank_loaders[rank][lidix].shuffle_packed_qkv(self.pg, tensor_name)
         return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)

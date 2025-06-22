@@ -5,7 +5,7 @@
 # to add from_cuda_buffer()
 
 import ctypes
-from typing import Dict, List
+from typing import Dict, List, Union
 
 from .st_types import Device, DeviceType, DType
 
@@ -169,9 +169,16 @@ ctypes.pythonapi.PyCapsule_New.argtypes = [
 
 
 @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
-def _numpy_buffer_deleter(handle: ctypes.c_void_p) -> None:
+def _numpy_buffer_deleter(handle: Union[int, ctypes.c_void_p]) -> None:
     """A function to deallocate the memory of a cuda buffer."""
-    dl_managed_tensor = DLManagedTensor.from_address(handle)
+    if isinstance(handle, int):
+        dl_managed_tensor = DLManagedTensor.from_address(handle)
+    elif isinstance(handle, ctypes.c_void_p):
+        dl_managed_tensor = DLManagedTensor.from_address(
+            handle.value if handle.value else 0
+        )
+    else:
+        raise Exception("invalid type of handle!")
     py_obj_ptr = ctypes.cast(
         dl_managed_tensor.manager_ctx, ctypes.POINTER(ctypes.py_object)
     )

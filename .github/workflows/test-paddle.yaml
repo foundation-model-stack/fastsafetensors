@@ -44,8 +44,8 @@ jobs:
           mkdir -p /tmp/pytest-log
           export TEST_FASTSAFETENSORS_FRAMEWORK=paddle
           COVERAGE_FILE=.coverage_0 pytest -s --cov=${LIBDIR} test_fastsafetensors.py > /tmp/pytest-log/0.log 2>&1
-          COVERAGE_FILE=.coverage_1 WORLD_SIZE=2 python3 -m paddle.distributed.launch --nnodes 2 --master 127.0.0.1:1234 --rank 0 tests/test_multi.py --cov=$(LIBDIR) -s tests/test_multi.py > /tmp/pytest-log/1.log 2>&1 & \
-          COVERAGE_FILE=.coverage_2 WORLD_SIZE=2 python3 -m paddle.distributed.launch --nnodes 2 --master 127.0.0.1:1234 --rank 1 tests/test_multi.py --cov=$(LIBDIR) -s tests/test_multi.py > /tmp/pytest-log/2.log 2>&1 && \
+          COVERAGE_FILE=.coverage_1 WORLD_SIZE=2 python3 -m paddle.distributed.launch --nnodes 2 --master 127.0.0.1:1234 --rank 0 tests/test_multi.py --cov=${LIBDIR} -s tests/test_multi.py > /tmp/pytest-log/1.log 2>&1 & \
+          COVERAGE_FILE=.coverage_2 WORLD_SIZE=2 python3 -m paddle.distributed.launch --nnodes 2 --master 127.0.0.1:1234 --rank 1 tests/test_multi.py --cov=${LIBDIR} -s tests/test_multi.py > /tmp/pytest-log/2.log 2>&1 && \
           coverage combine .coverage_*
           coverage html
           mv htmlcov /tmp/pytest-log

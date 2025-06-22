@@ -45,7 +45,7 @@ if __name__ == "__main__":
         framework = sys.argv[1]
 
     pg, device = runs[framework]()
-    loader = SafeTensorsFileLoader(device, pg=pg, nogds=False, debug_log=True)
+    loader = SafeTensorsFileLoader(pg, device, nogds=False, debug_log=True)
     loader.add_filenames({0: ["a.safetensors"], 1: ["b.safetensors"]})  # {rank: files}
 
     # load a.safetensors to rank 0 GPU and b.safetensors to rank 1 GPU

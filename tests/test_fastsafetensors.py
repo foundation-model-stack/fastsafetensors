@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from fastsafetensors import SafeTensorsFileLoader, SafeTensorsMetadata
+from fastsafetensors import SafeTensorsFileLoader, SafeTensorsMetadata, SingleGroup
 from fastsafetensors import cpp as fstcpp
 from fastsafetensors import fastsafe_open
 from fastsafetensors.copier.gds import GdsFileCopier
@@ -271,6 +271,7 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
             f"Do not support the framework: {framework.get_name()}"
         )
     loader = SafeTensorsFileLoader(
+        pg=SingleGroup,
         device=device.as_str(),
         framework=framework.get_name(),
         nogds=False,
@@ -300,6 +301,7 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
 def test_SafeTensorsFileLoaderNoGds(fstcpp_log, input_files, framework) -> None:
     device, _ = get_and_check_device(framework)
     loader = SafeTensorsFileLoader(
+        pg=SingleGroup,
         device=device.as_str(),
         framework=framework.get_name(),
         nogds=True,

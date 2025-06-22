@@ -8,6 +8,7 @@ import shutil
 from copy import deepcopy
 
 from fastsafetensors import SafeTensorsMetadata
+from fastsafetensors.frameworks._torch import TorchOp
 
 
 def fix_sten_file(src_file: str, dst_file: str):
@@ -16,7 +17,9 @@ def fix_sten_file(src_file: str, dst_file: str):
     src_fd = os.open(src_file, os.O_RDONLY, 0o644)
     if src_fd < 0:
         raise Exception(f"FAIL: open, src_file={src_file}")
-    meta = SafeTensorsMetadata.from_fd(src_fd, src_file, keep_orig_dict=True)
+    meta = SafeTensorsMetadata.from_fd(
+        src_fd, src_file, framework=TorchOp(), keep_orig_dict=True
+    )
     print(
         f"src: filename={src_file}, header_len={meta.header_length}, size={meta.size_bytes}"
     )
@@ -59,7 +62,7 @@ def fix_sten_file(src_file: str, dst_file: str):
         os.close(dst_fd)
         need_copy = False
 
-        meta2 = SafeTensorsMetadata.from_file(dst_file)
+        meta2 = SafeTensorsMetadata.from_file(dst_file, TorchOp())
         print(f"new metadata: {meta2.metadata}")
     else:
         print(f"no fixes are required. skip")
@@ -83,7 +86,7 @@ def os_write_full(fd: int, buf: bytes):
 def os_sendfile_full(src_fd: int, dst_fd: int, offset: int, length: int):
     count = 0
     while count < length:
-        c = os.sendfile(src_fd, dst_fd, None, length - count)
+        c = os.sendfile(src_fd, dst_fd, 0, length - count)
         if c == 0:
             break
         elif c < 0:

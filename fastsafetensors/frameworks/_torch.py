@@ -10,6 +10,7 @@ except ImportError as e:
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from ..common import SingleGroup
 from ..cpp import cpu_free, cpu_malloc, gds_device_buffer
 from ..st_types import Device, DeviceType, DType
 from . import FrameworkOpBase, ProcessGroupBase, TensorBase
@@ -194,14 +195,19 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
         return dtype
 
     def get_process_group(self, pg: Optional[Any]) -> TorchProcessGroup:
-        if pg is not None and not isinstance(pg, dist.ProcessGroup):
-            raise Exception("pg must be an instance of torch.disributed.ProcessGroup")
+        if pg is not None:
+            if isinstance(pg, SingleGroup):
+                pg = None
+            elif not isinstance(pg, dist.ProcessGroup):
+                raise Exception(
+                    "pg must be an instance of torch.disributed.ProcessGroup"
+                )
         return TorchProcessGroup(pg)
 
     # for testing
     def is_equal(self, wrapped: TorchTensor, real: Any) -> bool:
         if isinstance(real, torch.Tensor):
-            return torch.all(wrapped.real_tensor.eq(real))
+            return bool(torch.all(wrapped.real_tensor.eq(real)))
         raise Exception("real is not torch.Tensor")
 
     def randn(self, s: tuple, device: Device, dtype: DType) -> TorchTensor:

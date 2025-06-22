@@ -17,6 +17,7 @@ import typer
 from safetensors import safe_open
 
 from fastsafetensors import SafeTensorsFileLoader, SingleGroup
+from fastsafetensors.st_types import Device, DType
 
 app = typer.Typer()
 
@@ -276,16 +277,16 @@ def stop_sysstat(id: int):
         torch.cuda.memory._record_memory_history(enabled=None)
 
 
-def as_safetensors_dtype(dtype_str: str) -> Union[str, None]:
+def as_safetensors_dtype(dtype_str: str) -> Union[torch.dtype, None]:
     if dtype_str == "auto":
         return None
-    from fastsfaetensors.common import TYPE_MAP
+    from fastsfaetensors.frameworks._torch import dtype_convert
 
-    if dtype_str not in TYPE_MAP:
+    if dtype_str not in dtype_convert:
         raise Exception(
-            f"unsupported type: {dtype_str}. supported types: {TYPE_MAP.keys()}"
+            f"unsupported type: {dtype_str}. supported types: {dtype_convert.keys()}"
         )
-    return dtype_str
+    return dtype_convert[dtype_str]
 
 
 def get_size(tensor: torch.Tensor) -> int:
@@ -386,13 +387,15 @@ def drop_cache(
     for filename in targets.keys():
         fd = os.open(filename, os.O_RDONLY)
         s = os.fstat(fd)
-        os.posix_fadvise(fd, 0, s.st_size, os.POSIX_FADV_DONTNEED)
+        if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
+            os.posix_fadvise(fd, 0, s.st_size, os.POSIX_FADV_DONTNEED)  # type: ignore[attr-defined]
         os.close(fd)
         print(f"DROP_CACHE: {filename}, {s.st_size/1024/1024/1024} GiB")
         total += s.st_size
     fd = os.open(sten_collection_json, os.O_RDONLY)
     s = os.fstat(fd)
-    os.posix_fadvise(fd, 0, s.st_size, os.POSIX_FADV_DONTNEED)
+    if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
+        os.posix_fadvise(fd, 0, s.st_size, os.POSIX_FADV_DONTNEED)  # type: ignore[attr-defined]
     os.close(fd)
     print(f"DROP_CACHE: {sten_collection_json}, {s.st_size/1024/1024/1024} GiB")
     total += s.st_size
@@ -404,7 +407,7 @@ def run_mmap_sharded_internal(
     model_name: str,
     sten_collection_json: str,
     device: str = "cuda",
-    dtype: str = "auto",
+    dtype: str = "AUTO",
     opt: bool = False,
     debug_log: bool = False,
 ):
@@ -424,12 +427,11 @@ def run_mmap_sharded_internal(
         for f in files:
             filenames.append(f)
     (key_pats, layer_prefix) = get_key_pats(sten_collection_json, model_name)
-    torch_dtype = as_safetensors_dtype(dtype)
 
     t0 = time.time_ns()
     fb = FilesBufferOnMmap(
-        device=as_torch_device(device, pg.rank()),
-        dtype=torch_dtype,
+        device=torch.device(f"{device}:{pg.rank()}"),
+        dtype=as_safetensors_dtype(dtype),
         opt=opt,
         debug_log=debug_log,
     )
@@ -449,7 +451,7 @@ def run_mmap(
     model_name: str,
     sten_collection_json: str,
     device: str = "cuda",
-    dtype: str = "auto",
+    dtype: str = "AUTO",
     run_id: Union[str, None] = None,
     rank: int = 0,
     world_size: int = 1,
@@ -461,7 +463,6 @@ def run_mmap(
 ):
     if cache_drop:
         drop_cache(model_name, sten_collection_json, world_size)
-    torch_dtype = as_safetensors_dtype(dtype)
     if sysstat_enabled:
         stat_id = start_sysstat(
             model_name,
@@ -473,8 +474,8 @@ def run_mmap(
     if world_size == 1:
         filenames = get_sten_files(sten_collection_json, model_name, world_size)[rank]
         fb = FilesBufferOnMmap(
-            device=as_torch_device(device, 0),
-            dtype=torch_dtype,
+            device=torch.device(f"{device}:0"),
+            dtype=as_safetensors_dtype(dtype),
             opt=opt,
             debug_log=debug_log,
         )
@@ -562,10 +563,9 @@ def run_gds_sharded_internal(
     model_name: str,
     sten_collection_json: str,
     device: str = "cuda",
-    dtype: str = "auto",
+    dtype: str = "AUTO",
     max_block_size_mb: float = 10 * 1024,
-    max_direct_io_kb: int = 16 * 1024,
-    max_pinned_memory_in_kb: int = 64 * 1024 * 1024,
+    bbuf_size_kb: int = 16 * 1024,
     max_threads: int = 16,
     use_buf_register: bool = True,
     debug_log: bool = False,
@@ -589,12 +589,11 @@ def run_gds_sharded_internal(
     if not nogds and exclude_gds_init:
         import fastsafetensors.cpp as fstcpp
 
-        fstcpp.init_gds(16 * 1024, 80 * 1024 * 1024)
+        fstcpp.init_gds()
     loader = SafeTensorsFileLoader(
         pg,
-        as_torch_device(device, pg.rank()),
-        max_direct_io_kb,
-        max_pinned_memory_in_kb,
+        f"{device}:{pg.rank()}",
+        bbuf_size_kb,
         max_threads,
         nogds=nogds,
         debug_log=debug_log,
@@ -603,7 +602,7 @@ def run_gds_sharded_internal(
     key_dim = get_key_dim(loader.get_keys(), key_pats, layer_prefix)
     t1 = time.time_ns()
     fb = loader.copy_files_to_device(
-        dtype=as_safetensors_dtype(dtype),
+        dtype=DType(dtype),
         use_buf_register=use_buf_register,
         max_copy_block_size=int(max_block_size_mb * 1024 * 1024),
     )
@@ -612,7 +611,7 @@ def run_gds_sharded_internal(
     t3 = time.time_ns()
     count = 0
     for _, t in ts.items():
-        count += get_size(t)
+        count += get_size(t.get_raw())
     t4 = time.time_ns()
     print(f"{t0},{t1},{t2},{t3},{t4},{count}")
     loader.close()
@@ -624,13 +623,12 @@ def run_gds_sharded_internal(
 def run_gds(
     model_name: str,
     sten_collection_json: str,
-    dtype: str = "auto",
+    dtype: str = "AUTO",
     run_id: Union[str, None] = None,
     device: str = "cuda",
     max_block_size_mb: float = 10 * 1024,
     debug_log: bool = False,
-    max_direct_io_kb: int = 16 * 1024,
-    max_pinned_memory_in_kb: int = 64 * 1024 * 1024,
+    bbuf_size_kb: int = 16 * 1024,
     max_threads: int = 16,
     world_size: int = 1,
     use_buf_register: bool = True,
@@ -664,7 +662,7 @@ def run_gds(
                 script_path,
                 "run-gds-sharded-internal",
                 f"--max-threads={max_threads}",
-                f"--max-direct-io-kb={max_direct_io_kb}",
+                f"--bbuf-size-kb={bbuf_size_kb}",
                 f"--device={device}",
                 f"--max-block-size-mb={max_block_size_mb}",
             ]
@@ -743,12 +741,11 @@ def run_gds(
         if not nogds and exclude_gds_init:
             import fastsafetensors.cpp as fstcpp
 
-            fstcpp.init_gds(16 * 1024, 80 * 1024 * 1024)
+            fstcpp.init_gds()
         loader = SafeTensorsFileLoader(
             SingleGroup(),
-            as_torch_device(device, 0),
-            max_direct_io_kb,
-            max_pinned_memory_in_kb,
+            f"{device}:0",
+            bbuf_size_kb,
             max_threads,
             nogds=nogds,
             debug_log=debug_log,
@@ -756,16 +753,16 @@ def run_gds(
         loader.add_filenames(filenames)
         t1 = time.time_ns()
         tensors = loader.copy_files_to_device(
-            dtype=torch_dtype,
+            dtype=DType(dtype),
             use_buf_register=use_buf_register,
             max_copy_block_size=int(max_block_size_mb * 1024 * 1024),
         )
         t2 = time.time_ns()
 
         count = 0.0
-        ts = tensors.as_dict({key: -1 for key in loader.get_keys()})
+        ts = tensors.as_dict(OrderedDict({key: -1 for key in loader.get_keys()}))
         for key, t in ts.items():
-            c = get_size(t)
+            c = get_size(t.get_raw())
             count += c
         t3 = time.time_ns()
         init_sec = (t1 - t0) / 1000 / 1000 / 1000

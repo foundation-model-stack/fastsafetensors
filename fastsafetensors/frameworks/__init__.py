@@ -156,7 +156,7 @@ class FrameworkOpBase(ABC, Generic[T, K]):
         pass
 
     @abstractmethod
-    def randn(self, s: tuple, dtype: DType) -> T:
+    def randn(self, s: tuple, device: Device, dtype: DType) -> T:
         pass
 
     @abstractmethod

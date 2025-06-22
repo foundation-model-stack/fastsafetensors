@@ -1,18 +1,18 @@
 import os
 import sys
+from typing import Dict, List
 
-import torch
 from safetensors import safe_open
 
-from fastsafetensors import SafeTensorsFileLoader
+from fastsafetensors import SafeTensorsFileLoader, SingleGroup
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("specify a directory containing safetensors files")
         sys.exit(1)
-    loader = SafeTensorsFileLoader(device="cpu", nogds=True)
+    loader = SafeTensorsFileLoader(SingleGroup(), device="cpu", nogds=True)
     input_file_or_dir = sys.argv[1]
-    src_files = {0: []}
+    src_files: Dict[int, List[str]] = {0: []}
     orig_keys = {}
     if os.path.isdir(input_file_or_dir):
         for dir, _, files in os.walk(input_file_or_dir):

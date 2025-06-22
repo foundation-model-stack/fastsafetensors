@@ -24,7 +24,7 @@ def test_shuffle(fstcpp_log, input_files, pg, framework):
     else:
         raise Exception(f"Unknown framework: {framework.get_name()}")
     loader = SafeTensorsFileLoader(
-        device=device, pg=pg, nogds=True, framework=framework.get_name(), debug_log=True
+        pg=pg, device=device, nogds=True, framework=framework.get_name(), debug_log=True
     )
     loader.add_filenames({0: input_files})
     bufs = loader.copy_files_to_device()

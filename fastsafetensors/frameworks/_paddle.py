@@ -14,6 +14,7 @@ except ImportError as e:
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from ..common import SingleGroup
 from ..cpp import cpu_free, cpu_malloc, gds_device_buffer, gpu_free, gpu_malloc
 from ..st_types import Device, DeviceType, DType
 from . import FrameworkOpBase, ProcessGroupBase, TensorBase
@@ -142,13 +143,12 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
         return "paddle"
 
     def get_device(self, device: str, pg: PaddleProcessGroup) -> Device:
+        dev_index: Optional[int] = None
         try:
             dev_split = device.split(":", 1)
             dev_type = DeviceType(dev_split[0].lower())
-            if dev_type == DeviceType.CPU:
-                dev_index = None
-            else:
-                dev_index: int = 0
+            if dev_type != DeviceType.CPU:
+                dev_index = 0
                 if len(dev_split) > 1:
                     dev_index = int(dev_split[1])
         except ValueError:
@@ -222,10 +222,13 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
         return dtype
 
     def get_process_group(self, pg: Optional[Any]) -> PaddleProcessGroup:
-        if pg is not None and not isinstance(pg, Group):
-            raise Exception(
-                "pg must be an instance of paddle.distributed.communication.group.Group"
-            )
+        if pg is not None:
+            if isinstance(pg, SingleGroup):
+                pg = None
+            elif not isinstance(pg, Group):
+                raise Exception(
+                    "pg must be an instance of paddle.distributed.communication.group.Group"
+                )
         return PaddleProcessGroup(pg)
 
     # for testing

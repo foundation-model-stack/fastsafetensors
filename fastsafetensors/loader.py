@@ -39,8 +39,8 @@ class SafeTensorsFileLoader:
 
     def __init__(
         self,
+        pg: Optional[Any],
         device: str = "cpu",
-        pg: Optional[Any] = None,
         bbuf_size_kb: int = 16 * 1024,
         max_threads: int = 16,
         nogds: bool = False,
@@ -70,6 +70,7 @@ class SafeTensorsFileLoader:
                 UserWarning,
             )
             nogds = True
+        self.reader: Union[fstcpp.nogds_file_reader, fstcpp.gds_file_reader]
         if nogds:
             self.reader = fstcpp.nogds_file_reader(
                 False, bbuf_size_kb, max_threads, device_is_not_cpu
@@ -180,7 +181,7 @@ class fastsafe_open:
         max_copy_block_size: int = 16 * 1024 * 1024 * 1024,
     ):
         self.loader = SafeTensorsFileLoader(
-            device, pg=pg, nogds=nogds, debug_log=debug_log, framework=framework
+            pg, device, nogds=nogds, debug_log=debug_log, framework=framework
         )
         file_dict: Dict[int, List[str]] = {}
         if isinstance(filenames, str):

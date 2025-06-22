@@ -28,6 +28,15 @@ def get_device_numa_node(device: Optional[int]) -> Optional[int]:
         return int(f.read().strip())
 
 
+# keep this for compatibility
+class SingleGroup:
+    def size(self):
+        return 1
+
+    def rank(self):
+        return 0
+
+
 class SafeTensorsMetadata:
     def __init__(
         self,

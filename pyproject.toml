@@ -31,3 +31,6 @@ filterwarnings = ["ignore:Can't initialize NVML"]
 [build-system]
 requires = ["setuptools==69.5.1", "pybind11"]
 build-backend = "setuptools.build_meta"
+
+[tool.isort]
+profile = "black"
