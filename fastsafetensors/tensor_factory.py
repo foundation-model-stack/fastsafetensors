@@ -161,70 +161,25 @@ class LazyTensorFactory:
         self.shuffled[tensor_name] = dst
         return dst
 
-    def shuffle_packed_qkv(self, pg: ProcessGroupBase, tensor_name: str) -> TensorBase:
-        if tensor_name in self.shuffled:
-            if self.debug_log:
-                print(f"shuffle: use cache, tensor_name={tensor_name}")
-            t = self.shuffled[tensor_name].clone().detach()
-            return t
-        frame = self.metadata.tensors[tensor_name]
-        total_size = frame.shape[0]
-        single_size = total_size // 3
-        block_size = (single_size + pg.size() - 1) // pg.size()
-        scatter_list: List[TensorBase] = []
-        if tensor_name in self.tensors:
-            t = self.tensors[tensor_name]
-            for rank in range(0, pg.size()):
-                q = t[(slice(rank * block_size, (rank + 1) * block_size, 1))]
-                k = t[
-                    (
-                        slice(
-                            single_size + rank * block_size,
-                            single_size + (rank + 1) * block_size,
-                            1,
-                        )
-                    )
-                ]
-                v = t[
-                    (
-                        slice(
-                            single_size * 2 + rank * block_size,
-                            single_size * 2 + (rank + 1) * block_size,
-                            1,
-                        )
-                    )
-                ]
-                cat_res = self.framework.concat_tensors([q, k, v], dim=0)
-                scatter_list.append(cat_res)
-        if pg.size() == 1:
-            self.shuffled[tensor_name] = scatter_list[0]
-            return scatter_list[0]
-        new_shape = (block_size * 3,) + tuple(frame.shape[1:])
-
-        if self.debug_log:
-            print(
-                f"shuffle_packed_qkv: scatter, tensor_name={tensor_name}, shape={frame.shape}->{new_shape}, self.rank={self.rank}, pg.rank()={pg.rank()}, len(scatter_list)={len(scatter_list)}"
-            )
-        dst = self.framework.get_empty_tensor(list(new_shape), frame.dtype, self.device)
-        pg.scatter(dst, scatter_list=scatter_list, src=self.rank)
-        self.shuffled[tensor_name] = dst
-        return dst
-
     def shuffle_multi_cols(
         self, pg: ProcessGroupBase, tensor_names: List[str], dim: int
     ) -> TensorBase:
         rank_tensors: List[List[TensorBase]] = [[] for i in range(0, pg.size())]
-        new_shape: List = []
+        new_shape: List[int] = []
         for tensor_name in tensor_names:
             frame = self.metadata.tensors[tensor_name]
-            total_size = frame.shape[0]
+            total_size = frame.shape[dim]
             block_size = (total_size + pg.size() - 1) // pg.size()
             if len(new_shape) == 0:
-                new_shape = [block_size] + list(frame.shape[1:])
-            elif dim == 0:
-                new_shape[0] += block_size
+                new_shape = frame.shape
+                new_shape[dim] = 0
             else:
-                new_shape[dim] += frame.shape[dim]
+                for dim2 in range(0, len(frame.shape)):
+                    if dim2 != dim and frame.shape[dim2] != new_shape[dim2]:
+                        raise Exception(
+                            f"dim {dim2} mismatch: tensor {tensor_name} has {frame.shape} vs. {new_shape} (dim={dim})"
+                        )
+            new_shape[dim] += block_size
             if self.rank == pg.rank():
                 if tensor_name not in self.tensors:
                     raise Exception(
@@ -232,14 +187,21 @@ class LazyTensorFactory:
                     )
                 t = self.tensors[tensor_name]
                 for rank in range(0, pg.size()):
-                    rank_tensors[rank].append(
-                        t[(slice(rank * block_size, (rank + 1) * block_size, 1))]
-                    )
+                    rank_slices: Tuple[slice, ...] = ()
+                    for i in range(0, len(frame.shape)):
+                        if i < dim:
+                            rank_slices += (slice(None, None, None),)
+                        elif i == dim:
+                            rank_slices += (
+                                slice(rank * block_size, (rank + 1) * block_size, 1),
+                            )
+                            break
+                    rank_tensors[rank].append(t[rank_slices])
         if pg.size() == 1:
             return self.framework.concat_tensors(rank_tensors[self.rank], dim=dim)
         scatter_list: List[TensorBase] = []
 
-        if len(rank_tensors[0]) > 0:
+        if self.rank == pg.rank():
             for rank in range(0, pg.size()):
                 scatter_list.append(
                     self.framework.concat_tensors(rank_tensors[rank], dim=dim)
@@ -257,12 +219,3 @@ class LazyTensorFactory:
         if self.gbuf is not None:
             self.framework.free_tensor_memory(self.gbuf, self.device)
             self.gbuf = None
-
-    def shuffle_all(
-        self, pg: ProcessGroupBase, tensor_shard_dim: OrderedDict[str, int]
-    ) -> Tuple[int, Dict[str, TensorBase]]:
-        ret: Dict[str, TensorBase] = {}
-        for tensor_name, dim in tensor_shard_dim.items():
-            if tensor_name in self.metadata.tensors:
-                ret[tensor_name] = self.shuffle(pg, tensor_name, dim)
-        return (0, ret)

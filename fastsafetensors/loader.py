@@ -14,7 +14,7 @@ from .tensor_factory import LazyTensorFactory
 
 gl_set_numa = False
 
-loaded_nvidia: bool = False
+loaded_nvidia = False
 
 
 class SafeTensorsFileLoader:

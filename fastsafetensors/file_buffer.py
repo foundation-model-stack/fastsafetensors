@@ -161,16 +161,6 @@ class FilesBufferOnDevice:
             ).get_raw()
         return None
 
-    def get_sharded_packed_qkv(
-        self,
-        tensor_name: str,
-        device: Optional[Device] = None,
-        dtype: DType = DType.AUTO,
-    ) -> Any:
-        (rank, lidix) = self._get_rank_lidx(tensor_name)
-        t = self.rank_loaders[rank][lidix].shuffle_packed_qkv(self.pg, tensor_name)
-        return self._get_tensor(rank, lidix, tensor_name, t, device, dtype).get_raw()
-
     def get_multi_cols(
         self,
         tensor_names: List[str],

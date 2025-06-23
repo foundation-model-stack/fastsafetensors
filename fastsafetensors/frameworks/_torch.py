@@ -180,9 +180,8 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
         dst.real_tensor.copy_(src.real_tensor)
 
     def get_cuda_ver(self) -> str:
-        ver = torch.version.cuda
-        if ver:
-            return str(ver)
+        if torch.cuda.is_available():
+            return str(torch.version.cuda)
         return "0.0"
 
     def get_device_ptr_align(self) -> int:

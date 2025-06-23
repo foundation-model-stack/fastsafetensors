@@ -3,6 +3,7 @@ from typing import List
 
 import pytest
 
+from fastsafetensors import SingleGroup
 from fastsafetensors import cpp as fstcpp
 from fastsafetensors.frameworks import FrameworkOpBase, get_framework_op
 from fastsafetensors.st_types import Device
@@ -60,7 +61,7 @@ def pg():
 
             dist.init_parallel_env()
             return dist.new_group(ranks=list(range(world_size)), backend="gloo")
-    return None
+    return SingleGroup()
 
 
 @pytest.fixture(scope="session", autouse=True)

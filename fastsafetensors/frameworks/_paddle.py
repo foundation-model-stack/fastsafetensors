@@ -126,7 +126,7 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
         tag: int,
     ) -> None:
         if self.real_pg:
-            pdist.send(t.get_raw(), dst_rank, group=self.real_pg)
+            pdist.send(t.real_tensor, dst_rank, group=self.real_pg)
 
     def recv(
         self,

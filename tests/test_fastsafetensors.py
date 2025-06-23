@@ -10,6 +10,7 @@ import pytest
 from fastsafetensors import SafeTensorsFileLoader, SafeTensorsMetadata, SingleGroup
 from fastsafetensors import cpp as fstcpp
 from fastsafetensors import fastsafe_open
+from fastsafetensors.common import get_device_numa_node
 from fastsafetensors.copier.gds import GdsFileCopier
 from fastsafetensors.copier.nogds import NoGdsFileCopier
 from fastsafetensors.dlpack import from_cuda_buffer
@@ -18,7 +19,10 @@ from fastsafetensors.st_types import Device, DeviceType, DType
 
 
 def load_safetensors_file(
-    filename: str, device: Device, framework: FrameworkOpBase
+    filename: str,
+    device: Device,
+    framework: FrameworkOpBase,
+    to_dtype: DType = DType.AUTO,
 ) -> Dict[str, Any]:
     if framework.get_name() == "pytorch":
         from safetensors.torch import load_file
@@ -26,7 +30,13 @@ def load_safetensors_file(
         from safetensors.paddle import load_file
     else:
         raise Exception(f"unkown framework: {framework.get_name()}")
-    return load_file(filename, device.as_str())
+    d = load_file(filename, device.as_str())
+    if to_dtype != DType.AUTO:
+        from fastsafetensors.frameworks._torch import dtype_convert
+
+        for k, t in d.items():
+            d[k] = t.to(dtype=dtype_convert[to_dtype])
+    return d
 
 
 def save_safetensors_file(
@@ -87,24 +97,78 @@ def test_device(fstcpp_log) -> None:
     assert cpu.type == DeviceType.CPU and cpu.index == None
 
 
-def test_framework(fstcpp_log) -> None:
+def test_framework(fstcpp_log, framework) -> None:
     print("test_framework")
-    try:
-        from fastsafetensors.frameworks._torch import TorchOp
+    t = framework.get_empty_tensor([1], DType.F16, Device.from_str("cpu"))
+    with pytest.raises(Exception):
+        framework.is_equal(t, [float(0.0)])
+    with pytest.raises(Exception):
+        framework.get_process_group(int(0))
+    if framework.get_name() == "pytorch":
+        import torch
 
-        torch = TorchOp()
-        t = torch.get_empty_tensor([1], DType.F16, Device.from_str("cpu"))
-        from fastsafetensors.frameworks._paddle import PaddleOp
+        cuda_ver = str(torch.version.cuda) if torch.cuda.is_available() else "0.0"
+    elif framework.get_name() == "paddle":
+        import paddle
 
-        paddle = PaddleOp()
-        t2 = paddle.get_empty_tensor([1], DType.F16, Device.from_str("cpu"))
-        with pytest.raises(Exception):
-            torch.is_equal(t, t2.get_raw())
-        with pytest.raises(Exception):
-            paddle.is_equal(t2, t.get_raw())
-        assert torch.get_cuda_ver() == paddle.get_cuda_ver()
-    except:
-        pytest.skip("test_framework requires installing all frameworks")
+        try:
+            cuda_ver = str(paddle.version.cuda())
+        except:
+            cuda_ver = "0.0"
+    assert framework.get_cuda_ver() == cuda_ver
+
+
+def make_header_bytes(s: str):
+    header = s.encode("utf-8")
+    n = len(header)
+    return n.to_bytes(8, byteorder="little", signed=False) + header
+
+
+def test_from_buffer_header_too_small(framework):
+    with pytest.raises(Exception, match="HeaderTooSmall"):
+        SafeTensorsMetadata.from_buffer(
+            buf=0, buffer_len=4, filename="testfile", framework=framework
+        )
+
+
+def test_from_buffer_header_too_large(monkeypatch, framework):
+    def fake_read_buffer(buf, size):
+        return (100_000_001).to_bytes(8, "little")
+
+    monkeypatch.setattr(fstcpp, "read_buffer", fake_read_buffer)
+
+    with pytest.raises(Exception, match="HeaderTooLarge"):
+        SafeTensorsMetadata.from_buffer(
+            buf=0, buffer_len=1024, filename="testfile", framework=framework
+        )
+
+
+def test_from_buffer_invalid_header_length(monkeypatch, framework):
+    def fake_read_buffer(buf, size):
+        return (100).to_bytes(8, "little")
+
+    monkeypatch.setattr(fstcpp, "read_buffer", fake_read_buffer)
+
+    with pytest.raises(Exception, match="InvalidHeaderLength"):
+        SafeTensorsMetadata.from_buffer(
+            buf=0, buffer_len=50, filename="testfile", framework=framework
+        )
+
+
+def test_from_buffer_success(monkeypatch, framework):
+    json_str = '{"__metadata__": {"data_offsets": [0, 123]}}'
+    header_bytes = make_header_bytes(json_str)
+    buf_data = header_bytes
+
+    def fake_read_buffer(buf, size):
+        return buf_data[buf : buf + size]
+
+    monkeypatch.setattr(fstcpp, "read_buffer", fake_read_buffer)
+
+    meta = SafeTensorsMetadata.from_buffer(
+        buf=0, buffer_len=len(buf_data), filename="goodfile", framework=framework
+    )
+    assert isinstance(meta, SafeTensorsMetadata)
 
 
 def test_load_metadata_and_dlpack(fstcpp_log, input_files, framework) -> None:
@@ -238,9 +302,6 @@ def test_NoGdsFileCopier(fstcpp_log, input_files, framework) -> None:
 
 def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
     print("test_GdsFileCopier")
-    if not fstcpp.is_cufile_found():
-        pytest.skip("cufile.so is not found")
-        return
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)
     device, dev_is_gpu = get_and_check_device(framework)
     reader = fstcpp.gds_file_reader(4, dev_is_gpu)
@@ -366,12 +427,18 @@ def test_fastsafe_open(fstcpp_log, input_files, framework) -> None:
 
 
 def _test_type(
-    tmp_dir, dtype: DType, device: Device, framework: FrameworkOpBase
+    tmp_dir,
+    dtype: DType,
+    device: Device,
+    framework: FrameworkOpBase,
+    to_dtype: DType = DType.AUTO,
 ) -> None:
     filename = os.path.join(tmp_dir, f"a.safetensors")
     t0 = framework.randn((8, 16), device=device, dtype=DType.F32).to(dtype=dtype)
+    if to_dtype is not DType.AUTO:
+        t0 = t0.to(dtype=to_dtype)
     save_safetensors_file({f"a": t0.get_raw()}, filename, {"fst": "sample"}, framework)
-    t2 = load_safetensors_file(filename, device, framework)
+    t2 = load_safetensors_file(filename, device, framework, to_dtype=to_dtype)
     with fastsafe_open(
         filenames=[filename],
         nogds=True,
@@ -406,3 +473,11 @@ def test_float8_e4m3fn(fstcpp_log, tmp_dir, framework) -> None:
         return
     device, _ = get_and_check_device(framework)
     _test_type(tmp_dir, DType.F8_E4M3, device, framework)
+
+
+def test_float8_e4m3fn_to_int8(fstcpp_log, tmp_dir, framework) -> None:
+    if not framework.support_fp8():
+        pytest.skip("FP8 is not supported")
+        return
+    device, _ = get_and_check_device(framework)
+    _test_type(tmp_dir, DType.F8_E4M3, device, framework, DType.I8)
