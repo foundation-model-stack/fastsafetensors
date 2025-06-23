@@ -39,10 +39,6 @@ htmlcov:
 	coverage combine .coverage_* && \
 	coverage html
 
-.PHONY: integrationtest
-integrationtest:
-	cd tests && COVERAGE_FILE=.coverage pytest -s test_vllm.py
-
 .PHONY: builder
 builder: Dockerfile.build
 	$(CONCMD) build -t fastsafetensors-builder:latest - < Dockerfile.build
