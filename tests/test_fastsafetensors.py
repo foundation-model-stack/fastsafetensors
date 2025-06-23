@@ -114,9 +114,9 @@ def test_framework(fstcpp_log, framework) -> None:
     elif framework.get_name() == "paddle":
         import paddle
 
-        try:
+        if paddle.device.is_compiled_with_cuda():
             cuda_ver = str(paddle.version.cuda())
-        except:
+        else:
             cuda_ver = "0.0"
     assert framework.get_cuda_ver() == cuda_ver
 
