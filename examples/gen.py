@@ -19,7 +19,7 @@ def gen_paddle():
     from safetensors.paddle import save_file
 
     t0 = paddle.concat(
-        [paddle.full((1, 8), i, dtype=paddle.float16) for i in range(0, 16)], dim=0
+        [paddle.full((1, 8), i, dtype=paddle.float16) for i in range(0, 16)], axis=0
     )
 
     for file_prefix in ["a", "b"]:

@@ -2,7 +2,7 @@ import os
 import sys
 from typing import Dict, List
 
-from safetensors import safe_open
+from safetensors.torch import load_file
 
 from fastsafetensors import SafeTensorsFileLoader, SingleGroup
 
@@ -23,9 +23,7 @@ if __name__ == "__main__":
         ".safetensors"
     ):
         src_files[0].append(input_file_or_dir)
-        with safe_open(input_file_or_dir, framework="pytorch") as f:
-            for key in f.keys():
-                orig_keys[key] = f.get_tensor(key)
+        orig_keys = load_file(input_file_or_dir)
     loader.add_filenames(src_files)
     fb = loader.copy_files_to_device()
     if len(orig_keys) > 0:

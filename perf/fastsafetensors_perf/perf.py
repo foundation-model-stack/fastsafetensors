@@ -42,9 +42,12 @@ class FilesBufferOnMmap:
 
     def add_filenames(self, filenames: List[str]):
         for filename in filenames:
-            f = safe_open(os.path.realpath(filename), framework="pytorch")
-            for k in f.keys():
-                self.handles[k] = f
+            with safe_open(
+                os.path.realpath(filename), framework="pytorch"
+            ) as f:  # type: ignore[attr-defined]
+                for k in f.keys():
+                    self.handles[k] = filename
+        self.filenames = filenames
 
     def get_keys(self) -> List[str]:
         return list(self.handles.keys())
@@ -85,41 +88,51 @@ class FilesBufferOnMmap:
 
     def as_dict(self) -> Dict[str, torch.Tensor]:
         tensors: Dict[str, torch.Tensor] = {}
-        for key, f in self.handles.items():
-            t = f.get_tensor(key)  # tensor at pageable area (mmap)
-            t = t.clone().detach() if self.opt else t  # opt==True: copy to pinned area?
-            t = t.to(device=self.device, dtype=self.dtype)
-            tensors[key] = t
+        for filename in self.filenames:
+            with safe_open(filename, framework="pytorch") as f:  # type: ignore[attr-defined]
+                for key in f.keys():
+                    t = f.get_tensor(key)  # tensor at pageable area (mmap)
+                    t = (
+                        t.clone().detach() if self.opt else t
+                    )  # opt==True: copy to pinned area?
+                    t = t.to(device=self.device, dtype=self.dtype)
+                    tensors[key] = t
         return tensors
 
     def as_dict_sharded(
         self, pg: dist.ProcessGroup, tensor_shard_dim: OrderedDict[str, int]
     ) -> Dict[str, torch.Tensor]:
         tensors: Dict[str, torch.Tensor] = {}
-        for key, dim in sorted(tensor_shard_dim.items(), key=lambda x: x[0]):
-            f = self.handles[key]
-            if dim == -1:
-                t = f.get_tensor(key)  # tensor at pageable area (mmap)
-            else:
-                t = f.get_slice(key)
-                rank_slices: tuple = ()
-                shape = t.get_shape()
-                size = shape[dim]
-                block_size = (size + pg.size() - 1) // pg.size()
-                for i in range(0, len(shape)):
-                    if i < dim:
-                        rank_slices += (slice(None, None, None),)
-                    elif i == dim:
-                        rank_slices += (
-                            slice(
-                                pg.rank() * block_size, (pg.rank() + 1) * block_size, 1
-                            ),
-                        )
-                        break
-                t = t[rank_slices]
-            t = t.clone().detach() if self.opt else t  # opt==True: copy to pinned area?
-            t = t.to(device=self.device, dtype=self.dtype)
-            tensors[key] = t
+        for filename in self.filenames:
+            with safe_open(filename, framework="pytorch") as f:  # type: ignore[attr-defined]
+                for key in f.keys():
+                    dim = tensor_shard_dim[key]
+                    if dim == -1:
+                        t = f.get_tensor(key)  # tensor at pageable area (mmap)
+                    else:
+                        t = f.get_slice(key)
+                        rank_slices: tuple = ()
+                        shape = t.get_shape()
+                        size = shape[dim]
+                        block_size = (size + pg.size() - 1) // pg.size()
+                        for i in range(0, len(shape)):
+                            if i < dim:
+                                rank_slices += (slice(None, None, None),)
+                            elif i == dim:
+                                rank_slices += (
+                                    slice(
+                                        pg.rank() * block_size,
+                                        (pg.rank() + 1) * block_size,
+                                        1,
+                                    ),
+                                )
+                                break
+                        t = t[rank_slices]
+                    t = (
+                        t.clone().detach() if self.opt else t
+                    )  # opt==True: copy to pinned area?
+                    t = t.to(device=self.device, dtype=self.dtype)
+                    tensors[key] = t
         return tensors
 
 
@@ -278,15 +291,17 @@ def stop_sysstat(id: int):
 
 
 def as_safetensors_dtype(dtype_str: str) -> Union[torch.dtype, None]:
-    if dtype_str == "auto":
+    if dtype_str == "AUTO":
         return None
-    from fastsfaetensors.frameworks._torch import dtype_convert
+    from fastsafetensors.frameworks._torch import dtype_convert
 
-    if dtype_str not in dtype_convert:
+    dtype = DType(dtype_str)
+
+    if dtype not in dtype_convert:
         raise Exception(
-            f"unsupported type: {dtype_str}. supported types: {dtype_convert.keys()}"
+            f"unsupported type: {dtype}. supported types: {dtype_convert.keys()}"
         )
-    return dtype_convert[dtype_str]
+    return dtype_convert[dtype]
 
 
 def get_size(tensor: torch.Tensor) -> int:

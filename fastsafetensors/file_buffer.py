@@ -81,7 +81,7 @@ class FilesBufferOnDevice:
         ret: TensorBase,
         device: Optional[Device],
         dtype: DType,
-    ) -> Any:
+    ) -> TensorBase:
         loader = self.rank_loaders[rank][lidx]
         if self.auto_mem_delete:
             self.instantiated[rank][lidx][tensor_name] = True
@@ -91,7 +91,18 @@ class FilesBufferOnDevice:
                         f"_get_tensor: free_dev_ptrs, lidx={lidx}, src={loader.metadata.src}"
                     )
                 loader.free_dev_ptrs()
-        return ret.to(device=device, dtype=dtype).get_raw()
+        return ret.to(device=device, dtype=dtype)
+
+    def get_sharded_wrapped(
+        self,
+        tensor_name: str,
+        dim: int,
+        device: Optional[Device] = None,
+        dtype: DType = DType.AUTO,
+    ) -> TensorBase:
+        (rank, lidix) = self._get_rank_lidx(tensor_name)
+        t = self.rank_loaders[rank][lidix].shuffle(self.pg, tensor_name, dim)
+        return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
 
     def get_sharded(
         self,
@@ -105,9 +116,15 @@ class FilesBufferOnDevice:
         In multi-process loading, this eventually calls torch.distributed.scatter.
         A special dim is -1, which broadcast a tensor to all the ranks (== get_tensor()).
         """
-        (rank, lidix) = self._get_rank_lidx(tensor_name)
-        t = self.rank_loaders[rank][lidix].shuffle(self.pg, tensor_name, dim)
-        return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
+        return self.get_sharded_wrapped(tensor_name, dim, device, dtype).get_raw()
+
+    def get_tensor_wrapped(
+        self,
+        tensor_name: str,
+        device: Optional[Device] = None,
+        dtype: DType = DType.AUTO,
+    ) -> TensorBase:
+        return self.get_sharded_wrapped(tensor_name, -1, device, dtype)
 
     def get_tensor(
         self,
@@ -121,7 +138,7 @@ class FilesBufferOnDevice:
         So, every rank will allocate the same tensor at each device memroy.
         In single-process loading, this directly instantiates a tensor from the device buffer with zero copy.
         """
-        return self.get_sharded(tensor_name, -1, device, dtype)
+        return self.get_tensor_wrapped(tensor_name, device, dtype).get_raw()
 
     def push_tensor(
         self,
@@ -139,7 +156,9 @@ class FilesBufferOnDevice:
         (rank, lidix) = self._get_rank_lidx(tensor_name)
         t = self.rank_loaders[rank][lidix].push(self.pg, tensor_name, dst_rank, rank)
         if t:
-            return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
+            return self._get_tensor(
+                rank, lidix, tensor_name, t, device, dtype
+            ).get_raw()
         return None
 
     def get_sharded_packed_qkv(
@@ -150,7 +169,7 @@ class FilesBufferOnDevice:
     ) -> Any:
         (rank, lidix) = self._get_rank_lidx(tensor_name)
         t = self.rank_loaders[rank][lidix].shuffle_packed_qkv(self.pg, tensor_name)
-        return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
+        return self._get_tensor(rank, lidix, tensor_name, t, device, dtype).get_raw()
 
     def get_multi_cols(
         self,

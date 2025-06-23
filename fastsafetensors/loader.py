@@ -6,7 +6,6 @@ import warnings
 from typing import Any, Dict, List, Optional, OrderedDict, Tuple, Union
 
 from . import cpp as fstcpp
-from . import frameworks
 from .common import SafeTensorsMetadata, TensorFrame, get_device_numa_node
 from .file_buffer import FilesBufferOnDevice
 from .frameworks import TensorBase, get_framework_op
@@ -14,6 +13,8 @@ from .st_types import DeviceType, DType
 from .tensor_factory import LazyTensorFactory
 
 gl_set_numa = False
+
+loaded_nvidia: bool = False
 
 
 class SafeTensorsFileLoader:
@@ -54,6 +55,12 @@ class SafeTensorsFileLoader:
         self.debug_log = debug_log
         self.meta: Dict[str, Tuple[SafeTensorsMetadata, int]] = {}
         self.frames = OrderedDict[str, TensorFrame]()
+        global loaded_nvidia
+        if not loaded_nvidia:
+            fstcpp.load_nvidia_functions()
+            if fstcpp.init_gds() != 0:
+                raise Exception(f"[FAIL] init_gds()")
+            loaded_nvidia = True
         global gl_set_numa
         if not gl_set_numa and set_numa:
             node = get_device_numa_node(self.device.index)
@@ -205,7 +212,7 @@ class fastsafe_open:
         return list(self.fb.key_to_rank_lidx.keys())
 
     def get_tensor_wrapped(self, name: str) -> TensorBase:
-        return self.fb.get_tensor(name)
+        return self.fb.get_tensor_wrapped(name)
 
     def get_tensor(self, name: str) -> Any:
         return self.get_tensor_wrapped(name).get_raw()

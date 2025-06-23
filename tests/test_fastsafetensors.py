@@ -271,7 +271,7 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
             f"Do not support the framework: {framework.get_name()}"
         )
     loader = SafeTensorsFileLoader(
-        pg=SingleGroup,
+        pg=SingleGroup(),
         device=device.as_str(),
         framework=framework.get_name(),
         nogds=False,
@@ -285,7 +285,7 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
     last_shape: List[int] = []
     for key, exp in load_safetensors_file(input_files[0], device, framework).items():
         exp = exp.to(dtype=data_type_real)
-        actual = bufs.get_tensor(key)
+        actual = bufs.get_tensor_wrapped(key)
         assert framework.is_equal(actual, exp)
         last_key = key
         last_shape = list(exp.shape)
@@ -301,7 +301,7 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
 def test_SafeTensorsFileLoaderNoGds(fstcpp_log, input_files, framework) -> None:
     device, _ = get_and_check_device(framework)
     loader = SafeTensorsFileLoader(
-        pg=SingleGroup,
+        pg=SingleGroup(),
         device=device.as_str(),
         framework=framework.get_name(),
         nogds=True,
