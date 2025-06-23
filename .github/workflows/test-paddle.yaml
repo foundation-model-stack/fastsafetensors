@@ -32,8 +32,23 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
+          tf_ver=4.52
+          npy_ver=2.2
+          torch_ver=2.7
+          if [ "${{ matrix.python-version }}" = "3.9" ]; then
+            npy_ver=1.26
+            tf_ver=4.40
+            torch_ver=2.1
+          elif [ "${{ matrix.python-version }}" = "3.10" ]; then
+            torch_ver=2.3
+          elif [ "${{ matrix.python-version }}" = "3.11" ]; then
+            torch_ver=2.5
+          elif [ "${{ matrix.python-version }}" = "3.12" ]; then
+            torch_ver=2.6
+          fi
+          pip install torch==${torch_ver} --index-url https://download.pytorch.org/whl/cpu # transformers requires torch
           pip install paddlepaddle==3.0.0
-          pip install pytest pytest-cov setuptools_scm safetensors transformers==4.52
+          pip install vllm pytest pytest-cov setuptools_scm safetensors transformers==${tf_ver} numpy==${npy_ver}
       - name: Build Package
         run: |
           pip install .
