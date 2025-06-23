@@ -18,18 +18,18 @@ static bool debug_log = false;
 
 /* cpu_mode functions: for tests and debugs */
 
-static CUfileError_t cpu_cuFileDriverOpen() { return CUfileError_t{err: CU_FILE_SUCCESS}; }
-static CUfileError_t cpu_cuFileDriverClose() { return CUfileError_t{err: CU_FILE_SUCCESS}; }
-static CUfileError_t cpu_cuFileDriverSetMaxDirectIOSize(size_t) { return CUfileError_t{err: CU_FILE_SUCCESS}; }
-static CUfileError_t cpu_cuFileDriverSetMaxPinnedMemSize(size_t) { return CUfileError_t{err: CU_FILE_SUCCESS}; }
-static CUfileError_t cpu_cuFileBufRegister(const void *, size_t, int) { return CUfileError_t{err: CU_FILE_SUCCESS}; }
-static CUfileError_t cpu_cuFileBufDeregister(const void *) { return CUfileError_t{err: CU_FILE_SUCCESS}; }
+static CUfileError_t cpu_cuFileDriverOpen() { return CUfileError_t{.err = CU_FILE_SUCCESS}; }
+static CUfileError_t cpu_cuFileDriverClose() { return CUfileError_t{.err = CU_FILE_SUCCESS}; }
+static CUfileError_t cpu_cuFileDriverSetMaxDirectIOSize(size_t) { return CUfileError_t{.err = CU_FILE_SUCCESS}; }
+static CUfileError_t cpu_cuFileDriverSetMaxPinnedMemSize(size_t) { return CUfileError_t{.err = CU_FILE_SUCCESS}; }
+static CUfileError_t cpu_cuFileBufRegister(const void *, size_t, int) { return CUfileError_t{.err = CU_FILE_SUCCESS}; }
+static CUfileError_t cpu_cuFileBufDeregister(const void *) { return CUfileError_t{.err = CU_FILE_SUCCESS}; }
 static CUfileError_t cpu_cuFileHandleRegister(CUfileHandle_t * in, CUfileDescr_t *) {
     *in = reinterpret_cast<CUfileHandle_t *>(malloc(sizeof(CUfileHandle_t)));
     if (*in != nullptr) {
-        return CUfileError_t{err: CU_FILE_SUCCESS};
+        return CUfileError_t{.err = CU_FILE_SUCCESS};
     }
-    return CUfileError_t{err: CU_FILE_INTERNAL_ERROR};
+    return CUfileError_t{.err = CU_FILE_INTERNAL_ERROR};
 }
 static void cpu_cuFileHandleDeregister(CUfileHandle_t h) {
     free(reinterpret_cast<void *>(h));
@@ -57,21 +57,21 @@ static cudaError_t cpu_cudaDeviceGetPCIBusId(char * in, int s, int) {
 static int cpu_numa_run_on_node(int) {return 0; }
 
 ext_funcs_t cpu_fns = ext_funcs_t {
-    cuFileDriverOpen: cpu_cuFileDriverOpen,
-    cuFileDriverClose: cpu_cuFileDriverClose,
-    cuFileDriverSetMaxDirectIOSize: cpu_cuFileDriverSetMaxDirectIOSize,
-    cuFileDriverSetMaxPinnedMemSize: cpu_cuFileDriverSetMaxPinnedMemSize,
-    cuFileBufRegister: cpu_cuFileBufRegister,
-    cuFileBufDeregister: cpu_cuFileBufDeregister,
-    cuFileHandleRegister: cpu_cuFileHandleRegister,
-    cuFileHandleDeregister: cpu_cuFileHandleDeregister,
-    cuFileRead: nullptr,
-    cudaMemcpy: cpu_cudaMemcpy,
-    cudaDeviceSynchronize: cpu_cudaDeviceSynchronize,
-    cudaHostAlloc: cpu_cudaHostAlloc,
-    cudaFreeHost: cpu_cudaFreeHost,
-    cudaDeviceGetPCIBusId: cpu_cudaDeviceGetPCIBusId,
-    numa_run_on_node: cpu_numa_run_on_node,
+    .cuFileDriverOpen = cpu_cuFileDriverOpen,
+    .cuFileDriverClose = cpu_cuFileDriverClose,
+    .cuFileDriverSetMaxDirectIOSize = cpu_cuFileDriverSetMaxDirectIOSize,
+    .cuFileDriverSetMaxPinnedMemSize = cpu_cuFileDriverSetMaxPinnedMemSize,
+    .cuFileBufRegister = cpu_cuFileBufRegister,
+    .cuFileBufDeregister = cpu_cuFileBufDeregister,
+    .cuFileHandleRegister = cpu_cuFileHandleRegister,
+    .cuFileHandleDeregister = cpu_cuFileHandleDeregister,
+    .cuFileRead = nullptr,
+    .cudaMemcpy = cpu_cudaMemcpy,
+    .cudaDeviceSynchronize = cpu_cudaDeviceSynchronize,
+    .cudaHostAlloc = cpu_cudaHostAlloc,
+    .cudaFreeHost = cpu_cudaFreeHost,
+    .cudaDeviceGetPCIBusId = cpu_cudaDeviceGetPCIBusId,
+    .numa_run_on_node = cpu_numa_run_on_node,
 };
 ext_funcs_t cuda_fns;
 
@@ -241,7 +241,7 @@ void set_debug_log(bool _debug_log)
     debug_log = _debug_log;
 }
 
-int init_gds(uint64_t _max_direct_io_size_in_kb, uint64_t max_pinned_memory_size_in_kb)
+int init_gds()
 {
     CUfileError_t err;
 
@@ -253,32 +253,9 @@ int init_gds(uint64_t _max_direct_io_size_in_kb, uint64_t max_pinned_memory_size
             return -1;
         }
     }
-
-    std::chrono::steady_clock::time_point begin_set_dio = std::chrono::steady_clock::now();
-    if (cuda_fns.cuFileDriverSetMaxDirectIOSize) {
-        err = cuda_fns.cuFileDriverSetMaxDirectIOSize(_max_direct_io_size_in_kb);
-        if (err.err != CU_FILE_SUCCESS) {
-            std::fprintf(stderr, "init_gds: cuFileDriverGetProperties(%ld) returned an error = %d\n", _max_direct_io_size_in_kb, err.err);
-            close_gds();
-            return -1;
-        }
-    }
-
-    std::chrono::steady_clock::time_point begin_set_pin = std::chrono::steady_clock::now();
-    if (cuda_fns.cuFileDriverSetMaxPinnedMemSize) {
-        err = cuda_fns.cuFileDriverSetMaxPinnedMemSize(max_pinned_memory_size_in_kb);
-        if (err.err != CU_FILE_SUCCESS) {
-            std::fprintf(stderr, "init_gds: cuFileDriverSetMaxPinnedMemSize(%ld) returned an error = %d\n", max_pinned_memory_size_in_kb, err.err);
-            close_gds();
-            return -1;
-        }
-    }
     if (debug_log) {
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] init_gds: cuFileDriverOpen=%ld us, cuFileDriverSetMaxDirectIOSize=%ld us, cuFileDriverSetMaxPinnedMemSize=%ld us, elapsed=%ld us\n",
-            std::chrono::duration_cast<std::chrono::microseconds>(begin_set_dio - begin).count(),
-            std::chrono::duration_cast<std::chrono::microseconds>(begin_set_pin - begin_set_dio).count(),
-            std::chrono::duration_cast<std::chrono::microseconds>(end - begin_set_pin).count(),
+        std::printf("[DEBUG] init_gds: cuFileDriverOpen=%lld us\n",
             std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
     }
     return 0;
@@ -298,7 +275,7 @@ int close_gds()
     }
     if (debug_log) {
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] close_gds: cuFileDriverClose, elapsed=%ld us\n",
+        std::printf("[DEBUG] close_gds: cuFileDriverClose, elapsed=%lld us\n",
             std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
     }
     return 0;
@@ -375,7 +352,7 @@ const int gds_device_buffer::cufile_register(uint64_t offset, uint64_t length) {
     }
     if (debug_log) {
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] gds_device_buffer.cufile_register: addr=%p, offset=%lu, length=%lu, register=%ld us\n", dst, offset, length,
+        std::printf("[DEBUG] gds_device_buffer.cufile_register: addr=%p, offset=%" PRIu64 ", length=%" PRIu64 ", register=%lld us\n", dst, offset, length,
             std::chrono::duration_cast<std::chrono::microseconds>(end - begin_register).count());
     }
     return 0;
@@ -392,7 +369,7 @@ const int gds_device_buffer::cufile_deregister(uint64_t offset) {
     }
     if (debug_log) {
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] gds_device_buffer.cufile_deregister: addr=%p, offset=%ld, elapsed=%ld us\n", dst, offset,
+        std::printf("[DEBUG] gds_device_buffer.cufile_deregister: addr=%p, offset=%" PRIu64 ", elapsed=%lld us\n", dst, offset,
             std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
     }
     return 0;
@@ -405,15 +382,15 @@ const int gds_device_buffer::memmove(uint64_t _dst_off, uint64_t _src_off, const
     void *tmp = const_cast<void *>(_tmp._devPtr_base->get_raw());
 
     if (this->_length < _dst_off) {
-        std::fprintf(stderr, "gds_device_buffer.memmove: length is smaller than request dst_off, tmp.length=%ld, _dst_off=%ld\n", _tmp._length, _dst_off);
+        std::fprintf(stderr, "gds_device_buffer.memmove: length is smaller than request dst_off, tmp.length=%" PRIu64 ", _dst_off=%" PRIu64 "\n", _tmp._length, _dst_off);
         return -1;
     }
     if (this->_length < _src_off) {
-        std::fprintf(stderr, "gds_device_buffer.memmove: length is smaller than request dst_off, tmp.length=%ld, _src_off=%ld\n", _tmp._length, _src_off);
+        std::fprintf(stderr, "gds_device_buffer.memmove: length is smaller than request dst_off, tmp.length=%" PRIu64 ", _src_off=%" PRIu64 "\n", _tmp._length, _src_off);
         return -1;
     }
     if (_tmp._length < length) {
-        std::fprintf(stderr, "gds_device_buffer.memmove: tmp is smaller than request length, tmp.length=%ld, length=%ld\n", _tmp._length, length);
+        std::fprintf(stderr, "gds_device_buffer.memmove: tmp is smaller than request length, tmp.length=%" PRIu64 ", length=%" PRIu64 "\n", _tmp._length, length);
         return -1;
     }
     if (length == 0) {
@@ -423,17 +400,17 @@ const int gds_device_buffer::memmove(uint64_t _dst_off, uint64_t _src_off, const
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
     err = _fns->cudaMemcpy(tmp, src, length, cudaMemcpyDefault);
     if (err != cudaSuccess) {
-        std::printf("gds_device_buffer.memmove: cudaMemcpy[0](tmp=%p, src=%p, length=%ld) failed, err=%d\n", tmp, src, length, err);
+        std::printf("gds_device_buffer.memmove: cudaMemcpy[0](tmp=%p, src=%p, length=%" PRIu64 ") failed, err=%d\n", tmp, src, length, err);
         return -1;
     }
     err = _fns->cudaMemcpy(dst, tmp, length, cudaMemcpyDefault);
     if (err != cudaSuccess) {
-        std::printf("gds_device_buffer.memmove: cudaMemcpy[1](dst=%p, tmp=%p, length=%ld) failed, err=%d\n", dst, tmp, length, err);
+        std::printf("gds_device_buffer.memmove: cudaMemcpy[1](dst=%p, tmp=%p, length=%" PRIu64 ") failed, err=%d\n", dst, tmp, length, err);
         return -1;
     }
     if (debug_log) {
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] gds_device_buffer.memmove: dst=%p, src=%p, tmp=%p, length=%ld, elapsed=%ld us\n", dst, src, tmp, length,
+        std::printf("[DEBUG] gds_device_buffer.memmove: dst=%p, src=%p, tmp=%p, length=%" PRIu64 ", elapsed=%lld us\n", dst, src, tmp, length,
             std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
     }
     return 0;
@@ -451,13 +428,13 @@ void nogds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const int
         std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
         src = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, offset);
         if (src == MAP_FAILED) {
-            std::printf("nogds_file_reader._thread: mmap(fd=%d, offset=%ld, length=%ld) failed\n", fd, offset, length);
+            std::printf("nogds_file_reader._thread: mmap(fd=%d, offset=%" PRIu64 ", length=%" PRIu64 ") failed\n", fd, offset, length);
             failed = true;
             goto out;
         }
         if (debug_log) {
             std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-            std::printf("[DEBUG] nogds_file_reader._thread: mmap, fd=%d, offset=%ld, length=%ld, elapsed=%ld us\n",
+            std::printf("[DEBUG] nogds_file_reader._thread: mmap, fd=%d, offset=%" PRIu64 ", length=%" PRIu64 ", elapsed=%lld us\n",
                 fd, offset, length, std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
         }
     }
@@ -475,7 +452,7 @@ void nogds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const int
         } else {
             c = pread(fd, buffer, l, offset + count);
             if (c != l) {
-                std::printf("nogds_file_reader._thread failed: pread(fd=%d, buffer=%p, offset=%ld, count=%ld, l=%ld), c=%ld\n", fd, buffer, offset, count, l, c);
+                std::printf("nogds_file_reader._thread failed: pread(fd=%d, buffer=%p, offset=%" PRIu64 ", count=%" PRIi64 ", l=%" PRIi64 "), c=%" PRIi64 "\n", fd, buffer, offset, count, l, c);
                 failed = true;
                 goto out;
             }
@@ -483,7 +460,7 @@ void nogds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const int
         std::chrono::steady_clock::time_point memcpy_begin = std::chrono::steady_clock::now();
         err = fns->cudaMemcpy(dst._get_raw_pointer(ptr_off + count, c), buffer, c, cudaMemcpyHostToDevice);
         if (err != cudaSuccess) {
-            std::printf("nogds_file_reader._thread: cudaMemcpy(%p, %p, %ld) failed, err=%d\n", dst._get_raw_pointer(ptr_off + count, c), buffer, count, err);
+            std::printf("nogds_file_reader._thread: cudaMemcpy(%p, %p, %" PRIi64 ") failed, err=%d\n", dst._get_raw_pointer(ptr_off + count, c), buffer, count, err);
             failed = true;
             goto out;
         } else if (c <= 64 * 1024) {
@@ -492,7 +469,7 @@ void nogds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const int
         count += c;
         if (debug_log) {
             std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-            std::printf("[DEBUG] nogds_file_reader._thread: read (mmap=%d), fd=%d, offset=%ld, count=%ld, c=%ld, copy=%ld us, cuda_copy=%ld us\n",
+            std::printf("[DEBUG] nogds_file_reader._thread: read (mmap=%d), fd=%d, offset=%" PRIu64 ", count=%" PRIi64 ", c=%" PRIi64 ", copy=%lld us, cuda_copy=%lld us\n",
                 s->_use_mmap, fd, offset, count, c, std::chrono::duration_cast<std::chrono::microseconds>(memcpy_begin - begin).count(), std::chrono::duration_cast<std::chrono::microseconds>(end - memcpy_begin).count());
         }
     }
@@ -525,12 +502,12 @@ const int nogds_file_reader::submit_read(const int fd, const gds_device_buffer& 
         std::chrono::steady_clock::time_point alloc_begin = std::chrono::steady_clock::now();
         err = _fns->cudaHostAlloc(&this->_s._read_buffer, this->_s._bbuf_size_kb * 1024 * this->_s._max_threads, 0);
         if (err != cudaSuccess) {
-            std::printf("nogds_file_reader.submit_read: cudaHostAlloc(%lu) failed\n", this->_s._bbuf_size_kb * 1024 * this->_s._max_threads);
+            std::printf("nogds_file_reader.submit_read: cudaHostAlloc(%" PRIi64 ") failed\n", this->_s._bbuf_size_kb * 1024 * this->_s._max_threads);
             return -1;
         }
         if (debug_log) {
             std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-            std::printf("[DEBUG] nogds_file_reader.submit_read: cudaHostAlloc, size=%ld, elapsed=%ld us\n",
+            std::printf("[DEBUG] nogds_file_reader.submit_read: cudaHostAlloc, size=%" PRIi64 ", elapsed=%lld us\n",
                 this->_s._bbuf_size_kb * 1024, std::chrono::duration_cast<std::chrono::microseconds>(end - alloc_begin).count());
         }
     }
@@ -579,7 +556,7 @@ nogds_file_reader::~nogds_file_reader() {
     }
     if (debug_log) {
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] ~nogds_file_reader: elapsed=%ld us\n",
+        std::printf("[DEBUG] ~nogds_file_reader: elapsed=%lld us\n",
             std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
     }
 }
@@ -592,9 +569,11 @@ raw_gds_file_handle::raw_gds_file_handle(std::string filename, bool o_direct, bo
     int flags = O_RDONLY;
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+#if defined(O_DIRECT)
     if (o_direct) {
         flags |= O_DIRECT;
     }
+#endif
     fd = open(filename.c_str(), flags, 0644);
     if (fd < 0) {
         char msg[256];
@@ -616,7 +595,7 @@ raw_gds_file_handle::raw_gds_file_handle(std::string filename, bool o_direct, bo
     }
     if (debug_log) {
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] raw_gds_file_handle: fd=%d, cf_handle=%p, elapsed=%ld us\n", fd, cf_handle,
+        std::printf("[DEBUG] raw_gds_file_handle: fd=%d, cf_handle=%p, elapsed=%lld us\n", fd, cf_handle,
             std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
     }
     this->_cf_handle = cf_handle;
@@ -653,7 +632,7 @@ void gds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const gds_f
             c = fns->cuFileRead(fh._get_cf_handle(), devPtr_base, length - count, offset + count, count);
         }
         if (debug_log) {
-            std::printf("[DEBUG] gds_file_reader._thread: cuFileRead(fh, %p, length=%lu, off=%lu, ptr_off=%lu, count=%ld)=%ld\n", devPtr_base, length, offset, ptr_off, count, c);
+            std::printf("[DEBUG] gds_file_reader._thread: cuFileRead(fh, %p, length=%" PRIu64 ", off=%" PRIu64 ", ptr_off=%" PRIu64 ", count=%zd)=%zd\n", devPtr_base, length, offset, ptr_off, count, c);
         }
         if (c < 0) {
             std::fprintf(stderr, "gds_file_reader._thread: cuFileRead returned an error: errno=%d\n", errno);
@@ -671,7 +650,7 @@ void gds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const gds_f
     }
     if (debug_log) {
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] gds_file_reader._thread: fh=%p, offset=%lu, length=%lu, count=%ld, read=%ld us, notify=%ld us\n",
+        std::printf("[DEBUG] gds_file_reader._thread: fh=%p, offset=%" PRIu64 ", length=%" PRIu64 ", count=%zd, read=%lld us, notify=%lld us\n",
             fh._get_cf_handle(), offset, length, count,
             std::chrono::duration_cast<std::chrono::microseconds>(begin_notify - begin).count(),
             std::chrono::duration_cast<std::chrono::microseconds>(end - begin_notify).count());

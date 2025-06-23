@@ -1,0 +1,102 @@
+name: Build wheel and sdist
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build-wheels:
+    name: Build wheel for ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["cp39", "cp310", "cp311", "cp312", "cp313"]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install cibuildwheel
+      run: python -m pip install cibuildwheel setuptools pybind11
+    - name: Build wheels with cibuildwheel
+      run: |
+        cibuildwheel --output-dir wheelhouse
+      env:
+        CIBW_BUILD: "${{ matrix.python-version }}-manylinux_x86_64"
+        CIBW_SKIP: "*-musllinux_* *-win32 *-manylinux_i686"
+        CIBW_TEST_SKIP: "*"
+        CIBW_ARCHS: "x86_64"
+
+    - name: Upload wheel artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheels-${{ matrix.python-version }}
+        path: wheelhouse/*.whl
+
+  build-sdist:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build
+        run: pip install build
+
+      - name: Build sdist
+        run: python -m build --sdist --outdir dist/
+
+      - name: Upload sdist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  upload:
+    needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download all wheels
+      uses: actions/download-artifact@v4
+      with:
+        path: dist
+    - name: Download sdist artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: sdist
+        path: dist
+
+    - name: Flatten all artifacts
+      run: |
+        mkdir final_dist
+        find dist -name '*.whl' -exec cp {} final_dist/ \;
+        find dist -name '*.tar.gz' -exec cp {} final_dist/ \;
+
+    - name: Upload all artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: final_dist
+        path: final_dist
+
+#    - name: Set up Python
+#      uses: actions/setup-python@v5
+#      with:
+#        python-version: "3.11"
+#    - name: Publish to PyPI
+#      run: |
+#        python -m pip install twine
+#        twine upload --non-interactive final_dist/*
+#      env:
+#        TWINE_USERNAME: __token__
+#        TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}

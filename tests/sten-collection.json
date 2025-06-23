@@ -1,4 +1,18 @@
 {
+    "gpt2": {
+      "world_size_1": {
+        "rank_0": [
+          "/data/transformers_cache/models--gpt2/snapshots/607a30d783dfa663caf39e06633721c8d4cfcd7e/model.safetensors"
+        ]
+      }
+    },
+    "openai-community/gpt2-medium": {
+      "world_size_1": {
+        "rank_0": [
+          "/data/transformers_cache/models--openai-community--gpt2-medium/snapshots/6dcaa7a952f72f9298047fd5137cd6e4f05f41da/model.safetensors"
+        ]
+      }
+    },
     "bigscience/bloom": {
       "world_size_8": {
         "rank_0": [

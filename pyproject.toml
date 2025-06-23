@@ -1,6 +1,6 @@
 [project]
 name = "fastsafetensors"
-version = "0.1.13"
+version = "0.1.14"
 description = "High-performance safetensors model loader"
 authors = [{name = "Takeshi Yoshimura", email = "tyos@jp.ibm.com"}]
 maintainers = [{name = "Takeshi Yoshimura", email = "tyos@jp.ibm.com"}]
@@ -10,11 +10,11 @@ keywords = ["fastsafetensors", "safetensors", "GDS"]
 requires-python = ">= 3.9"
 dependencies = [
     "typer>=0.9.0",
-    "torch>=2.1",
 ]
 
 [project.optional-dependencies]
 test = [
+    "torch>=2.5.1",
     "pytest>=8.1.1",
     "pytest-cov>=5.0.0",
     "transformers>=4.40.2",
@@ -31,3 +31,6 @@ filterwarnings = ["ignore:Can't initialize NVML"]
 [build-system]
 requires = ["setuptools==69.5.1", "pybind11"]
 build-backend = "setuptools.build_meta"
+
+[tool.isort]
+profile = "black"
