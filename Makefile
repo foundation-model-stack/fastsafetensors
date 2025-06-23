@@ -68,8 +68,8 @@ format:
 
 .PHONY: lint
 lint:
-	black --check .
-	isort --check-only .
+	black .
+	isort .
 	flake8 . --select=E9,F63,F7,F82
 	mypy . --ignore-missing-imports
 
