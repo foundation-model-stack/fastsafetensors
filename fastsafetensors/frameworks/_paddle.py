@@ -207,10 +207,7 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
         dst.device = src.device
 
     def get_cuda_ver(self) -> str:
-        try:
-            return str(paddle.version.cuda())
-        except:
-            return "0.0"
+        return str(paddle.version.cuda()) if paddle.device.is_compiled_with_cuda() else "0.0"
 
     def get_device_ptr_align(self) -> int:
         CUDA_PTR_ALIGN: int = 16

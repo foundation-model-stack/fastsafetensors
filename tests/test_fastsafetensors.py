@@ -32,7 +32,10 @@ def load_safetensors_file(
         raise Exception(f"unkown framework: {framework.get_name()}")
     d = load_file(filename, device.as_str())
     if to_dtype != DType.AUTO:
-        from fastsafetensors.frameworks._torch import dtype_convert
+        if framework.get_name() == "pytorch":
+            from fastsafetensors.frameworks._torch import dtype_convert
+        elif framework.get_name() == "paddle":
+            from fastsafetensors.frameworks._paddle import dtype_convert
 
         for k, t in d.items():
             d[k] = t.to(dtype=dtype_convert[to_dtype])
