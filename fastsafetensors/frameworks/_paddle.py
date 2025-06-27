@@ -21,7 +21,7 @@ from . import FrameworkOpBase, ProcessGroupBase, TensorBase
 
 dtype_convert: Dict[DType, Any] = {
     DType.BOOL: paddle.bool,
-    DType.I8: paddle.uint8,
+    DType.U8: paddle.uint8,
     DType.I8: paddle.int8,
     DType.I16: paddle.int16,
     DType.U16: paddle.bfloat16,
@@ -37,6 +37,7 @@ dtype_convert: Dict[DType, Any] = {
 need_workaround_dtypes: Dict[DType, DType] = {
     DType.F8_E5M2: DType.I8,
     DType.F8_E4M3: DType.I8,
+    DType.U16: DType.BF16,
 }
 
 if hasattr(paddle, "float8_e5m2"):
