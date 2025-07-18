@@ -86,7 +86,6 @@ def run_nogds_file_read(
 
 
 def test_device(fstcpp_log) -> None:
-    print("test_device")
     with pytest.raises(ValueError, match="Unknown device type: aaaa"):
         Device.from_str("aaaa:0")
     with pytest.raises(ValueError, match="Invalid index: -xxx"):
@@ -101,7 +100,6 @@ def test_device(fstcpp_log) -> None:
 
 
 def test_framework(fstcpp_log, framework) -> None:
-    print("test_framework")
     t = framework.get_empty_tensor([1], DType.F16, Device.from_str("cpu"))
     with pytest.raises(Exception):
         framework.is_equal(t, [float(0.0)])
@@ -119,6 +117,12 @@ def test_framework(fstcpp_log, framework) -> None:
         else:
             cuda_ver = "0.0"
     assert framework.get_cuda_ver() == cuda_ver
+
+
+def test_get_framework_fail(fstcpp_log) -> None:
+    from fastsafetensors.frameworks import get_framework_op
+    with pytest.raises(Exception, match="Unknown framework name"):
+        get_framework_op("aaaaa")
 
 
 def make_header_bytes(s: str):
