@@ -140,6 +140,9 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
 
 
 class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
+    def __init__(self) -> None:
+        self.mem_used = 0
+
     def get_name(self) -> str:
         return "paddle"
 
@@ -173,13 +176,16 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
             rbuf = gpu_malloc(length)
         else:
             rbuf = cpu_malloc(length)
+        self.mem_used += length
         return gds_device_buffer(rbuf, length, dev.type == DeviceType.GPU)
 
     def free_tensor_memory(self, gbuf: gds_device_buffer, dev: Device) -> None:
+        length = gbuf.get_length()
         if dev.type == DeviceType.GPU:
             gpu_free(gbuf.get_base_address())
         else:
             cpu_free(gbuf.get_base_address())
+        self.mem_used -= length
 
     def get_empty_tensor(
         self, shape: List[int], dtype: DType, device: Device
@@ -248,3 +254,13 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
 
     def support_fp8(self) -> bool:
         return DType.F8_E5M2 in dtype_convert
+
+    def get_mem_used(self) -> int:
+        return self.mem_used
+
+_op: Optional[PaddleOp] = None
+def get_framework_op() -> FrameworkOpBase:
+    global _op
+    if _op is None:
+        _op = PaddleOp()
+    return _op

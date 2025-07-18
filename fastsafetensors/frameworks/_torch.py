@@ -133,6 +133,9 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
 
 
 class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
+    def __init__(self) -> None:
+        self.mem_used = 0
+
     def get_name(self) -> str:
         return "pytorch"
 
@@ -149,13 +152,16 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
             rbuf = torch.cuda.caching_allocator_alloc(length)
         else:
             rbuf = cpu_malloc(length)
+        self.mem_used += length
         return gds_device_buffer(rbuf, length, dev.type == DeviceType.CUDA)
 
     def free_tensor_memory(self, gbuf: gds_device_buffer, dev: Device):
+        length = gbuf.get_length()
         if dev.type == DeviceType.CUDA:
             torch.cuda.caching_allocator_delete(gbuf.get_base_address())
         else:
             cpu_free(gbuf.get_base_address())
+        self.mem_used -= length
 
     def get_empty_tensor(
         self, shape: List[int], dtype: DType, device: Device
@@ -218,3 +224,13 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
 
     def support_fp8(self) -> bool:
         return DType.F8_E5M2 in dtype_convert
+
+    def get_mem_used(self):
+        return self.mem_used
+
+_op: Optional[TorchOp] = None
+def get_framework_op() -> FrameworkOpBase:
+    global _op
+    if _op is None:
+        _op = TorchOp()
+    return _op

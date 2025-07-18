@@ -203,6 +203,9 @@ def test_load_metadata_and_dlpack(fstcpp_log, input_files, framework) -> None:
             if not printed:
                 print(actual_meta.__repr__())
                 printed = True
+        framework.free_tensor_memory(gbuf, device)
+        assert(framework.get_mem_used() == 0)
+        assert(fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0)
 
 
 def test_set_debug_log() -> None:
@@ -241,6 +244,7 @@ def test_alloc_gds_buffer(fstcpp_log, framework) -> None:
     gbuf = framework.alloc_tensor_memory(1024, device)
     addr = gbuf.get_base_address()
     assert addr != 0
+    framework.free_tensor_memory(gbuf, device)
 
 
 def test_cufile_register_deregister(fstcpp_log, framework) -> None:
@@ -251,6 +255,7 @@ def test_cufile_register_deregister(fstcpp_log, framework) -> None:
     assert gbuf.cufile_register(256, 1024 - 256) == 0
     assert gbuf.cufile_deregister(0) == 0
     assert gbuf.cufile_deregister(256) == 0
+    framework.free_tensor_memory(gbuf, device)
 
 
 def test_memmove(fstcpp_log, framework) -> None:
@@ -265,6 +270,9 @@ def test_memmove(fstcpp_log, framework) -> None:
     # However, this piece of memory itself is only 1024.
     # After offsetting by 12, there is no 1024 left in the remaining memory.
     # This part really puzzles me. So I change the moving size to 256*3 (<1024)
+    framework.free_tensor_memory(gbuf, device)
+    framework.free_tensor_memory(tmp, device)
+    assert(framework.get_mem_used() == 0)
 
 
 def test_nogds_file_reader(fstcpp_log, input_files, framework) -> None:
@@ -291,6 +299,10 @@ def test_nogds_file_reader(fstcpp_log, input_files, framework) -> None:
     for req in reqs:
         assert reader.wait_read(req) > 0
     os.close(fd)
+    framework.free_tensor_memory(gbuf, device)
+    del reader
+    assert(framework.get_mem_used() == 0)
+    assert(fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0)
 
 
 def test_NoGdsFileCopier(fstcpp_log, input_files, framework) -> None:
@@ -305,6 +317,10 @@ def test_NoGdsFileCopier(fstcpp_log, input_files, framework) -> None:
         actual = tensors[key]
         assert framework.is_equal(actual, exp)
     framework.free_tensor_memory(gbuf, device)
+    del copier
+    del reader
+    assert(framework.get_mem_used() == 0)
+    assert(fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0)
 
 
 def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
@@ -319,6 +335,9 @@ def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
         actual = tensors[key]
         assert framework.is_equal(actual, exp)
     framework.free_tensor_memory(gbuf, device)
+    del reader
+    assert(framework.get_mem_used() == 0)
+    assert(fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0)
 
 
 def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
@@ -364,6 +383,8 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
     assert bufs.get_filename("aaaaaaaaaaaaa") == ""
     bufs.close()
     loader.close()
+    assert(framework.get_mem_used() == 0)
+    assert(fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0)
 
 
 def test_SafeTensorsFileLoaderNoGds(fstcpp_log, input_files, framework) -> None:
@@ -384,6 +405,8 @@ def test_SafeTensorsFileLoaderNoGds(fstcpp_log, input_files, framework) -> None:
         assert framework.is_equal(actual, exp)
     bufs.close()
     loader.close()
+    assert(framework.get_mem_used() == 0)
+    assert(fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0)
 
 
 def test_fastsafe_open(fstcpp_log, input_files, framework) -> None:
@@ -431,6 +454,8 @@ def test_fastsafe_open(fstcpp_log, input_files, framework) -> None:
 
                 assert isinstance(t, paddle.Tensor)
             break
+    assert(framework.get_mem_used() == 0)
+    assert(fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0)
 
 
 def _test_type(
@@ -456,6 +481,8 @@ def _test_type(
         for key in f.keys():
             t1 = f.get_tensor_wrapped(key).clone().detach()
             assert framework.is_equal(t1, t2[key])
+    assert(framework.get_mem_used() == 0)
+    assert(fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0)
 
 
 def test_int8(fstcpp_log, tmp_dir, framework) -> None:
@@ -488,3 +515,35 @@ def test_float8_e4m3fn_to_int8(fstcpp_log, tmp_dir, framework) -> None:
         return
     device, _ = get_and_check_device(framework)
     _test_type(tmp_dir, DType.F8_E4M3, device, framework, DType.I8)
+
+def test_cpp_metrics(fstcpp_log, framework) -> None:
+    device, _ = get_and_check_device(framework)
+    exp_length = 0
+    assert(framework.get_mem_used() == exp_length)
+
+    gbuf = framework.alloc_tensor_memory(128, device)
+    exp_length += 128
+    assert(framework.get_mem_used() == exp_length)
+
+    framework.free_tensor_memory(gbuf, device)
+    exp_length -= 128
+    assert(framework.get_mem_used() == exp_length)
+
+    gbuf2 = framework.alloc_tensor_memory(1024, device)
+    exp_length += 1024
+    assert(framework.get_mem_used() == exp_length)
+
+    gbuf3 = framework.alloc_tensor_memory(128, device)
+    exp_length += 128
+    assert(framework.get_mem_used() == exp_length)
+
+    framework.free_tensor_memory(gbuf2, device)
+    exp_length -= 1024
+    assert(framework.get_mem_used() == exp_length)
+
+    framework.free_tensor_memory(gbuf3, device)
+    exp_length -= 128
+    assert(framework.get_mem_used() == exp_length)
+
+    assert(exp_length == 0)
+    assert(framework.get_mem_used() == 0)
