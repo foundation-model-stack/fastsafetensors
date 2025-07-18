@@ -258,7 +258,10 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
     def get_mem_used(self) -> int:
         return self.mem_used
 
+
 _op: Optional[PaddleOp] = None
+
+
 def get_framework_op() -> FrameworkOpBase:
     global _op
     if _op is None:

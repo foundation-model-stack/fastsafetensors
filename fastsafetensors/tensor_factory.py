@@ -221,5 +221,7 @@ class LazyTensorFactory:
         if self.gbuf is not None:
             self.framework.free_tensor_memory(self.gbuf, self.device)
             if self.debug_log:
-                print(f"free_dev_ptrs: delete buf, addr={self.gbuf.get_base_address():#x}")
+                print(
+                    f"free_dev_ptrs: delete buf, addr={self.gbuf.get_base_address():#x}"
+                )
             self.gbuf = None

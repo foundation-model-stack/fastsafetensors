@@ -228,7 +228,10 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
     def get_mem_used(self):
         return self.mem_used
 
+
 _op: Optional[TorchOp] = None
+
+
 def get_framework_op() -> FrameworkOpBase:
     global _op
     if _op is None:
