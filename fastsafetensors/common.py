@@ -3,7 +3,7 @@
 
 import json
 import os
-import platform
+import sys
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -15,7 +15,7 @@ from .st_types import Device, DType
 
 
 def get_device_numa_node(device: Optional[int]) -> Optional[int]:
-    if device is None or platform.system() != "Linux":
+    if device is None or not sys.platform.startswith("linux"):
         return None
     pci_addr = fstcpp.get_device_pci_bus(device)
     if pci_addr == "":

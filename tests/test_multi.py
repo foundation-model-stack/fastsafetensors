@@ -112,6 +112,8 @@ def test_shuffle(fstcpp_log, input_files, pg, framework):
 
     bufs.close()
     loader.close()
+    assert framework.get_mem_used() == 0
+    assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
 
 if __name__ == "__main__":

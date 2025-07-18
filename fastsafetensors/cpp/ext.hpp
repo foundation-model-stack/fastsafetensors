@@ -104,6 +104,9 @@ public:
     const uintptr_t get_base_address() const {
         return this->_devPtr_base->get_uintptr();
     }
+    const uint64_t get_length() const {
+        return _length;
+    }
 };
 
 class nogds_file_reader {
@@ -197,5 +200,9 @@ typedef struct ext_funcs {
     cudaError_t (*cudaDeviceFree)(void *);
     int (*numa_run_on_node)(int);
 } ext_funcs_t;
+
+typedef struct cpp_metrics {
+    size_t bounce_buffer_bytes;
+} cpp_metrics_t;
 
 #endif //__EXT_HPP__

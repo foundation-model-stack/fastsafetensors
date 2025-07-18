@@ -91,6 +91,7 @@ class SafeTensorsFileLoader:
 
     def close(self):
         self.reset()
+        del self.reader
 
     def get_keys(self) -> List[str]:
         return list(self.frames.keys())

@@ -163,15 +163,16 @@ class FrameworkOpBase(ABC, Generic[T, K]):
     def support_fp8(self) -> bool:
         pass
 
+    @abstractmethod
+    def get_mem_used(self) -> int:
+        pass
+
 
 def get_framework_op(name: str) -> FrameworkOpBase:
     if name == "pt" or name == "pytorch" or name == "torch":
-        from ._torch import TorchOp
-
-        return TorchOp()
+        from ._torch import get_framework_op as op
     elif name == "paddle":
-        from ._paddle import PaddleOp
-
-        return PaddleOp()
+        from ._paddle import get_framework_op as op
     else:
         raise Exception(f"Unknown framework name: {name}")
+    return op()

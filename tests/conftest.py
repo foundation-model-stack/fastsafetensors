@@ -5,6 +5,7 @@ import pytest
 
 from fastsafetensors import SingleGroup
 from fastsafetensors import cpp as fstcpp
+from fastsafetensors.cpp import load_nvidia_functions
 from fastsafetensors.frameworks import FrameworkOpBase, get_framework_op
 from fastsafetensors.st_types import Device
 
@@ -16,6 +17,7 @@ TMP_DIR = os.path.join(DATA_DIR, "tmp")
 os.makedirs(TF_DIR, 0o777, True)
 os.makedirs(TMP_DIR, 0o777, True)
 
+load_nvidia_functions()
 FRAMEWORK = get_framework_op(os.getenv("TEST_FASTSAFETENSORS_FRAMEWORK", "please set"))
 
 

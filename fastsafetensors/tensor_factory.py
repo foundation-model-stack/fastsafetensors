@@ -50,6 +50,8 @@ class LazyTensorFactory:
     def submit_io(self, use_buf_register: bool, max_copy_block_size: int):
         if self.copier is not None:
             self.gbuf = self.copier.submit_io(use_buf_register, max_copy_block_size)
+            if self.gbuf and self.debug_log:
+                print(f"submit_io: new buf, addr={self.gbuf.get_base_address():#x}")
 
     def wait_io(self, dtype: DType = DType.AUTO, noalign: bool = False):
         if self.copier is not None and self.gbuf is not None:
@@ -218,4 +220,8 @@ class LazyTensorFactory:
         self.tensors = {}
         if self.gbuf is not None:
             self.framework.free_tensor_memory(self.gbuf, self.device)
+            if self.debug_log:
+                print(
+                    f"free_dev_ptrs: delete buf, addr={self.gbuf.get_base_address():#x}"
+                )
             self.gbuf = None
