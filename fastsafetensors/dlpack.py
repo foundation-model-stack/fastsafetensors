@@ -12,6 +12,23 @@ from .st_types import Device, DeviceType, DType
 _c_str_dltensor = b"dltensor"
 
 
+# Detect GPU type at module load time
+def _detect_gpu_type():
+    """Detect if we're running on ROCm or CUDA"""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            # Check if this is ROCm build
+            if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+                return 10  # kDLROCM
+    except:
+        pass
+    return 2  # kDLCUDA
+
+
+_GPU_DEVICE_TYPE = _detect_gpu_type()
+
+
 class DLDevice(ctypes.Structure):
     def __init__(self, dev: Device):
         self.device_type = self.DeviceToDL[dev.type]
@@ -19,6 +36,7 @@ class DLDevice(ctypes.Structure):
 
     kDLCPU = 1
     kDLCUDA = 2
+    kDLROCM = 10
     _fields_ = [
         ("device_type", ctypes.c_int),
         ("device_id", ctypes.c_int),
@@ -26,8 +44,8 @@ class DLDevice(ctypes.Structure):
 
     DeviceToDL = {
         DeviceType.CPU: kDLCPU,
-        DeviceType.CUDA: kDLCUDA,
-        DeviceType.GPU: kDLCUDA,
+        DeviceType.CUDA: _GPU_DEVICE_TYPE,
+        DeviceType.GPU: _GPU_DEVICE_TYPE,
     }
 
 

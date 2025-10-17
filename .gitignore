@@ -9,4 +9,10 @@ htmlcov/
 .vscode
 *.log
 *.pyc
+*.so
 examples/paddle_case/log
+
+# Auto-generated hipified files and directories (created during ROCm build)
+fastsafetensors/cpp/hip/
+fastsafetensors/cpp/*.hip.*
+fastsafetensors/cpp/hip_compat.h

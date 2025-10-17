@@ -27,12 +27,17 @@ class GdsFileCopier:
         self.fh: Optional[fstcpp.gds_file_handle] = None
         self.copy_reqs: Dict[int, int] = {}
         self.aligned_length = 0
-        cudavers = list(map(int, framework.get_cuda_ver().split(".")))
-        # CUDA 12.2 (GDS version 1.7) introduces support for non O_DIRECT file descriptors
-        # Compatible with CUDA 11.x
-        self.o_direct = not (
-            cudavers[0] > 12 or (cudavers[0] == 12 and cudavers[1] >= 2)
-        )
+        cuda_ver = framework.get_cuda_ver()
+        if cuda_ver and cuda_ver != "None":
+            cudavers = list(map(int, cuda_ver.split(".")))
+            # CUDA 12.2 (GDS version 1.7) introduces support for non O_DIRECT file descriptors
+            # Compatible with CUDA 11.x
+            self.o_direct = not (
+                cudavers[0] > 12 or (cudavers[0] == 12 and cudavers[1] >= 2)
+            )
+        else:
+            # ROCm or non-CUDA platform, use O_DIRECT
+            self.o_direct = True
 
     def set_o_direct(self, enable: bool):
         self.o_direct = enable
