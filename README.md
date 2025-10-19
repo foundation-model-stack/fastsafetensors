@@ -48,8 +48,9 @@ Please refer to [Foundation Model Stack Community Code of Conduct](https://githu
 
 Takeshi Yoshimura, Tatsuhiro Chiba, Manish Sethi, Daniel Waddington, Swaminathan Sundararaman. (2025) Speeding up Model Loading with fastsafetensors [arXiv:2505.23072](https://arxiv.org/abs/2505.23072) and IEEE CLOUD 2025.
 
+## For NVIDIA
 
-## Install from PyPI
+### Install from PyPI
 
 See https://pypi.org/project/fastsafetensors/
 
@@ -57,8 +58,19 @@ See https://pypi.org/project/fastsafetensors/
 pip install fastsafetensors
 ```
 
-## Install from source
+### Install from source
 
 ```bash
 pip install .
+```
+
+## For ROCm
+
+### Install from source
+
+On ROCm, there are not GDS equivalent support. So fastsafetensors support only supports `nogds=True` mode.
+The performance gain example can be found at [amd-perf.md](./docs/amd-perf.md)
+
+```bash
+python3 setup.py develop
 ```
