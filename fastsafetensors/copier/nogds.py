@@ -7,10 +7,11 @@ from typing import Dict, List
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata
 from ..frameworks import FrameworkOpBase, TensorBase
-from ..st_types import Device, DType
+from ..st_types import Device, DeviceType, DType
+from .base import CopierInterface
 
 
-class NoGdsFileCopier:
+class NoGdsFileCopier(CopierInterface):
     def __init__(
         self,
         metadata: SafeTensorsMetadata,
@@ -66,3 +67,26 @@ class NoGdsFileCopier:
         return self.metadata.get_tensors(
             gbuf, self.device, self.metadata.header_length, dtype=dtype
         )
+
+
+def new_nogds_file_copier(
+    device: Device,
+    bbuf_size_kb: int = 16 * 1024,
+    max_threads: int = 16,
+):
+    device_is_not_cpu = device.type != DeviceType.CPU
+    if device_is_not_cpu and not fstcpp.is_cuda_found():
+        raise Exception("[FAIL] libcudart.so does not exist")
+    reader = fstcpp.nogds_file_reader(
+        False, bbuf_size_kb, max_threads, device_is_not_cpu
+    )
+
+    def construct_copier(
+        metadata: SafeTensorsMetadata,
+        device: Device,
+        framework: FrameworkOpBase,
+        debug_log: bool = False,
+    ) -> CopierInterface:
+        return NoGdsFileCopier(metadata, device, reader, framework, debug_log)
+
+    return construct_copier
