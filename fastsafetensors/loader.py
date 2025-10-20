@@ -40,6 +40,7 @@ class BaseSafeTensorsFileLoader:
         disable_cache: bool = True,
         debug_log: bool = False,
         framework="pytorch",
+        **kwargs,
     ):
         self.framework = get_framework_op(framework)
         self.pg = self.framework.get_process_group(pg)
@@ -174,6 +175,7 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
         disable_cache: bool = True,
         debug_log: bool = False,
         framework="pytorch",
+        **kwargs,
     ):
         self.framework = get_framework_op(framework)
         self.pg = self.framework.get_process_group(pg)
@@ -191,7 +193,14 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
 
         copier = new_gds_file_copier(self.device, bbuf_size_kb, max_threads, nogds)
         super().__init__(
-            pg, self.device, copier, set_numa, disable_cache, debug_log, framework
+            pg,
+            self.device,
+            copier,
+            set_numa,
+            disable_cache,
+            debug_log,
+            framework,
+            **kwargs,
         )
 
 
