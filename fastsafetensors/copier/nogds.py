@@ -7,10 +7,11 @@ from typing import Dict, List
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata
 from ..frameworks import FrameworkOpBase, TensorBase
-from ..st_types import Device, DType
+from ..st_types import Device, DeviceType, DType
+from .base import CopierInterface
 
 
-class NoGdsFileCopier:
+class NoGdsFileCopier(CopierInterface):
     def __init__(
         self,
         metadata: SafeTensorsMetadata,
