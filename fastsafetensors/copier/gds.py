@@ -1,15 +1,18 @@
 # Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
 from typing import Dict, Optional
 
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
+from .base import CopierInterface
+from .nogds import new_nogds_file_copier
 
 
-class GdsFileCopier:
+class GdsFileCopier(CopierInterface):
     def __init__(
         self,
         metadata: SafeTensorsMetadata,
@@ -139,3 +142,35 @@ class GdsFileCopier:
         return self.metadata.get_tensors(
             gbuf, self.device, self.aligned_offset, dtype=dtype
         )
+
+
+def new_gds_file_copier(
+    device: Device,
+    bbuf_size_kb: int = 16 * 1024,
+    max_threads: int = 16,
+    nogds: bool = False,
+):
+    device_is_not_cpu = device.type != DeviceType.CPU
+    if device_is_not_cpu and not fstcpp.is_cuda_found():
+        raise Exception("[FAIL] libcudart.so does not exist")
+    if not fstcpp.is_cufile_found() and not nogds:
+        warnings.warn(
+            "libcufile.so does not exist but nogds is False. use nogds=True",
+            UserWarning,
+        )
+        nogds = True
+
+    if nogds:
+        return new_nogds_file_copier(device, bbuf_size_kb, max_threads)
+
+    reader = fstcpp.gds_file_reader(max_threads, device_is_not_cpu)
+
+    def construct_copier(
+        metadata: SafeTensorsMetadata,
+        device: Device,
+        framework: FrameworkOpBase,
+        debug_log: bool = False,
+    ) -> CopierInterface:
+        return GdsFileCopier(metadata, device, reader, framework, debug_log)
+
+    return construct_copier
