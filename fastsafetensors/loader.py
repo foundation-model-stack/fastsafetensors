@@ -58,8 +58,10 @@ class SafeTensorsFileLoader:
         global loaded_nvidia
         if not loaded_nvidia:
             fstcpp.load_nvidia_functions()
-            if fstcpp.init_gds() != 0:
-                raise Exception(f"[FAIL] init_gds()")
+            if not nogds:
+                # no need to init gds and consume 10s+ in none-gds case
+                if fstcpp.init_gds() != 0:
+                    raise Exception(f"[FAIL] init_gds()")
             loaded_nvidia = True
         global gl_set_numa
         if not gl_set_numa and set_numa:
