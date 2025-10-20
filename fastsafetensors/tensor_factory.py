@@ -24,6 +24,7 @@ class LazyTensorFactory:
         reader: Union[fstcpp.gds_file_reader, fstcpp.nogds_file_reader],
         framework: FrameworkOpBase,
         debug_log: bool = False,
+        disable_cache=True,
     ):
         self.framework = framework
         self.metadata = metadata
@@ -46,6 +47,7 @@ class LazyTensorFactory:
         self.factory_idx_bits = factory_idx_bits
         self.lidx = lidx
         self.next_tag = 1
+        self.disable_cache = disable_cache
 
     def submit_io(self, use_buf_register: bool, max_copy_block_size: int):
         if self.copier is not None:
@@ -160,7 +162,11 @@ class LazyTensorFactory:
                     f"shuffle: scatter, tensor_name={tensor_name}, shape={frame.shape}->{new_frame.shape}, self.rank={self.rank}, pg.rank()={pg.rank()}, rank_slices={rank_slices}, len(scatter_list)={len(scatter_list)}"
                 )
             pg.scatter(dst, scatter_list=scatter_list, src=self.rank)
-        self.shuffled[tensor_name] = dst
+        if not self.disable_cache:
+            # Cache tensor for reuse within the same batch to improve performance.
+            # Note: This requires additional (GPU) memory to store the cached tensors.
+            # Enable this only if you have sufficient (GPU) memory and required.
+            self.shuffled[tensor_name] = dst
         return dst
 
     def shuffle_multi_cols(

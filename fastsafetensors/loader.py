@@ -46,6 +46,7 @@ class SafeTensorsFileLoader:
         max_threads: int = 16,
         nogds: bool = False,
         set_numa: bool = True,
+        disable_cache: bool = True,
         debug_log: bool = False,
         framework="pytorch",
     ):
@@ -55,6 +56,7 @@ class SafeTensorsFileLoader:
         self.debug_log = debug_log
         self.meta: Dict[str, Tuple[SafeTensorsMetadata, int]] = {}
         self.frames = OrderedDict[str, TensorFrame]()
+        self.disable_cache = disable_cache
         global loaded_nvidia
         if not loaded_nvidia:
             fstcpp.load_nvidia_functions()
@@ -154,6 +156,7 @@ class SafeTensorsFileLoader:
                 self.reader,
                 self.framework,
                 self.debug_log,
+                disable_cache=self.disable_cache,
             )
             factory.submit_io(use_buf_register, max_copy_block_size)
             factories[rank].append(factory)
