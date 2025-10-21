@@ -782,16 +782,16 @@ PYBIND11_MODULE(__MOD_NAME__, m)
 
     pybind11::class_<nogds_file_reader>(m, "nogds_file_reader")
         .def(pybind11::init<const bool, const uint64_t, const int, bool>())
-        .def("submit_read", &nogds_file_reader::submit_read)
-        .def("wait_read", &nogds_file_reader::wait_read);
+        .def("submit_read", &nogds_file_reader::submit_read, pybind11::call_guard<pybind11::gil_scoped_release>())
+        .def("wait_read", &nogds_file_reader::wait_read, pybind11::call_guard<pybind11::gil_scoped_release>());
 
     pybind11::class_<gds_file_handle>(m, "gds_file_handle")
         .def(pybind11::init<std::string, bool, bool>());
 
     pybind11::class_<gds_file_reader>(m, "gds_file_reader")
         .def(pybind11::init<const int, bool>())
-        .def("submit_read", &gds_file_reader::submit_read)
-        .def("wait_read", &gds_file_reader::wait_read);
+        .def("submit_read", &gds_file_reader::submit_read, pybind11::call_guard<pybind11::gil_scoped_release>())
+        .def("wait_read", &gds_file_reader::wait_read, pybind11::call_guard<pybind11::gil_scoped_release>());
 
     pybind11::class_<cpp_metrics_t>(m, "cpp_metrics")
         .def(pybind11::init<>())
