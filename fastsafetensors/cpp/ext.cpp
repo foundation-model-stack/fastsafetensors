@@ -10,6 +10,7 @@
 #include <chrono>
 #include <dlfcn.h>
 
+#include "cuda_compat.h"
 #include "ext.hpp"
 
 #define ALIGN 4096
@@ -89,7 +90,7 @@ template <typename T> void mydlsym(T** h, void* lib, std::string const& name) {
 static void load_nvidia_functions() {
     cudaError_t (*cudaGetDeviceCount)(int*);
     const char* cufileLib = "libcufile.so.0";
-    const char* cudartLib = "libcudart.so";
+    const char* cudartLib = GPU_RUNTIME_LIB;
     const char* numaLib = "libnuma.so.1";
     bool init_log = getenv(ENV_ENABLE_INIT_LOG);
     int mode = RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE;

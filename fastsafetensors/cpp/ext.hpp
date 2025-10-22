@@ -15,6 +15,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "cuda_compat.h"
+
 #define ENV_ENABLE_INIT_LOG "FASTSAFETENSORS_ENABLE_INIT_LOG"
 
 #ifndef __MOD_NAME__
@@ -33,8 +35,12 @@ typedef struct CUfileDescr_t {
     const void *fs_ops; /* CUfileFSOps_t */
 } CUfileDescr_t;
 typedef struct CUfileError { CUfileOpError err; } CUfileError_t;
+
+// Only define minimal CUDA types if not using ROCm (where real headers are included)
+#ifndef USE_ROCM
 typedef enum cudaError { cudaSuccess = 0, cudaErrorMemoryAllocation = 2 } cudaError_t;
 enum cudaMemcpyKind { cudaMemcpyHostToDevice=2, cudaMemcpyDefault = 4 };
+#endif
 
 
 typedef enum CUfileFeatureFlags {
