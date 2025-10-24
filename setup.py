@@ -27,6 +27,7 @@ def detect_platform():
         for path in ["/opt/rocm", "/opt/rocm-*"]:
             if "*" in path:
                 import glob
+
                 matches = sorted(glob.glob(path), reverse=True)
                 if matches:
                     rocm_path = matches[0]
@@ -45,14 +46,14 @@ def detect_platform():
                 rocm_version = f.read().strip()
         else:
             # Try to extract version from path
-            match = re.search(r'rocm[-/](\d+\.\d+(?:\.\d+)?)', rocm_path)
+            match = re.search(r"rocm[-/](\d+\.\d+(?:\.\d+)?)", rocm_path)
             if match:
                 rocm_version = match.group(1)
 
         print(f"Detected ROCm platform at {rocm_path}")
         if rocm_version:
             print(f"ROCm version: {rocm_version}")
-        return ('rocm', rocm_version, rocm_path)
+        return ("rocm", rocm_version, rocm_path)
 
     # Check for CUDA
     cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
@@ -64,11 +65,11 @@ def detect_platform():
 
     if cuda_home and os.path.exists(cuda_home):
         print(f"Detected CUDA platform at {cuda_home}")
-        return ('cuda', None, None)
+        return ("cuda", None, None)
 
     # Default to CUDA if nothing detected
     print("No GPU platform detected, defaulting to CUDA")
-    return ('cuda', None, None)
+    return ("cuda", None, None)
 
 
 def hipify_source_files(rocm_path):
@@ -110,7 +111,7 @@ def hipify_source_files(rocm_path):
 
     hipified_files = []
     for source_path, result in hipify_result.items():
-        if hasattr(result, 'hipified_path') and result.hipified_path:
+        if hasattr(result, "hipified_path") and result.hipified_path:
             print(f"Successfully hipified: {source_path} -> {result.hipified_path}")
             hipified_files.append(result.hipified_path)
 
@@ -126,8 +127,9 @@ def hipify_source_files(rocm_path):
     return hipified_files
 
 
-
-def MyExtension(name, sources, mod_name, platform_type, rocm_path=None, *args, **kwargs):
+def MyExtension(
+    name, sources, mod_name, platform_type, rocm_path=None, *args, **kwargs
+):
     import pybind11
 
     pybind11_path = os.path.dirname(pybind11.__file__)
@@ -143,7 +145,7 @@ def MyExtension(name, sources, mod_name, platform_type, rocm_path=None, *args, *
     kwargs["extra_compile_args"] = ["-fvisibility=hidden", "-std=c++17"]
 
     # Platform-specific configuration
-    if platform_type == 'rocm' and rocm_path:
+    if platform_type == "rocm" and rocm_path:
         # ROCm/HIP configuration
         kwargs["define_macros"].append(("__HIP_PLATFORM_AMD__", "1"))
         kwargs["libraries"].append("amdhip64")
@@ -168,7 +170,7 @@ class CustomBuildExt(build_ext):
         self.rocm_path = rocm_path
 
         #  Configure build based on platform
-        if platform_type == 'rocm' and rocm_path:
+        if platform_type == "rocm" and rocm_path:
             print("=" * 60)
             print("Building for AMD ROCm platform")
             if rocm_version:
@@ -182,9 +184,14 @@ class CustomBuildExt(build_ext):
             for ext in self.extensions:
                 new_sources = []
                 for src in ext.sources:
-                    if 'fastsafetensors/cpp/ext.cpp' in src:
+                    if "fastsafetensors/cpp/ext.cpp" in src:
                         # torch.utils.hipify creates files in hip/ subdirectory
-                        new_sources.append(src.replace('fastsafetensors/cpp/ext.cpp', 'fastsafetensors/cpp/hip/ext.cpp'))
+                        new_sources.append(
+                            src.replace(
+                                "fastsafetensors/cpp/ext.cpp",
+                                "fastsafetensors/cpp/hip/ext.cpp",
+                            )
+                        )
                     else:
                         new_sources.append(src)
                 ext.sources = new_sources
@@ -234,6 +241,6 @@ setup(
         )
     ],
     cmdclass={
-        'build_ext': CustomBuildExt,
+        "build_ext": CustomBuildExt,
     },
 )

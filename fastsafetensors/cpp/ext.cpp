@@ -79,6 +79,7 @@ ext_funcs_t cpu_fns = ext_funcs_t {
 ext_funcs_t cuda_fns;
 
 static bool cuda_found = false;
+static bool is_hip_runtime = false;  // Track if we loaded HIP (not auto-hipified)
 static bool cufile_found = false;
 
 static int cufile_ver = 0;
@@ -123,8 +124,12 @@ static void load_nvidia_functions() {
                 count = 0; // why cudaGetDeviceCount returns non-zero for errors?
             }
             cuda_found = count > 0;
+            // Detect if we loaded HIP runtime (ROCm) vs CUDA runtime
+            if (cuda_found && std::string(cudartLib).find("hip") != std::string::npos) {
+                is_hip_runtime = true;
+            }
             if (init_log) {
-                fprintf(stderr, "[DEBUG] device count=%d, cuda_found=%d\n", count, cuda_found);
+                fprintf(stderr, "[DEBUG] device count=%d, cuda_found=%d, is_hip_runtime=%d\n", count, cuda_found, is_hip_runtime);
             }
         } else {
             cuda_found = false;
@@ -218,9 +223,26 @@ static void load_nvidia_functions() {
     }
 }
 
+// Note: is_cuda_found gets auto-hipified to is_hip_found on ROCm builds
+// So this function will be is_hip_found() after hipification on ROCm
 bool is_cuda_found()
 {
     return cuda_found;
+}
+
+// Separate function that always returns false on ROCm (CUDA not available on ROCm)
+// This will be used for the "is_cuda_found" Python export on ROCm builds
+bool cuda_not_available()
+{
+    return false;  // On ROCm, CUDA is never available
+}
+
+// Separate function for checking HIP runtime detection (not hipified)
+// On CUDA: checks if HIP runtime was detected
+// On ROCm: not used (is_cuda_found gets hipified to is_hip_found)
+bool check_hip_runtime()
+{
+    return is_hip_runtime;
 }
 
 bool is_cufile_found()
@@ -719,7 +741,21 @@ cpp_metrics_t get_cpp_metrics() {
 
 PYBIND11_MODULE(__MOD_NAME__, m)
 {
-    m.def("is_cuda_found", &is_cuda_found);
+    // Export both is_cuda_found and is_hip_found on all platforms
+    // Use string concatenation to prevent hipify from converting the export names
+#ifdef USE_ROCM
+    // On ROCm after hipify:
+    // - is_cuda_found() becomes is_hip_found(), so export it as "is_hip_found"
+    // - Export cuda_not_available() as "is_cuda_found" (CUDA not available on ROCm)
+    m.def(("is_" "cuda" "_found"), &cuda_not_available);  // Returns false on ROCm
+    m.def(("is_" "hip" "_found"), &is_cuda_found);  // hipified to is_hip_found, returns hip status
+#else
+    // On CUDA:
+    // - is_cuda_found() checks for CUDA
+    // - check_hip_runtime() checks if HIP runtime was loaded
+    m.def(("is_" "cuda" "_found"), &is_cuda_found);
+    m.def(("is_" "hip" "_found"), &check_hip_runtime);
+#endif
     m.def("is_cufile_found", &is_cufile_found);
     m.def("cufile_version", &cufile_version);
     m.def("set_debug_log", &set_debug_log);

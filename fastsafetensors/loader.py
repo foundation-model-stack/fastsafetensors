@@ -6,7 +6,7 @@ import warnings
 from typing import Any, Dict, List, Optional, OrderedDict, Tuple, Union
 
 from . import cpp as fstcpp
-from .common import SafeTensorsMetadata, TensorFrame, get_device_numa_node
+from .common import SafeTensorsMetadata, TensorFrame, get_device_numa_node, is_gpu_found
 from .file_buffer import FilesBufferOnDevice
 from .frameworks import TensorBase, get_framework_op
 from .st_types import DeviceType, DType
@@ -69,8 +69,10 @@ class SafeTensorsFileLoader:
             gl_set_numa = True
         fstcpp.set_debug_log(debug_log)
         device_is_not_cpu = self.device.type != DeviceType.CPU
-        if device_is_not_cpu and not fstcpp.is_cuda_found():
-            raise Exception("[FAIL] libcudart.so does not exist")
+        if device_is_not_cpu and not is_gpu_found():
+            raise Exception(
+                "[FAIL] GPU runtime library (libcudart.so or libamdhip64.so) does not exist"
+            )
         if not fstcpp.is_cufile_found() and not nogds:
             warnings.warn(
                 "libcufile.so does not exist but nogds is False. use nogds=True",

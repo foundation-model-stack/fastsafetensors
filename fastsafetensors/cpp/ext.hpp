@@ -36,11 +36,10 @@ typedef struct CUfileDescr_t {
 } CUfileDescr_t;
 typedef struct CUfileError { CUfileOpError err; } CUfileError_t;
 
-// Only define minimal CUDA types if not using ROCm (where real headers are included)
-#ifndef USE_ROCM
+// Define minimal CUDA/HIP types for both platforms to avoid compile-time dependencies
+// We load all GPU functions dynamically at runtime via dlopen()
 typedef enum cudaError { cudaSuccess = 0, cudaErrorMemoryAllocation = 2 } cudaError_t;
 enum cudaMemcpyKind { cudaMemcpyHostToDevice=2, cudaMemcpyDefault = 4 };
-#endif
 
 
 typedef enum CUfileFeatureFlags {

@@ -13,10 +13,14 @@ from .dlpack import from_cuda_buffer
 from .frameworks import FrameworkOpBase, TensorBase
 from .st_types import Device, DType
 
-# Add compatibility alias for is_cuda_found -> is_hip_found
-# This allows code written for CUDA to work transparently on both CUDA and ROCm
-if not hasattr(fstcpp, 'is_cuda_found'):
-    fstcpp.is_cuda_found = fstcpp.is_hip_found
+
+def is_gpu_found():
+    """Check if any GPU (CUDA or HIP) is available.
+
+    Returns True if either CUDA or ROCm/HIP GPUs are detected.
+    This allows code to work transparently across both platforms.
+    """
+    return fstcpp.is_cuda_found() or fstcpp.is_hip_found()
 
 
 def get_device_numa_node(device: Optional[int]) -> Optional[int]:

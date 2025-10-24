@@ -12,26 +12,43 @@ from .st_types import Device, DeviceType, DType
 _c_str_dltensor = b"dltensor"
 
 
-# Detect GPU type at module load time
+# Lazy GPU type detection - avoid calling framework-specific code at module load time
+_GPU_DEVICE_TYPE = None  # Will be detected lazily
+
+
 def _detect_gpu_type():
-    """Detect if we're running on ROCm or CUDA"""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            # Check if this is ROCm build
-            if hasattr(torch.version, 'hip') and torch.version.hip is not None:
-                return 10  # kDLROCM
-    except:
-        pass
+    """Detect if we're running on ROCm or CUDA.
+
+    This detection is now done lazily to avoid framework-specific calls at module load time.
+    Uses the C++ extension's is_hip_found() to determine the platform.
+    """
+    # Import here to avoid circular dependency
+    from . import cpp as fstcpp
+
+    # Check if we loaded HIP runtime (ROCm)
+    if fstcpp.is_hip_found():
+        return 10  # kDLROCM
     return 2  # kDLCUDA
 
 
-_GPU_DEVICE_TYPE = _detect_gpu_type()
+def _get_gpu_device_type():
+    """Get the GPU device type, detecting it lazily if needed."""
+    global _GPU_DEVICE_TYPE
+    if _GPU_DEVICE_TYPE is None:
+        _GPU_DEVICE_TYPE = _detect_gpu_type()
+    return _GPU_DEVICE_TYPE
 
 
 class DLDevice(ctypes.Structure):
     def __init__(self, dev: Device):
-        self.device_type = self.DeviceToDL[dev.type]
+        # Use lazy detection to get the GPU device type
+        gpu_type = _get_gpu_device_type()
+        device_to_dl = {
+            DeviceType.CPU: self.kDLCPU,
+            DeviceType.CUDA: gpu_type,
+            DeviceType.GPU: gpu_type,
+        }
+        self.device_type = device_to_dl[dev.type]
         self.device_id = dev.index if dev.index is not None else 0
 
     kDLCPU = 1
@@ -41,12 +58,6 @@ class DLDevice(ctypes.Structure):
         ("device_type", ctypes.c_int),
         ("device_id", ctypes.c_int),
     ]
-
-    DeviceToDL = {
-        DeviceType.CPU: kDLCPU,
-        DeviceType.CUDA: _GPU_DEVICE_TYPE,
-        DeviceType.GPU: _GPU_DEVICE_TYPE,
-    }
 
 
 class c_DLDataType(ctypes.Structure):
