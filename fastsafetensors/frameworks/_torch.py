@@ -186,9 +186,18 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
         dst.real_tensor.copy_(src.real_tensor)
 
     def get_cuda_ver(self) -> str:
+        """Get GPU runtime version with platform indicator.
+
+        Returns a string like 'hip-5.7.0' for ROCm or 'cuda-12.1' for CUDA,
+        or 'none' if no GPU is available. This allows code to distinguish
+        between different GPU platforms without using torch directly.
+        """
         if torch.cuda.is_available():
-            return str(torch.version.cuda)
-        return "0.0"
+            # Check if this is ROCm/HIP build
+            if hasattr(torch.version, "hip") and torch.version.hip is not None:
+                return f"hip-{torch.version.hip}"
+            return f"cuda-{torch.version.cuda}"
+        return "none"
 
     def get_device_ptr_align(self) -> int:
         CUDA_PTR_ALIGN: int = 16

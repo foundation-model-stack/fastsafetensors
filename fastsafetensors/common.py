@@ -14,6 +14,15 @@ from .frameworks import FrameworkOpBase, TensorBase
 from .st_types import Device, DType
 
 
+def is_gpu_found():
+    """Check if any GPU (CUDA or HIP) is available.
+
+    Returns True if either CUDA or ROCm/HIP GPUs are detected.
+    This allows code to work transparently across both platforms.
+    """
+    return fstcpp.is_cuda_found() or fstcpp.is_hip_found()
+
+
 def get_device_numa_node(device: Optional[int]) -> Optional[int]:
     if device is None or not sys.platform.startswith("linux"):
         return None
