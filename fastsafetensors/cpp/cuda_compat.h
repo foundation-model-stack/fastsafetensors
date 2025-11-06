@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 /*
- * Copyright 2024 IBM Inc. All rights reserved
- *
  * CUDA/HIP compatibility layer for fastsafetensors
  * Minimal compatibility header - only defines what hipify-perl doesn't handle
  */

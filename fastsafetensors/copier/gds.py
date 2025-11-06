@@ -28,15 +28,27 @@ class GdsFileCopier:
         self.copy_reqs: Dict[int, int] = {}
         self.aligned_length = 0
         cuda_ver = framework.get_cuda_ver()
-        if cuda_ver and cuda_ver != "None":
-            cudavers = list(map(int, cuda_ver.split(".")))
-            # CUDA 12.2 (GDS version 1.7) introduces support for non O_DIRECT file descriptors
-            # Compatible with CUDA 11.x
-            self.o_direct = not (
-                cudavers[0] > 12 or (cudavers[0] == 12 and cudavers[1] >= 2)
-            )
+        if cuda_ver and cuda_ver != "none":
+            # Parse version string (e.g., "cuda-12.1" or "hip-5.7.0")
+            # Extract the numeric part after the platform prefix
+            ver_parts = cuda_ver.split("-", 1)
+            if len(ver_parts) == 2:
+                cudavers = list(map(int, ver_parts[1].split(".")))
+                # CUDA 12.2 (GDS version 1.7) introduces support for non O_DIRECT file descriptors
+                # Compatible with CUDA 11.x
+                # Only applies to CUDA platform (not ROCm/HIP)
+                if ver_parts[0] == "cuda":
+                    self.o_direct = not (
+                        cudavers[0] > 12 or (cudavers[0] == 12 and cudavers[1] >= 2)
+                    )
+                else:
+                    # ROCm/HIP platform, use O_DIRECT
+                    self.o_direct = True
+            else:
+                # Fallback if format is unexpected
+                self.o_direct = True
         else:
-            # ROCm or non-CUDA platform, use O_DIRECT
+            # No GPU platform detected, use O_DIRECT
             self.o_direct = True
 
     def set_o_direct(self, enable: bool):
