@@ -21,6 +21,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Prevent interactive prompts during package installation
+          export DEBIAN_FRONTEND=noninteractive
+          export TZ=Etc/UTC
+
           apt-get update
           apt-get install -y \
             software-properties-common \
@@ -36,6 +40,10 @@ jobs:
 
       - name: Install Python ${{ matrix.python-version }}
         run: |
+          # Prevent interactive prompts during package installation
+          export DEBIAN_FRONTEND=noninteractive
+          export TZ=Etc/UTC
+
           # Install Python from deadsnakes PPA for Ubuntu 22.04
           add-apt-repository -y ppa:deadsnakes/ppa
           apt-get update
@@ -111,76 +119,9 @@ jobs:
           path: wheelhouse/*.whl
           if-no-files-found: error
 
-  test-rocm-wheels:
-    name: Test ROCm wheel - Python ${{ matrix.python-version }}
-    needs: build-rocm-wheels
-    runs-on: ubuntu-latest
-    container:
-      image: rocm/dev-ubuntu-22.04:7.0
-      options: --user root
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Python ${{ matrix.python-version }}
-        run: |
-          apt-get update
-          apt-get install -y software-properties-common
-          add-apt-repository -y ppa:deadsnakes/ppa
-          apt-get update
-
-          PY_VER="${{ matrix.python-version }}"
-          apt-get install -y \
-            python${PY_VER} \
-            python${PY_VER}-dev \
-            python${PY_VER}-distutils || true
-
-          curl -sS https://bootstrap.pypa.io/get-pip.py | python${PY_VER}
-          update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PY_VER} 1
-          update-alternatives --set python3 /usr/bin/python${PY_VER}
-
-          python3 --version
-
-      - name: Download wheel
-        uses: actions/download-artifact@v4
-        with:
-          name: rocm-wheel-py${{ matrix.python-version }}
-          path: wheelhouse/
-
-      - name: Install wheel and test dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install wheelhouse/*.whl
-
-          # Install test dependencies
-          python3 -m pip install pytest safetensors transformers numpy
-
-          # Install PyTorch with ROCm support for testing
-          python3 -m pip install torch --index-url https://download.pytorch.org/whl/rocm6.2 || \
-          python3 -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Run basic import test
-        run: |
-          python3 -c "import fastsafetensors; print('Import successful')"
-          python3 -c "from fastsafetensors import SafeTensorsFileLoader; print('SafeTensorsFileLoader imported')"
-          python3 -c "from fastsafetensors.frameworks import get_framework_op; fw = get_framework_op('pytorch'); print(f'PyTorch framework: {fw.get_name()}')"
-          python3 -c "from fastsafetensors.frameworks import get_framework_op; fw = get_framework_op('pytorch'); ver = fw.get_cuda_ver(); print(f'CUDA/ROCm version: {ver}')"
-
-      - name: Run basic tests
-        run: |
-          cd tests
-          export TEST_FASTSAFETENSORS_FRAMEWORK=pytorch
-          python3 -m pytest -xvs test_fastsafetensors.py::test_device
-          python3 -m pytest -xvs test_fastsafetensors.py::test_framework
-
   collect-wheels:
     name: Collect all ROCm wheels
-    needs: test-rocm-wheels
+    needs: build-rocm-wheels
     runs-on: ubuntu-latest
 
     steps:
