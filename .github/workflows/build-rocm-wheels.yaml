@@ -46,9 +46,9 @@ jobs:
 
           PY_VER="${{ matrix.python-version }}"
 
-          # Try to install from Ubuntu's official repositories first
+          # Check if Python dev package is available in Ubuntu repos
           apt-get update
-          if apt-cache show python${PY_VER} 2>/dev/null; then
+          if apt-cache show python${PY_VER}-dev 2>/dev/null | grep -q "Package: python${PY_VER}-dev"; then
             echo "Installing Python ${PY_VER} from Ubuntu repositories"
             apt-get install -y \
               python${PY_VER} \
@@ -82,6 +82,11 @@ jobs:
             # Install Python from official python.org releases
             pyenv install ${PY_VER}
             pyenv global ${PY_VER}
+
+            # Create symlink so python${PY_VER} command works
+            INSTALLED_VERSION=$(ls /root/.pyenv/versions/ | grep "^${PY_VER}")
+            ln -sf /root/.pyenv/versions/${INSTALLED_VERSION}/bin/python /usr/local/bin/python${PY_VER}
+            echo "Created symlink: /usr/local/bin/python${PY_VER} -> /root/.pyenv/versions/${INSTALLED_VERSION}/bin/python"
           fi
 
           # Verify installation
