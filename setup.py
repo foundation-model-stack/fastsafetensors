@@ -4,6 +4,7 @@
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 from setuptools import Extension, setup
@@ -74,7 +75,7 @@ def detect_platform():
 
 def hipify_source_files(rocm_path):
     """
-    Automatically hipify CUDA source files to HIP using torch.utils.hipify.
+    Automatically hipify CUDA source files to HIP using hipify-perl from ROCm.
     The cuda_compat.h header handles what hipify doesn't convert.
 
     Args:
@@ -83,46 +84,74 @@ def hipify_source_files(rocm_path):
     Returns:
         list: Paths to hipified source files
     """
-    from torch.utils.hipify.hipify_python import hipify
-
     cpp_dir = Path("fastsafetensors/cpp").resolve()
+    hip_dir = cpp_dir / "hip"
 
-    # Prepare source files for hipification
-    extra_files = [
-        str(cpp_dir / "ext.cpp"),
-        str(cpp_dir / "ext.hpp"),
+    # Create hip/ subdirectory if it doesn't exist
+    hip_dir.mkdir(exist_ok=True)
+
+    # Find hipify-perl in ROCm installation
+    hipify_perl = os.path.join(rocm_path, "bin", "hipify-perl")
+    if not os.path.exists(hipify_perl):
+        raise RuntimeError(
+            f"hipify-perl not found at {hipify_perl}. "
+            f"Please ensure ROCm is properly installed at {rocm_path}"
+        )
+
+    # Files to hipify
+    source_files = [
+        ("ext.cpp", "ext.cpp"),
+        ("ext.hpp", "ext.hpp"),
     ]
 
-    print(f"Hipifying files using torch.utils.hipify:")
-    for f in extra_files:
-        print(f"  - {f}")
-
-    # Use torch's hipify - similar to vLLM's approach
-    hipify_result = hipify(
-        project_directory=str(cpp_dir.parent),
-        output_directory=str(cpp_dir),
-        header_include_dirs=[],
-        includes=[f"{cpp_dir}/*"],
-        extra_files=extra_files,
-        show_detailed=False,
-        is_pytorch_extension=False,
-        hipify_extra_files_only=True,
-    )
-
+    print(f"Hipifying files using hipify-perl from {hipify_perl}:")
     hipified_files = []
-    for source_path, result in hipify_result.items():
-        if hasattr(result, "hipified_path") and result.hipified_path:
-            print(f"Successfully hipified: {source_path} -> {result.hipified_path}")
-            hipified_files.append(result.hipified_path)
+
+    for src_name, dst_name in source_files:
+        src_path = cpp_dir / src_name
+        dst_path = hip_dir / dst_name
+
+        print(f"  - {src_path} -> {dst_path}")
+
+        try:
+            # Run hipify-perl: hipify-perl input.cpp -o output.cpp
+            result = subprocess.run(
+                [hipify_perl, str(src_path), "-o", str(dst_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            print(f"    Successfully hipified: {src_name}")
+            hipified_files.append(str(dst_path))
+
+            # Print any warnings from hipify-perl
+            if result.stderr:
+                print(f"    hipify-perl output: {result.stderr.strip()}")
+
+            # Post-process: Replace cuda_compat.h with hip_compat.h
+            # hipify-perl doesn't convert custom header names
+            with open(dst_path, "r") as f:
+                content = f.read()
+            content = content.replace(
+                '#include "cuda_compat.h"', '#include "hip_compat.h"'
+            )
+            with open(dst_path, "w") as f:
+                f.write(content)
+            print(f"    Post-processed: cuda_compat.h -> hip_compat.h")
+
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"Failed to hipify {src_path}:\n"
+                f"stdout: {e.stdout}\n"
+                f"stderr: {e.stderr}"
+            ) from e
 
     # Copy cuda_compat.h to hip directory as hip_compat.h
     # (hipify converts the include statement from cuda_compat.h to hip_compat.h)
-    hip_dir = cpp_dir / "hip"
-    if hip_dir.exists():
-        cuda_compat = cpp_dir / "cuda_compat.h"
-        hip_compat = hip_dir / "hip_compat.h"
-        shutil.copy2(cuda_compat, hip_compat)
-        print(f"Copied {cuda_compat} -> {hip_compat}")
+    cuda_compat = cpp_dir / "cuda_compat.h"
+    hip_compat = hip_dir / "hip_compat.h"
+    shutil.copy2(cuda_compat, hip_compat)
+    print(f"Copied {cuda_compat} -> {hip_compat}")
 
     return hipified_files
 

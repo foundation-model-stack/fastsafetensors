@@ -13,8 +13,7 @@ from fastsafetensors.st_types import Device
 
 # Add tests directory to path to import platform_utils
 TESTS_DIR = os.path.dirname(__file__)
-sys.path.insert(0, TESTS_DIR)
-from platform_utils import get_platform_info, is_rocm_platform
+from platform_utils import get_platform_info
 
 REPO_ROOT = os.path.dirname(os.path.dirname(TESTS_DIR))
 DATA_DIR = os.path.join(REPO_ROOT, ".testdata")
