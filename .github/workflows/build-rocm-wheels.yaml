@@ -3,9 +3,6 @@ name: Build ROCm wheels
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   build-rocm-wheels:
     name: Build ROCm wheel - Python ${{ matrix.python-version }}
@@ -21,37 +18,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Install system dependencies and hipify-perl
-        run: |
-          apt-get update
-          apt-get install -y \
-            wget \
-            build-essential \
-            libnuma-dev \
-            gcc \
-            g++ \
-            make \
-            git \
-            curl \
-            ca-certificates \
-            hipify-perl \
-            libssl-dev \
-            zlib1g-dev \
-            libbz2-dev \
-            libreadline-dev \
-            libsqlite3-dev \
-            libncursesw5-dev \
-            xz-utils \
-            tk-dev \
-            libxml2-dev \
-            libxmlsec1-dev \
-            libffi-dev \
-            liblzma-dev \
-            software-properties-common
-
-          # Verify hipify-perl is available
-          which hipify-perl || echo "Warning: hipify-perl not found"
 
       - name: Install Python ${{ matrix.python-version }}
         run: |
