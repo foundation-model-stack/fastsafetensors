@@ -84,23 +84,26 @@ jobs:
             pyenv global ${PY_VER}
           fi
 
-          # Install pip for this Python version
-          curl -sS https://bootstrap.pypa.io/get-pip.py | python${PY_VER}
-
-          # Create symlink for easier access
-          update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PY_VER} 1 || \
-          ln -sf $(which python${PY_VER}) /usr/bin/python3
-
-          update-alternatives --set python3 /usr/bin/python${PY_VER} 2>/dev/null || true
-
           # Verify installation
-          python3 --version
-          python3 -m pip --version
+          python${PY_VER} --version
 
-      - name: Install Python build dependencies
+      - name: Create virtual environment and install build dependencies
         run: |
-          python3 -m pip install --upgrade pip setuptools wheel
-          python3 -m pip install build setuptools_scm pybind11 numpy
+          PY_VER="${{ matrix.python-version }}"
+
+          # Create virtual environment
+          python${PY_VER} -m venv /opt/venv
+
+          # Activate venv and install dependencies
+          . /opt/venv/bin/activate
+
+          # Upgrade pip and install build tools
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install build setuptools_scm pybind11 numpy
+
+          # Verify
+          python --version
+          pip --version
 
       - name: Set ROCm environment variables
         run: |
@@ -108,6 +111,7 @@ jobs:
           echo "HIP_PATH=/opt/rocm/hip" >> $GITHUB_ENV
           echo "/opt/rocm/bin" >> $GITHUB_PATH
           echo "/opt/rocm/hip/bin" >> $GITHUB_PATH
+          echo "/opt/venv/bin" >> $GITHUB_PATH
 
           # Verify ROCm installation
           ls -la /opt/rocm/ || echo "Warning: /opt/rocm not found"
@@ -115,8 +119,11 @@ jobs:
 
       - name: Build wheel for ROCm
         run: |
+          # Activate venv
+          . /opt/venv/bin/activate
+
           # The setup.py should detect ROCm and use hipify-perl automatically
-          python3 -m pip wheel . -w wheelhouse/ --no-deps -v
+          python -m pip wheel . -w wheelhouse/ --no-deps -v
         env:
           ROCM_PATH: /opt/rocm
           HIP_PATH: /opt/rocm/hip
