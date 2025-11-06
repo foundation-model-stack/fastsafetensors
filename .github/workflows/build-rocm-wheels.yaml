@@ -19,6 +19,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            software-properties-common \
+            wget \
+            build-essential \
+            libnuma-dev \
+            gcc \
+            g++ \
+            make \
+            git \
+            curl \
+            ca-certificates
+
       - name: Install Python ${{ matrix.python-version }}
         run: |
           # Install Python from deadsnakes PPA for Ubuntu 22.04
