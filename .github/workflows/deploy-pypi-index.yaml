@@ -1,8 +1,6 @@
 name: Deploy PyPI Index to GitHub Pages
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
