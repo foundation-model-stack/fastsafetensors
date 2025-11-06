@@ -1,0 +1,234 @@
+name: Build ROCm wheels
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'fastsafetensors/cpp/**'
+      - 'setup.py'
+      - '.github/workflows/build-rocm-wheels.yaml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'fastsafetensors/cpp/**'
+      - 'setup.py'
+      - '.github/workflows/build-rocm-wheels.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-rocm-wheels:
+    name: Build ROCm wheel - Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    container:
+      image: rocm/dev-ubuntu-22.04:7.0
+      options: --user root
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies and hipify-perl
+        run: |
+          apt-get update
+          apt-get install -y \
+            wget \
+            build-essential \
+            libnuma-dev \
+            gcc \
+            g++ \
+            make \
+            git \
+            curl \
+            ca-certificates \
+            hipify-perl \
+            libssl-dev \
+            zlib1g-dev \
+            libbz2-dev \
+            libreadline-dev \
+            libsqlite3-dev \
+            libncursesw5-dev \
+            xz-utils \
+            tk-dev \
+            libxml2-dev \
+            libxmlsec1-dev \
+            libffi-dev \
+            liblzma-dev \
+            software-properties-common
+
+          # Verify hipify-perl is available
+          which hipify-perl || echo "Warning: hipify-perl not found"
+
+      - name: Install Python ${{ matrix.python-version }}
+        run: |
+          # Install Python from deadsnakes PPA for Ubuntu 22.04
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+
+          # Install specific Python version and dev packages
+          PY_VER="${{ matrix.python-version }}"
+          apt-get install -y \
+            python${PY_VER} \
+            python${PY_VER}-dev \
+            python${PY_VER}-distutils || true
+
+          # Install pip for this Python version
+          curl -sS https://bootstrap.pypa.io/get-pip.py | python${PY_VER}
+
+          # Create symlink for easier access
+          update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PY_VER} 1
+          update-alternatives --set python3 /usr/bin/python${PY_VER}
+
+          # Verify installation
+          python3 --version
+          python3 -m pip --version
+
+      - name: Install Python build dependencies
+        run: |
+          python3 -m pip install --upgrade pip setuptools wheel
+          python3 -m pip install build setuptools_scm pybind11 numpy
+
+      - name: Set ROCm environment variables
+        run: |
+          echo "ROCM_PATH=/opt/rocm" >> $GITHUB_ENV
+          echo "HIP_PATH=/opt/rocm/hip" >> $GITHUB_ENV
+          echo "/opt/rocm/bin" >> $GITHUB_PATH
+          echo "/opt/rocm/hip/bin" >> $GITHUB_PATH
+
+          # Verify ROCm installation
+          ls -la /opt/rocm/ || echo "Warning: /opt/rocm not found"
+          hipify-perl --version || echo "Warning: hipify-perl not working"
+
+      - name: Build wheel for ROCm
+        run: |
+          # The setup.py should detect ROCm and use hipify-perl automatically
+          python3 -m pip wheel . -w wheelhouse/ --no-deps -v
+        env:
+          ROCM_PATH: /opt/rocm
+          HIP_PATH: /opt/rocm/hip
+
+      - name: List built wheels
+        run: |
+          ls -lah wheelhouse/
+
+      - name: Rename wheel to include rocm tag
+        run: |
+          cd wheelhouse
+          for wheel in *.whl; do
+            if [ -f "$wheel" ]; then
+              # Rename to include rocm tag before platform
+              # e.g., fastsafetensors-X.Y.Z-cp39-cp39-linux_x86_64.whl
+              # becomes fastsafetensors-X.Y.Z-cp39-cp39-rocm_linux_x86_64.whl
+              NEW_NAME=$(echo "$wheel" | sed "s/-linux_/-rocm_linux_/")
+
+              if [ "$wheel" != "$NEW_NAME" ]; then
+                mv "$wheel" "$NEW_NAME"
+                echo "Renamed: $wheel -> $NEW_NAME"
+              fi
+            fi
+          done
+          ls -lah
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rocm-wheel-py${{ matrix.python-version }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  test-rocm-wheels:
+    name: Test ROCm wheel - Python ${{ matrix.python-version }}
+    needs: build-rocm-wheels
+    runs-on: ubuntu-latest
+    container:
+      image: rocm/dev-ubuntu-22.04:7.0
+      options: --user root
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Python ${{ matrix.python-version }}
+        run: |
+          apt-get update
+          apt-get install -y software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+
+          PY_VER="${{ matrix.python-version }}"
+          apt-get install -y \
+            python${PY_VER} \
+            python${PY_VER}-dev \
+            python${PY_VER}-distutils || true
+
+          curl -sS https://bootstrap.pypa.io/get-pip.py | python${PY_VER}
+          update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PY_VER} 1
+          update-alternatives --set python3 /usr/bin/python${PY_VER}
+
+          python3 --version
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: rocm-wheel-py${{ matrix.python-version }}
+          path: wheelhouse/
+
+      - name: Install wheel and test dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install wheelhouse/*.whl
+
+          # Install test dependencies
+          python3 -m pip install pytest safetensors transformers numpy
+
+          # Install PyTorch with ROCm support for testing
+          python3 -m pip install torch --index-url https://download.pytorch.org/whl/rocm6.2 || \
+          python3 -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Run basic import test
+        run: |
+          python3 -c "import fastsafetensors; print('Import successful')"
+          python3 -c "from fastsafetensors import SafeTensorsFileLoader; print('SafeTensorsFileLoader imported')"
+          python3 -c "from fastsafetensors.frameworks import get_framework_op; fw = get_framework_op('pytorch'); print(f'PyTorch framework: {fw.get_name()}')"
+          python3 -c "from fastsafetensors.frameworks import get_framework_op; fw = get_framework_op('pytorch'); ver = fw.get_cuda_ver(); print(f'CUDA/ROCm version: {ver}')"
+
+      - name: Run basic tests
+        run: |
+          cd tests
+          export TEST_FASTSAFETENSORS_FRAMEWORK=pytorch
+          python3 -m pytest -xvs test_fastsafetensors.py::test_device
+          python3 -m pytest -xvs test_fastsafetensors.py::test_framework
+
+  collect-wheels:
+    name: Collect all ROCm wheels
+    needs: test-rocm-wheels
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-wheels/
+          pattern: rocm-wheel-*
+          merge-multiple: true
+
+      - name: List all wheels
+        run: |
+          echo "Built ROCm wheels:"
+          ls -lah all-wheels/
+
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rocm-wheels-all
+          path: all-wheels/*.whl
