@@ -2,18 +2,6 @@ name: Build ROCm wheels
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'fastsafetensors/cpp/**'
-      - 'setup.py'
-      - '.github/workflows/build-rocm-wheels.yaml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'fastsafetensors/cpp/**'
-      - 'setup.py'
-      - '.github/workflows/build-rocm-wheels.yaml'
 
 permissions:
   contents: read
