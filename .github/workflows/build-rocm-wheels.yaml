@@ -8,7 +8,7 @@ jobs:
     name: Build ROCm wheel - Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     container:
-      image: rocm/dev-ubuntu-22.04:7.0
+      image: rocm/dev-ubuntu-24.04:7.0
       options: --user root
     strategy:
       fail-fast: false
@@ -44,7 +44,7 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           export TZ=Etc/UTC
 
-          # Install Python from deadsnakes PPA for Ubuntu 22.04
+          # Install Python from deadsnakes PPA for Ubuntu 24.04
           add-apt-repository -y ppa:deadsnakes/ppa
           apt-get update
 
