@@ -159,25 +159,6 @@ jobs:
           echo "Repaired wheels:"
           ls -lah wheelhouse/
 
-      - name: Rename wheel to include rocm tag
-        run: |
-          cd wheelhouse
-          for wheel in *.whl; do
-            if [ -f "$wheel" ]; then
-              # Rename to include rocm tag before manylinux/linux platform
-              # e.g., fastsafetensors-X.Y.Z-cp39-cp39-manylinux_2_27_x86_64.whl
-              # becomes fastsafetensors-X.Y.Z-cp39-cp39-rocm_manylinux_2_27_x86_64.whl
-              # Also handles: linux_x86_64 -> rocm_linux_x86_64
-              NEW_NAME=$(echo "$wheel" | sed -E "s/-(manylinux|linux)_/-rocm_\1_/")
-
-              if [ "$wheel" != "$NEW_NAME" ]; then
-                mv "$wheel" "$NEW_NAME"
-                echo "Renamed: $wheel -> $NEW_NAME"
-              fi
-            fi
-          done
-          ls -lah
-
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
