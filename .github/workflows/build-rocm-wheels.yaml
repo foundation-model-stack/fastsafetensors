@@ -104,7 +104,7 @@ jobs:
 
           # Upgrade pip and install build tools
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install build setuptools_scm pybind11 numpy
+          python -m pip install build setuptools_scm pybind11 numpy auditwheel
 
           # Verify
           python --version
@@ -137,15 +137,38 @@ jobs:
         run: |
           ls -lah wheelhouse/
 
+      - name: Repair wheel with auditwheel to create manylinux wheel
+        run: |
+          # Activate venv
+          . /opt/venv/bin/activate
+
+          # Use auditwheel to repair and convert to manylinux wheel
+          mkdir -p wheelhouse_repaired
+          for wheel in wheelhouse/*.whl; do
+            echo "Repairing wheel: $wheel"
+            auditwheel repair "$wheel" -w wheelhouse_repaired/ || {
+              echo "auditwheel repair failed, copying original wheel"
+              cp "$wheel" wheelhouse_repaired/
+            }
+          done
+
+          # Replace original wheelhouse with repaired wheels
+          rm -rf wheelhouse
+          mv wheelhouse_repaired wheelhouse
+
+          echo "Repaired wheels:"
+          ls -lah wheelhouse/
+
       - name: Rename wheel to include rocm tag
         run: |
           cd wheelhouse
           for wheel in *.whl; do
             if [ -f "$wheel" ]; then
-              # Rename to include rocm tag before platform
-              # e.g., fastsafetensors-X.Y.Z-cp39-cp39-linux_x86_64.whl
-              # becomes fastsafetensors-X.Y.Z-cp39-cp39-rocm_linux_x86_64.whl
-              NEW_NAME=$(echo "$wheel" | sed "s/-linux_/-rocm_linux_/")
+              # Rename to include rocm tag before manylinux/linux platform
+              # e.g., fastsafetensors-X.Y.Z-cp39-cp39-manylinux_2_27_x86_64.whl
+              # becomes fastsafetensors-X.Y.Z-cp39-cp39-rocm_manylinux_2_27_x86_64.whl
+              # Also handles: linux_x86_64 -> rocm_linux_x86_64
+              NEW_NAME=$(echo "$wheel" | sed -E "s/-(manylinux|linux)_/-rocm_\1_/")
 
               if [ "$wheel" != "$NEW_NAME" ]; then
                 mv "$wheel" "$NEW_NAME"
