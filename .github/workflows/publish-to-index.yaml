@@ -138,6 +138,9 @@ jobs:
           PLATFORM="${{ steps.determine.outputs.platform }}"
           VERSION="${{ steps.determine.outputs.version }}"
 
+          # Save absolute path to the extraction script (from current checkout)
+          SCRIPT_PATH="$(pwd)/fastsafetensors-rocm/.github/scripts/extract_wheel_deps.py"
+
           # Determine version tag for ROCm/CUDA
           get_version_tag() {
             local platform=$1
@@ -152,7 +155,7 @@ jobs:
           extract_deps_for_platform() {
             local platform=$1
             local version_tag=$(get_version_tag "${platform}")
-            local output_file="wheels/${platform}/requirements.txt"
+            local output_file="$(pwd)/wheels/${platform}/requirements.txt"
 
             echo "Extracting dependencies for ${platform} from version ${version_tag}..."
 
@@ -160,23 +163,26 @@ jobs:
             cd fastsafetensors-rocm
             git fetch --tags
 
+            # Save current commit
+            local current_ref=$(git rev-parse HEAD)
+
             if ! git checkout "${version_tag}" 2>/dev/null; then
               echo "Warning: Could not checkout tag ${version_tag}, using current version"
-              git checkout -
             fi
 
             # Check if pyproject.toml exists
             if [ ! -f "pyproject.toml" ]; then
               echo "Error: pyproject.toml not found for version ${version_tag}"
+              git checkout "${current_ref}"
               cd ..
               return 1
             fi
 
-            # Extract dependencies from pyproject.toml
-            python3 .github/scripts/extract_wheel_deps.py "pyproject.toml" "../${output_file}"
+            # Extract dependencies from pyproject.toml using script from current checkout
+            python3 "${SCRIPT_PATH}" "pyproject.toml" "${output_file}"
 
-            # Return to original branch/commit
-            git checkout -
+            # Return to original commit
+            git checkout "${current_ref}"
             cd ..
 
             echo "Extracted dependencies:"
