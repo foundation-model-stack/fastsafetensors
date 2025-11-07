@@ -1,42 +1,77 @@
 #!/usr/bin/env python3
-"""Extract dependencies from wheel METADATA file."""
+"""Extract dependencies from pyproject.toml for a specific version."""
 
-import sys
-import zipfile
 import re
+import sys
 from pathlib import Path
 
 
-def extract_dependencies(wheel_path):
-    """Extract Requires-Dist from wheel METADATA."""
+def parse_pyproject_toml(pyproject_path):
+    """Parse dependencies from pyproject.toml, excluding test dependencies."""
     dependencies = []
 
     try:
-        with zipfile.ZipFile(wheel_path, "r") as whl:
-            # Find METADATA file
-            metadata_files = [
-                f for f in whl.namelist() if f.endswith(".dist-info/METADATA")
-            ]
+        with open(pyproject_path, "r") as f:
+            content = f.read()
 
-            if not metadata_files:
-                print(f"Warning: No METADATA found in {wheel_path}", file=sys.stderr)
-                return dependencies
+        # Find [project.dependencies] section
+        in_dependencies = False
+        in_optional_dependencies = False
+        bracket_count = 0
 
-            metadata_content = whl.read(metadata_files[0]).decode("utf-8")
+        for line in content.split("\n"):
+            line_stripped = line.strip()
 
-            # Parse Requires-Dist lines
-            for line in metadata_content.split("\n"):
-                line = line.strip()
-                if line.startswith("Requires-Dist:"):
-                    # Extract dependency specification
-                    dep = line.split(":", 1)[1].strip()
-                    # Remove extras and environment markers
-                    dep = re.split(r"\s*;\s*", dep)[0]
-                    dep = re.split(r"\s*\[", dep)[0]
-                    dependencies.append(dep)
+            # Check if entering dependencies section
+            if line_stripped == "[project.dependencies]" or line_stripped.startswith(
+                "dependencies = ["
+            ):
+                in_dependencies = True
+                if "[" in line:
+                    bracket_count = line.count("[") - line.count("]")
+                continue
+
+            # Check if entering optional dependencies (skip these)
+            if (
+                "[project.optional-dependencies]" in line_stripped
+                or "[tool.poetry.group" in line_stripped
+            ):
+                in_dependencies = False
+                in_optional_dependencies = True
+                continue
+
+            # Exit sections when encountering new section header
+            if line_stripped.startswith("[") and line_stripped.endswith("]"):
+                in_dependencies = False
+                in_optional_dependencies = False
+                bracket_count = 0
+                continue
+
+            # Skip if in optional dependencies
+            if in_optional_dependencies:
+                continue
+
+            # Parse dependency lines
+            if in_dependencies:
+                # Track bracket balance for multiline arrays
+                bracket_count += line.count("[") - line.count("]")
+
+                # Extract dependency from quoted string
+                match = re.search(r'["\']([^"\']+)["\']', line)
+                if match:
+                    dep = match.group(1).strip()
+                    # Skip comments and empty lines
+                    if dep and not dep.startswith("#"):
+                        # Remove any trailing commas
+                        dep = dep.rstrip(",").strip()
+                        dependencies.append(dep)
+
+                # Check if array is closed
+                if bracket_count == 0:
+                    in_dependencies = False
 
     except Exception as e:
-        print(f"Error reading {wheel_path}: {e}", file=sys.stderr)
+        print(f"Error reading {pyproject_path}: {e}", file=sys.stderr)
         sys.exit(1)
 
     return dependencies
@@ -44,24 +79,22 @@ def extract_dependencies(wheel_path):
 
 def main():
     if len(sys.argv) != 3:
-        print("Usage: extract_wheel_deps.py <wheel_dir> <output_file>", file=sys.stderr)
+        print(
+            "Usage: extract_wheel_deps.py <pyproject_path> <output_file>",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    wheel_dir = Path(sys.argv[1])
+    pyproject_path = Path(sys.argv[1])
     output_file = Path(sys.argv[2])
 
-    # Find fastsafetensors wheels
-    wheel_files = list(wheel_dir.glob("fastsafetensors-*.whl"))
-
-    if not wheel_files:
-        print("Error: No fastsafetensors wheels found", file=sys.stderr)
+    if not pyproject_path.exists():
+        print(f"Error: {pyproject_path} not found", file=sys.stderr)
         sys.exit(1)
 
-    # Use first wheel (all should have same dependencies)
-    wheel_path = wheel_files[0]
-    print(f"Extracting dependencies from: {wheel_path.name}", file=sys.stderr)
+    print(f"Extracting dependencies from: {pyproject_path}", file=sys.stderr)
 
-    deps = extract_dependencies(wheel_path)
+    deps = parse_pyproject_toml(pyproject_path)
 
     # Write dependencies to output file
     with open(output_file, "w") as f:

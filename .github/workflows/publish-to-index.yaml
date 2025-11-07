@@ -133,23 +133,51 @@ jobs:
             cd ../..
           fi
 
-      - name: Extract dependencies from wheels
+      - name: Extract dependencies from pyproject.toml
         run: |
           PLATFORM="${{ steps.determine.outputs.platform }}"
           VERSION="${{ steps.determine.outputs.version }}"
 
+          # Determine version tag for ROCm/CUDA
+          get_version_tag() {
+            local platform=$1
+            local version="${VERSION}"
+            if [[ "${version}" == *"-${platform}"* ]]; then
+              echo "${version}"
+            else
+              echo "${version}-${platform}"
+            fi
+          }
+
           extract_deps_for_platform() {
             local platform=$1
-            local wheel_dir="wheels/${platform}"
+            local version_tag=$(get_version_tag "${platform}")
             local output_file="wheels/${platform}/requirements.txt"
 
-            if [ ! -d "${wheel_dir}" ]; then
-              echo "No wheels directory for ${platform}"
-              return
+            echo "Extracting dependencies for ${platform} from version ${version_tag}..."
+
+            # Checkout the specific version tag to get its pyproject.toml
+            cd fastsafetensors-rocm
+            git fetch --tags
+
+            if ! git checkout "${version_tag}" 2>/dev/null; then
+              echo "Warning: Could not checkout tag ${version_tag}, using current version"
+              git checkout -
             fi
 
-            echo "Extracting dependencies from ${platform} wheels..."
-            python3 fastsafetensors-rocm/.github/scripts/extract_wheel_deps.py "${wheel_dir}" "${output_file}"
+            # Check if pyproject.toml exists
+            if [ ! -f "pyproject.toml" ]; then
+              echo "Error: pyproject.toml not found for version ${version_tag}"
+              cd ..
+              return 1
+            fi
+
+            # Extract dependencies from pyproject.toml
+            python3 .github/scripts/extract_wheel_deps.py "pyproject.toml" "../${output_file}"
+
+            # Return to original branch/commit
+            git checkout -
+            cd ..
 
             echo "Extracted dependencies:"
             cat "${output_file}"
