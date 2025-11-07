@@ -217,20 +217,22 @@ jobs:
             if [ -d "../wheels/${platform}" ] && [ "$(ls -A ../wheels/${platform}/*.whl 2>/dev/null)" ]; then
               cp ../wheels/${platform}/*.whl "${platform}/packages/"
 
-              # Generate package list with absolute paths
-              find "${platform}/packages" -name "*.whl" -type f > "${platform}/package-list.txt"
+              # Generate package list with just filenames (dumb-pypi doesn't accept paths with /)
+              (cd "${platform}/packages" && ls *.whl) > "${platform}/package-list.txt"
 
               echo "Package list contents:"
               cat "${platform}/package-list.txt"
 
               # Generate PEP 503 compliant index
-              # Note: dumb-pypi creates a /simple/ subdirectory inside output-dir
+              # Note: dumb-pypi expects wheel files to be accessible from where it runs
+              # Run from packages/ directory so dumb-pypi can find the wheels by filename
               # packages-url is relative from simple/ to packages/: ../packages
-              dumb-pypi \
-                --package-list "${platform}/package-list.txt" \
-                --packages-url ../packages \
-                --output-dir "${platform}" \
-                --title "fastsafetensors ${platform^^} Index"
+              (cd "${platform}/packages" && \
+                dumb-pypi \
+                  --package-list ../package-list.txt \
+                  --packages-url ../packages \
+                  --output-dir .. \
+                  --title "fastsafetensors ${platform^^} Index")
 
               echo "Generated ${platform} index for $(ls ${platform}/packages/*.whl | wc -l) wheels"
 
