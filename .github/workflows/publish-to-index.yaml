@@ -1,11 +1,20 @@
-name: Publish ROCm wheels to custom index
+name: Publish wheels to custom index
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g., v0.1.15-rocm)'
+        description: 'Version to publish (e.g., v0.1.15-rocm or v0.1.15-cuda)'
         required: true
+      platform:
+        description: 'Platform to publish (rocm, cuda, or both)'
+        required: true
+        default: 'rocm'
+        type: choice
+        options:
+          - rocm
+          - cuda
+          - both
   release:
     types: [published]
 
@@ -33,9 +42,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install dumb-pypi
 
-      - name: Download ROCm wheels from release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Determine platform and version
+        id: determine
         run: |
           # Determine version
           if [ "${{ github.event_name }}" = "release" ]; then
@@ -43,70 +51,106 @@ jobs:
           else
             VERSION="${{ github.event.inputs.version }}"
           fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
-          echo "Downloading wheels for ${VERSION}"
+          # Determine platform from version tag or input
+          if [ "${{ github.event_name }}" = "release" ]; then
+            if [[ "${VERSION}" == *"rocm"* ]]; then
+              PLATFORM="rocm"
+            elif [[ "${VERSION}" == *"cuda"* ]]; then
+              PLATFORM="cuda"
+            else
+              PLATFORM="both"
+            fi
+          else
+            PLATFORM="${{ github.event.inputs.platform }}"
+          fi
+          echo "platform=${PLATFORM}" >> $GITHUB_OUTPUT
 
-          # Create directory for wheels
-          mkdir -p wheels/rocm
+          echo "Publishing version: ${VERSION}"
+          echo "Platform: ${PLATFORM}"
 
-          # Download release assets (wheels) using gh CLI
-          cd wheels/rocm
-          gh release download "${VERSION}" \
-            --repo EmbeddedLLM/fastsafetensors-rocm \
-            --pattern "*.whl"
+      - name: Download wheels from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.determine.outputs.version }}"
+          PLATFORM="${{ steps.determine.outputs.platform }}"
 
-          ls -lah
+          # Create directories
+          if [ "$PLATFORM" = "rocm" ] || [ "$PLATFORM" = "both" ]; then
+            mkdir -p wheels/rocm
+            echo "Downloading ROCm wheels for ${VERSION}"
+            cd wheels/rocm
+            gh release download "${VERSION}" \
+              --repo EmbeddedLLM/fastsafetensors-rocm \
+              --pattern "*.whl" || echo "No ROCm wheels found"
+            ls -lah
+            cd ../..
+          fi
+
+          if [ "$PLATFORM" = "cuda" ] || [ "$PLATFORM" = "both" ]; then
+            mkdir -p wheels/cuda
+            echo "Downloading CUDA wheels for ${VERSION}"
+            cd wheels/cuda
+            gh release download "${VERSION}" \
+              --repo EmbeddedLLM/fastsafetensors-rocm \
+              --pattern "*.whl" || echo "No CUDA wheels found"
+            ls -lah
+            cd ../..
+          fi
 
       - name: Download all dependencies
         run: |
-          # Create temporary directory for dependency resolution
-          mkdir -p deps_temp
+          PLATFORM="${{ steps.determine.outputs.platform }}"
 
-          # For each Python version, download dependencies
-          for py_ver in 3.9 3.10 3.11 3.12 3.13; do
-            echo "Downloading dependencies for Python ${py_ver}"
+          # Function to download dependencies for a platform
+          download_deps() {
+            local platform=$1
+            local dest_dir="wheels/${platform}"
 
-            # Create a venv for this Python version to resolve dependencies
-            python${py_ver} -m venv deps_temp/venv${py_ver} 2>/dev/null || {
-              echo "Python ${py_ver} not available, skipping"
-              continue
-            }
+            echo "Downloading dependencies for ${platform}..."
 
-            source deps_temp/venv${py_ver}/bin/activate
-            pip install --upgrade pip
+            # For each Python version, download dependencies
+            for py_ver in 3.9 3.10 3.11 3.12 3.13; do
+              echo "Downloading dependencies for Python ${py_ver}"
 
-            # Download dependencies for fastsafetensors (without fastsafetensors itself)
-            # This gets typer and all of typer's dependencies
-            pip download \
-              --dest wheels/rocm \
+              # Download dependencies using current Python (pip handles version compatibility)
+              python -m pip download \
+                --dest "${dest_dir}" \
+                --only-binary :all: \
+                --python-version ${py_ver} \
+                --platform manylinux2014_x86_64 \
+                --platform manylinux_2_17_x86_64 \
+                --platform manylinux_2_27_x86_64 \
+                --platform manylinux_2_28_x86_64 \
+                typer 2>/dev/null || echo "Some downloads failed for Python ${py_ver}"
+            done
+
+            # Also download using current Python for any missing wheels
+            python -m pip download \
+              --dest "${dest_dir}" \
               --only-binary :all: \
-              --python-version ${py_ver} \
-              --platform manylinux2014_x86_64 \
-              --platform manylinux_2_17_x86_64 \
-              --platform manylinux_2_27_x86_64 \
-              --platform manylinux_2_28_x86_64 \
-              typer || echo "Failed to download for Python ${py_ver}"
+              typer || true
 
-            deactivate
-          done
+            # Summary
+            if [ -d "${dest_dir}" ] && [ "$(ls -A ${dest_dir}/*.whl 2>/dev/null)" ]; then
+              echo "Total wheels collected for ${platform}:"
+              ls -1 "${dest_dir}"/*.whl | wc -l
 
-          # Also download using current Python for any missing wheels
-          pip download \
-            --dest wheels/rocm \
-            --only-binary :all: \
-            typer
+              echo "Wheel breakdown by package:"
+              ls -1 "${dest_dir}"/*.whl | xargs -n1 basename | sed 's/-[0-9].*//' | sort | uniq -c
+            fi
+          }
 
-          # Remove duplicates and list what we have
-          cd wheels/rocm
-          # Remove duplicate wheels (keep latest version)
-          # This is a simple deduplication - you might want more sophisticated logic
-          ls -1 *.whl | sort | uniq
+          # Download for requested platforms
+          if [ "$PLATFORM" = "rocm" ] || [ "$PLATFORM" = "both" ]; then
+            download_deps "rocm"
+          fi
 
-          echo "Total wheels collected:"
-          ls -1 *.whl | wc -l
-
-          echo "Wheel breakdown by package:"
-          ls -1 *.whl | sed 's/-[0-9].*//' | sort | uniq -c
+          if [ "$PLATFORM" = "cuda" ] || [ "$PLATFORM" = "both" ]; then
+            download_deps "cuda"
+          fi
 
       - name: Checkout GitHub Pages repository
         uses: actions/checkout@v4
@@ -119,80 +163,153 @@ jobs:
       - name: Copy wheels and generate index
         run: |
           cd gh-pages-repo
+          PLATFORM="${{ steps.determine.outputs.platform }}"
 
-          # Create directory structure
-          mkdir -p rocm/packages
+          # Function to generate index for a platform
+          generate_index() {
+            local platform=$1
 
-          # Copy all wheels
-          cp ../wheels/rocm/*.whl rocm/packages/
+            echo "Generating index for ${platform}..."
 
-          # Generate package list
-          ls rocm/packages/*.whl > rocm/package-list.txt
+            # Create directory structure
+            mkdir -p "${platform}/packages"
 
-          # Generate PEP 503 compliant index
-          dumb-pypi \
-            --package-list rocm/package-list.txt \
-            --packages-url ../packages \
-            --output-dir rocm/simple \
-            --title "fastsafetensors ROCm Index"
+            # Copy all wheels
+            if [ -d "../wheels/${platform}" ] && [ "$(ls -A ../wheels/${platform}/*.whl 2>/dev/null)" ]; then
+              cp ../wheels/${platform}/*.whl "${platform}/packages/"
 
-          echo "Generated index for $(ls rocm/packages/*.whl | wc -l) wheels"
+              # Generate package list
+              ls "${platform}/packages"/*.whl > "${platform}/package-list.txt"
 
-      - name: Create index README
+              # Generate PEP 503 compliant index
+              dumb-pypi \
+                --package-list "${platform}/package-list.txt" \
+                --packages-url ../packages \
+                --output-dir "${platform}/simple" \
+                --title "fastsafetensors ${platform^^} Index"
+
+              echo "Generated ${platform} index for $(ls ${platform}/packages/*.whl | wc -l) wheels"
+            else
+              echo "No wheels found for ${platform}, skipping index generation"
+            fi
+          }
+
+          # Generate for requested platforms
+          if [ "$PLATFORM" = "rocm" ] || [ "$PLATFORM" = "both" ]; then
+            generate_index "rocm"
+          fi
+
+          if [ "$PLATFORM" = "cuda" ] || [ "$PLATFORM" = "both" ]; then
+            generate_index "cuda"
+          fi
+
+      - name: Create index READMEs
         run: |
           cd gh-pages-repo
+          PLATFORM="${{ steps.determine.outputs.platform }}"
 
-          cat > rocm/README.md << 'EOF'
-          # fastsafetensors ROCm Package Index
+          # Function to create README for a platform
+          create_readme() {
+            local platform=$1
+            local platform_upper=$(echo $platform | tr '[:lower:]' '[:upper:]')
 
-          This is a custom Python package index for ROCm-built fastsafetensors wheels.
+            if [ ! -d "${platform}/packages" ] || [ ! "$(ls -A ${platform}/packages/*.whl 2>/dev/null)" ]; then
+              echo "No packages for ${platform}, skipping README"
+              return
+            fi
+
+            cat > "${platform}/README.md" << EOF
+          # fastsafetensors ${platform_upper} Package Index
+
+          This is a custom Python package index for ${platform_upper}-built fastsafetensors wheels.
 
           ## Installation
 
-          ```bash
-          # Install fastsafetensors with ROCm support
-          pip install fastsafetensors --index-url https://embeddedllm.github.io/fastsafetensors-rocm/rocm/simple/
-          ```
+          \`\`\`bash
+          # Install fastsafetensors with ${platform_upper} support
+          pip install fastsafetensors --index-url https://embeddedllm.github.io/fastsafetensors-rocm/${platform}/simple/
+          \`\`\`
 
           ## Available Packages
 
           This index includes:
-          - `fastsafetensors` - ROCm builds for Python 3.9-3.13
+          - \`fastsafetensors\` - ${platform_upper} builds for Python 3.9-3.13
           - All dependencies (typer, click, etc.) for multiple Python versions and platforms
 
           ## What's Included
 
           EOF
 
-          # List packages with counts
-          echo "### Package Inventory" >> rocm/README.md
-          echo "" >> rocm/README.md
-          ls rocm/packages/*.whl | sed 's/.*\///' | sed 's/-[0-9].*//' | sort | uniq -c | awk '{print "- " $2 ": " $1 " wheels"}' >> rocm/README.md
+            # List packages with counts
+            echo "### Package Inventory" >> "${platform}/README.md"
+            echo "" >> "${platform}/README.md"
+            ls "${platform}/packages"/*.whl | sed 's/.*\///' | sed 's/-[0-9].*//' | sort | uniq -c | awk '{print "- " $2 ": " $1 " wheels"}' >> "${platform}/README.md"
+          }
+
+          # Create READMEs for requested platforms
+          if [ "$PLATFORM" = "rocm" ] || [ "$PLATFORM" = "both" ]; then
+            create_readme "rocm"
+          fi
+
+          if [ "$PLATFORM" = "cuda" ] || [ "$PLATFORM" = "both" ]; then
+            create_readme "cuda"
+          fi
 
       - name: Commit and push to gh-pages
         run: |
           cd gh-pages-repo
+          PLATFORM="${{ steps.determine.outputs.platform }}"
 
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
 
-          git add rocm/
+          # Add platform directories based on selection
+          if [ "$PLATFORM" = "rocm" ] || [ "$PLATFORM" = "both" ]; then
+            git add rocm/
+          fi
+
+          if [ "$PLATFORM" = "cuda" ] || [ "$PLATFORM" = "both" ]; then
+            git add cuda/
+          fi
 
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Update ROCm index - $(date +%Y-%m-%d)"
+            if [ "$PLATFORM" = "both" ]; then
+              git commit -m "Update ROCm and CUDA indices - $(date +%Y-%m-%d)"
+            elif [ "$PLATFORM" = "cuda" ]; then
+              git commit -m "Update CUDA index - $(date +%Y-%m-%d)"
+            else
+              git commit -m "Update ROCm index - $(date +%Y-%m-%d)"
+            fi
             git push
             echo "Successfully pushed to gh-pages branch"
           fi
 
       - name: Summary
         run: |
+          PLATFORM="${{ steps.determine.outputs.platform }}"
+
           echo "## Published to GitHub Pages! 🎉" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Index URL: https://embeddedllm.github.io/fastsafetensors-rocm/rocm/simple/" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Installation" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "pip install fastsafetensors --index-url https://embeddedllm.github.io/fastsafetensors-rocm/rocm/simple/" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          if [ "$PLATFORM" = "rocm" ] || [ "$PLATFORM" = "both" ]; then
+            echo "### ROCm Index" >> $GITHUB_STEP_SUMMARY
+            echo "Index URL: https://embeddedllm.github.io/fastsafetensors-rocm/rocm/simple/" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Installation:**" >> $GITHUB_STEP_SUMMARY
+            echo '```bash' >> $GITHUB_STEP_SUMMARY
+            echo "pip install fastsafetensors --index-url https://embeddedllm.github.io/fastsafetensors-rocm/rocm/simple/" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$PLATFORM" = "cuda" ] || [ "$PLATFORM" = "both" ]; then
+            echo "### CUDA Index" >> $GITHUB_STEP_SUMMARY
+            echo "Index URL: https://embeddedllm.github.io/fastsafetensors-rocm/cuda/simple/" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Installation:**" >> $GITHUB_STEP_SUMMARY
+            echo '```bash' >> $GITHUB_STEP_SUMMARY
+            echo "pip install fastsafetensors --index-url https://embeddedllm.github.io/fastsafetensors-rocm/cuda/simple/" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
