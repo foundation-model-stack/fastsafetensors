@@ -226,11 +226,11 @@ jobs:
               # Generate PEP 503 compliant index
               # Note: dumb-pypi expects wheel files to be accessible from where it runs
               # Run from packages/ directory so dumb-pypi can find the wheels by filename
-              # packages-url is relative from simple/ to packages/: ../packages
+              # packages-url is relative from simple/fastsafetensors/ to packages/: ../../packages
               (cd "${platform}/packages" && \
                 dumb-pypi \
                   --package-list ../package-list.txt \
-                  --packages-url ../packages \
+                  --packages-url ../../packages \
                   --output-dir .. \
                   --title "fastsafetensors ${platform^^} Index")
 
