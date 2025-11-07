@@ -189,7 +189,7 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
         """Get GPU runtime version with platform indicator.
 
         Returns a string like 'hip-5.7.0' for ROCm or 'cuda-12.1' for CUDA,
-        or 'none' if no GPU is available. This allows code to distinguish
+        or '0.0' if no GPU is available. This allows code to distinguish
         between different GPU platforms without using torch directly.
         """
         if torch.cuda.is_available():
@@ -197,7 +197,7 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
             if hasattr(torch.version, "hip") and torch.version.hip is not None:
                 return f"hip-{torch.version.hip}"
             return f"cuda-{torch.version.cuda}"
-        return "none"
+        return "0.0"
 
     def get_device_ptr_align(self) -> int:
         CUDA_PTR_ALIGN: int = 16

@@ -217,7 +217,7 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
         """Get GPU runtime version with platform indicator.
 
         Returns a string like 'hip-5.7.0' for ROCm or 'cuda-12.1' for CUDA,
-        or 'none' if no GPU is available. This allows code to distinguish
+        or '0.0' if no GPU is available. This allows code to distinguish
         between different GPU platforms without using paddle directly.
         """
         if paddle.device.is_compiled_with_cuda():
@@ -225,7 +225,7 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
             if paddle.device.is_compiled_with_rocm():
                 return f"hip-{paddle.version.cuda()}"
             return f"cuda-{paddle.version.cuda()}"
-        return "none"
+        return "0.0"
 
     def get_device_ptr_align(self) -> int:
         CUDA_PTR_ALIGN: int = 16

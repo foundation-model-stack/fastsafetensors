@@ -113,11 +113,9 @@ def test_framework(fstcpp_log, framework) -> None:
     # Test that get_cuda_ver() returns a string with platform prefix
     cuda_ver = framework.get_cuda_ver()
     assert isinstance(cuda_ver, str)
-    # Should be "hip-X.Y.Z", "cuda-X.Y", or "none"
+    # Should be "hip-X.Y.Z", "cuda-X.Y", or "0.0"
     assert (
-        cuda_ver.startswith("hip-")
-        or cuda_ver.startswith("cuda-")
-        or cuda_ver == "none"
+        cuda_ver.startswith("hip-") or cuda_ver.startswith("cuda-") or cuda_ver == "0.0"
     )
 
     # Verify it matches what torch reports
@@ -132,7 +130,7 @@ def test_framework(fstcpp_log, framework) -> None:
                 assert cuda_ver.startswith("cuda-")
                 assert str(torch.version.cuda) in cuda_ver
         else:
-            assert cuda_ver == "none"
+            assert cuda_ver == "0.0"
 
 
 def test_get_framework_fail(fstcpp_log) -> None:

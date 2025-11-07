@@ -28,7 +28,7 @@ class GdsFileCopier:
         self.copy_reqs: Dict[int, int] = {}
         self.aligned_length = 0
         cuda_ver = framework.get_cuda_ver()
-        if cuda_ver and cuda_ver != "none":
+        if cuda_ver and cuda_ver != "0.0":
             # Parse version string (e.g., "cuda-12.1" or "hip-5.7.0")
             # Extract the numeric part after the platform prefix
             ver_parts = cuda_ver.split("-", 1)
