@@ -140,11 +140,14 @@ jobs:
 
           # Get absolute paths
           WORKSPACE_DIR="$(pwd)"
-          SCRIPT_PATH="${WORKSPACE_DIR}/fastsafetensors-rocm/.github/scripts/extract_wheel_deps.py"
           REPO_DIR="${WORKSPACE_DIR}/fastsafetensors-rocm"
 
+          # Copy script to temp location so it survives git checkout
+          TEMP_SCRIPT="/tmp/extract_wheel_deps_$$.py"
+          cp "${REPO_DIR}/.github/scripts/extract_wheel_deps.py" "${TEMP_SCRIPT}"
+
           echo "Workspace: ${WORKSPACE_DIR}"
-          echo "Script: ${SCRIPT_PATH}"
+          echo "Temp script: ${TEMP_SCRIPT}"
           echo "Repo: ${REPO_DIR}"
 
           # Determine version tag for ROCm/CUDA
@@ -184,8 +187,8 @@ jobs:
               return 1
             fi
 
-            # Extract dependencies from pyproject.toml using script from current checkout
-            python3 "${SCRIPT_PATH}" "pyproject.toml" "${output_file}"
+            # Extract dependencies from pyproject.toml using script from temp location
+            python3 "${TEMP_SCRIPT}" "pyproject.toml" "${output_file}"
 
             # Return to original commit
             git checkout "${current_ref}"
@@ -202,6 +205,9 @@ jobs:
           if [ "$PLATFORM" = "cuda" ] || [ "$PLATFORM" = "both" ]; then
             extract_deps_for_platform "cuda"
           fi
+
+          # Cleanup temp script
+          rm -f "${TEMP_SCRIPT}"
 
       - name: Download all dependencies
         run: |
