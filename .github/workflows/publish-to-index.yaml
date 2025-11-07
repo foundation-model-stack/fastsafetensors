@@ -138,8 +138,14 @@ jobs:
           PLATFORM="${{ steps.determine.outputs.platform }}"
           VERSION="${{ steps.determine.outputs.version }}"
 
-          # Save absolute path to the extraction script (from current checkout)
-          SCRIPT_PATH="$(pwd)/fastsafetensors-rocm/.github/scripts/extract_wheel_deps.py"
+          # Get absolute paths
+          WORKSPACE_DIR="$(pwd)"
+          SCRIPT_PATH="${WORKSPACE_DIR}/fastsafetensors-rocm/.github/scripts/extract_wheel_deps.py"
+          REPO_DIR="${WORKSPACE_DIR}/fastsafetensors-rocm"
+
+          echo "Workspace: ${WORKSPACE_DIR}"
+          echo "Script: ${SCRIPT_PATH}"
+          echo "Repo: ${REPO_DIR}"
 
           # Determine version tag for ROCm/CUDA
           get_version_tag() {
@@ -155,12 +161,12 @@ jobs:
           extract_deps_for_platform() {
             local platform=$1
             local version_tag=$(get_version_tag "${platform}")
-            local output_file="$(pwd)/wheels/${platform}/requirements.txt"
+            local output_file="${WORKSPACE_DIR}/wheels/${platform}/requirements.txt"
 
             echo "Extracting dependencies for ${platform} from version ${version_tag}..."
 
             # Checkout the specific version tag to get its pyproject.toml
-            cd fastsafetensors-rocm
+            cd "${REPO_DIR}"
             git fetch --tags
 
             # Save current commit
@@ -174,7 +180,7 @@ jobs:
             if [ ! -f "pyproject.toml" ]; then
               echo "Error: pyproject.toml not found for version ${version_tag}"
               git checkout "${current_ref}"
-              cd ..
+              cd "${WORKSPACE_DIR}"
               return 1
             fi
 
@@ -183,7 +189,7 @@ jobs:
 
             # Return to original commit
             git checkout "${current_ref}"
-            cd ..
+            cd "${WORKSPACE_DIR}"
 
             echo "Extracted dependencies:"
             cat "${output_file}"
