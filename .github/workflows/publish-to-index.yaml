@@ -77,25 +77,42 @@ jobs:
           VERSION="${{ steps.determine.outputs.version }}"
           PLATFORM="${{ steps.determine.outputs.platform }}"
 
-          # Create directories
+          # Function to construct platform-specific version tag
+          get_version_tag() {
+            local platform=$1
+            local version="${VERSION}"
+
+            # If version already has platform suffix, use as-is
+            if [[ "${version}" == *"-${platform}"* ]]; then
+              echo "${version}"
+            else
+              # Otherwise append platform suffix
+              echo "${version}-${platform}"
+            fi
+          }
+
+          # Download ROCm wheels
           if [ "$PLATFORM" = "rocm" ] || [ "$PLATFORM" = "both" ]; then
+            ROCM_VERSION=$(get_version_tag "rocm")
             mkdir -p wheels/rocm
-            echo "Downloading ROCm wheels for ${VERSION}"
+            echo "Downloading ROCm wheels from release ${ROCM_VERSION}"
             cd wheels/rocm
-            gh release download "${VERSION}" \
+            gh release download "${ROCM_VERSION}" \
               --repo EmbeddedLLM/fastsafetensors-rocm \
-              --pattern "*.whl" || echo "No ROCm wheels found"
+              --pattern "*.whl" || echo "Warning: No ROCm wheels found for ${ROCM_VERSION}"
             ls -lah
             cd ../..
           fi
 
+          # Download CUDA wheels
           if [ "$PLATFORM" = "cuda" ] || [ "$PLATFORM" = "both" ]; then
+            CUDA_VERSION=$(get_version_tag "cuda")
             mkdir -p wheels/cuda
-            echo "Downloading CUDA wheels for ${VERSION}"
+            echo "Downloading CUDA wheels from release ${CUDA_VERSION}"
             cd wheels/cuda
-            gh release download "${VERSION}" \
+            gh release download "${CUDA_VERSION}" \
               --repo EmbeddedLLM/fastsafetensors-rocm \
-              --pattern "*.whl" || echo "No CUDA wheels found"
+              --pattern "*.whl" || echo "Warning: No CUDA wheels found for ${CUDA_VERSION}"
             ls -lah
             cd ../..
           fi
