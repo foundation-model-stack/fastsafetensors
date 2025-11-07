@@ -138,75 +138,21 @@ jobs:
           PLATFORM="${{ steps.determine.outputs.platform }}"
           VERSION="${{ steps.determine.outputs.version }}"
 
-          # Extract dependencies for each platform
           extract_deps_for_platform() {
             local platform=$1
-            export WHEEL_DIR="wheels/${platform}"
-            export OUTPUT_FILE="wheels/${platform}/requirements.txt"
+            local wheel_dir="wheels/${platform}"
+            local output_file="wheels/${platform}/requirements.txt"
 
-            if [ ! -d "${WHEEL_DIR}" ]; then
+            if [ ! -d "${wheel_dir}" ]; then
               echo "No wheels directory for ${platform}"
               return
             fi
 
             echo "Extracting dependencies from ${platform} wheels..."
-
-            python3 -c '
-import sys
-import zipfile
-import re
-from pathlib import Path
-import os
-
-def extract_dependencies(wheel_path):
-    """Extract Requires-Dist from wheel METADATA."""
-    dependencies = []
-
-    try:
-        with zipfile.ZipFile(wheel_path, "r") as whl:
-            metadata_files = [f for f in whl.namelist() if f.endswith(".dist-info/METADATA")]
-
-            if not metadata_files:
-                print(f"Warning: No METADATA found in {wheel_path}", file=sys.stderr)
-                return dependencies
-
-            metadata_content = whl.read(metadata_files[0]).decode("utf-8")
-
-            for line in metadata_content.split("\n"):
-                line = line.strip()
-                if line.startswith("Requires-Dist:"):
-                    dep = line.split(":", 1)[1].strip()
-                    dep = re.split(r"\s*;\s*", dep)[0]
-                    dep = re.split(r"\s*\[", dep)[0]
-                    dependencies.append(dep)
-
-    except Exception as e:
-        print(f"Error reading {wheel_path}: {e}", file=sys.stderr)
-
-    return dependencies
-
-wheel_dir = os.environ["WHEEL_DIR"]
-output_file = os.environ["OUTPUT_FILE"]
-wheel_files = list(Path(wheel_dir).glob("fastsafetensors-*.whl"))
-
-if not wheel_files:
-    print("Error: No fastsafetensors wheels found", file=sys.stderr)
-    sys.exit(1)
-
-wheel_path = wheel_files[0]
-print(f"Extracting dependencies from: {wheel_path.name}", file=sys.stderr)
-
-deps = extract_dependencies(wheel_path)
-
-with open(output_file, "w") as f:
-    for dep in deps:
-        f.write(dep + "\n")
-
-print(f"Wrote {len(deps)} dependencies to {output_file}", file=sys.stderr)
-'
+            python3 fastsafetensors-rocm/.github/scripts/extract_wheel_deps.py "${wheel_dir}" "${output_file}"
 
             echo "Extracted dependencies:"
-            cat "${OUTPUT_FILE}"
+            cat "${output_file}"
           }
 
           if [ "$PLATFORM" = "rocm" ] || [ "$PLATFORM" = "both" ]; then
@@ -332,39 +278,17 @@ print(f"Wrote {len(deps)} dependencies to {output_file}", file=sys.stderr)
               # Read dependencies from requirements.txt
               local deps_json="[]"
               if [ -f "../wheels/${platform}/requirements.txt" ]; then
-                deps_json=$(python3 -c "
-import json
-with open('../wheels/${platform}/requirements.txt') as f:
-    deps = [line.strip() for line in f if line.strip() and not line.startswith('#')]
-print(json.dumps(deps))
-")
+                deps_json=$(python3 -c 'import json,sys; print(json.dumps([line.strip() for line in open("../wheels/'${platform}'/requirements.txt") if line.strip() and not line.startswith("#")]))')
               fi
 
               # List fastsafetensors wheels
-              local fst_wheels_json=$(cd "${platform}/packages" && python3 -c "
-import json, glob
-wheels = sorted([f for f in glob.glob('fastsafetensors-${clean_version}-*.whl')])
-print(json.dumps(wheels))
-")
+              local fst_wheels_json=$(cd "${platform}/packages" && python3 -c 'import json,glob; print(json.dumps(sorted(glob.glob("fastsafetensors-'${clean_version}'-*.whl"))))')
 
               # List all downloaded wheels
-              local all_wheels_json=$(cd "${platform}/packages" && python3 -c "
-import json, glob
-wheels = sorted(glob.glob('*.whl'))
-print(json.dumps(wheels))
-")
+              local all_wheels_json=$(cd "${platform}/packages" && python3 -c 'import json,glob; print(json.dumps(sorted(glob.glob("*.whl"))))')
 
-              # Create manifest JSON
-              cat > "${manifest_file}" << EOF
-{
-  "fastsafetensors_version": "${clean_version}",
-  "published_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "platform": "${platform}",
-  "dependencies": ${deps_json},
-  "fastsafetensors_wheels": ${fst_wheels_json},
-  "total_wheels_in_index": $(echo ${all_wheels_json} | python3 -c "import json, sys; print(len(json.load(sys.stdin)))")
-}
-EOF
+              # Create manifest JSON using Python
+              python3 -c "import json,sys; manifest={'fastsafetensors_version':'${clean_version}','published_at':'$(date -u +%Y-%m-%dT%H:%M:%SZ)','platform':'${platform}','dependencies':${deps_json},'fastsafetensors_wheels':${fst_wheels_json},'total_wheels_in_index':len(${all_wheels_json})}; json.dump(manifest,open('${manifest_file}','w'),indent=2)"
 
               echo "Created manifest:"
               cat "${manifest_file}"
