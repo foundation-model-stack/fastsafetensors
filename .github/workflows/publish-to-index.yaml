@@ -138,37 +138,46 @@ jobs:
           PLATFORM="${{ steps.determine.outputs.platform }}"
           VERSION="${{ steps.determine.outputs.version }}"
 
-          # Python script to extract dependencies from wheel metadata
-          cat > extract_deps.py << 'PYTHON_SCRIPT'
+          # Extract dependencies for each platform
+          extract_deps_for_platform() {
+            local platform=$1
+            export WHEEL_DIR="wheels/${platform}"
+            export OUTPUT_FILE="wheels/${platform}/requirements.txt"
+
+            if [ ! -d "${WHEEL_DIR}" ]; then
+              echo "No wheels directory for ${platform}"
+              return
+            fi
+
+            echo "Extracting dependencies from ${platform} wheels..."
+
+            python3 -c '
 import sys
 import zipfile
 import re
 from pathlib import Path
+import os
 
 def extract_dependencies(wheel_path):
     """Extract Requires-Dist from wheel METADATA."""
     dependencies = []
 
     try:
-        with zipfile.ZipFile(wheel_path, 'r') as whl:
-            # Find METADATA file (usually in *.dist-info/METADATA)
-            metadata_files = [f for f in whl.namelist() if f.endswith('.dist-info/METADATA')]
+        with zipfile.ZipFile(wheel_path, "r") as whl:
+            metadata_files = [f for f in whl.namelist() if f.endswith(".dist-info/METADATA")]
 
             if not metadata_files:
                 print(f"Warning: No METADATA found in {wheel_path}", file=sys.stderr)
                 return dependencies
 
-            metadata_content = whl.read(metadata_files[0]).decode('utf-8')
+            metadata_content = whl.read(metadata_files[0]).decode("utf-8")
 
-            # Parse Requires-Dist lines
-            for line in metadata_content.split('\n'):
+            for line in metadata_content.split("\n"):
                 line = line.strip()
-                if line.startswith('Requires-Dist:'):
-                    # Extract dependency specification
-                    dep = line.split(':', 1)[1].strip()
-                    # Remove extras and environment markers
-                    dep = re.split(r'\s*;\s*', dep)[0]
-                    dep = re.split(r'\s*\[', dep)[0]
+                if line.startswith("Requires-Dist:"):
+                    dep = line.split(":", 1)[1].strip()
+                    dep = re.split(r"\s*;\s*", dep)[0]
+                    dep = re.split(r"\s*\[", dep)[0]
                     dependencies.append(dep)
 
     except Exception as e:
@@ -176,40 +185,28 @@ def extract_dependencies(wheel_path):
 
     return dependencies
 
-if __name__ == "__main__":
-    wheel_dir = sys.argv[1]
-    wheel_files = list(Path(wheel_dir).glob("fastsafetensors-*.whl"))
+wheel_dir = os.environ["WHEEL_DIR"]
+output_file = os.environ["OUTPUT_FILE"]
+wheel_files = list(Path(wheel_dir).glob("fastsafetensors-*.whl"))
 
-    if not wheel_files:
-        print("Error: No fastsafetensors wheels found", file=sys.stderr)
-        sys.exit(1)
+if not wheel_files:
+    print("Error: No fastsafetensors wheels found", file=sys.stderr)
+    sys.exit(1)
 
-    # Use first wheel (all should have same dependencies)
-    wheel_path = wheel_files[0]
-    print(f"Extracting dependencies from: {wheel_path.name}", file=sys.stderr)
+wheel_path = wheel_files[0]
+print(f"Extracting dependencies from: {wheel_path.name}", file=sys.stderr)
 
-    deps = extract_dependencies(wheel_path)
+deps = extract_dependencies(wheel_path)
 
-    # Output dependencies one per line
+with open(output_file, "w") as f:
     for dep in deps:
-        print(dep)
-PYTHON_SCRIPT
+        f.write(dep + "\n")
 
-          # Extract dependencies for each platform
-          extract_deps_for_platform() {
-            local platform=$1
-            local wheel_dir="wheels/${platform}"
-
-            if [ ! -d "${wheel_dir}" ]; then
-              echo "No wheels directory for ${platform}"
-              return
-            fi
-
-            echo "Extracting dependencies from ${platform} wheels..."
-            python extract_deps.py "${wheel_dir}" > "${wheel_dir}/requirements.txt" 2>&1
+print(f"Wrote {len(deps)} dependencies to {output_file}", file=sys.stderr)
+'
 
             echo "Extracted dependencies:"
-            cat "${wheel_dir}/requirements.txt"
+            cat "${OUTPUT_FILE}"
           }
 
           if [ "$PLATFORM" = "rocm" ] || [ "$PLATFORM" = "both" ]; then
