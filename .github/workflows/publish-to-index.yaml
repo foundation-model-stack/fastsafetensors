@@ -42,6 +42,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install dumb-pypi
 
+          # Install GitHub CLI
+          type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+          && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+          && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+          && sudo apt update \
+          && sudo apt install gh -y
+
       - name: Determine platform and version
         id: determine
         run: |
@@ -97,9 +105,13 @@ jobs:
             mkdir -p wheels/rocm
             echo "Downloading ROCm wheels from release ${ROCM_VERSION}"
             cd wheels/rocm
-            gh release download "${ROCM_VERSION}" \
+            if ! gh release download "${ROCM_VERSION}" \
               --repo EmbeddedLLM/fastsafetensors-rocm \
-              --pattern "*.whl" || echo "Warning: No ROCm wheels found for ${ROCM_VERSION}"
+              --pattern "*.whl"; then
+              echo "ERROR: Failed to download ROCm wheels from ${ROCM_VERSION}"
+              exit 1
+            fi
+            echo "Downloaded wheels:"
             ls -lah
             cd ../..
           fi
@@ -110,9 +122,13 @@ jobs:
             mkdir -p wheels/cuda
             echo "Downloading CUDA wheels from release ${CUDA_VERSION}"
             cd wheels/cuda
-            gh release download "${CUDA_VERSION}" \
+            if ! gh release download "${CUDA_VERSION}" \
               --repo EmbeddedLLM/fastsafetensors-rocm \
-              --pattern "*.whl" || echo "Warning: No CUDA wheels found for ${CUDA_VERSION}"
+              --pattern "*.whl"; then
+              echo "ERROR: Failed to download CUDA wheels from ${CUDA_VERSION}"
+              exit 1
+            fi
+            echo "Downloaded wheels:"
             ls -lah
             cd ../..
           fi
