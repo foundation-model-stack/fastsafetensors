@@ -4,17 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g., v0.1.15-rocm or v0.1.15-cuda)'
+        description: 'Version to publish (e.g., v0.1.15)'
         required: true
       platform:
         description: 'Platform to publish (rocm, cuda, or both)'
         required: true
-        default: 'rocm'
+        default: 'both'
         type: choice
         options:
+          - both
           - rocm
           - cuda
-          - both
   release:
     types: [published]
 
