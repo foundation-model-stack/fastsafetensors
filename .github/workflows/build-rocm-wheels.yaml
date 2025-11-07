@@ -36,7 +36,8 @@ jobs:
             make \
             git \
             curl \
-            ca-certificates
+            ca-certificates \
+            patchelf
 
       - name: Install Python ${{ matrix.python-version }}
         run: |
