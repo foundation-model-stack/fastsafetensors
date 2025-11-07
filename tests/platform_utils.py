@@ -29,18 +29,6 @@ ROCM_EXPECTED_FAILURES = {
     "test_GdsFileCopier",  # GDS not available on AMD
 }
 
-# List of tests with memory leak detection issues on ROCm (non-critical)
-ROCM_MEMORY_LEAK_TESTS = {
-    "test_SafeTensorsFileLoader",
-    "test_SafeTensorsFileLoaderNoGds",
-    "test_fastsafe_open",
-    "test_int8",
-    "test_float8_e5m2",
-    "test_float8_e4m3fn",
-    "test_float8_e4m3fn_to_int8",
-    "test_cpp_metrics",
-}
-
 
 def skip_if_rocm_expected_failure(test_name):
     """Skip test if it's an expected failure on ROCm."""
@@ -48,16 +36,6 @@ def skip_if_rocm_expected_failure(test_name):
         pytest.skip(
             f"Test '{test_name}' is expected to fail on ROCm (GDS not supported)"
         )
-
-
-def xfail_if_rocm_memory_leak(test_name):
-    """Mark test as expected to fail on ROCm due to memory leak detection issues."""
-    if is_rocm_platform() and test_name in ROCM_MEMORY_LEAK_TESTS:
-        return pytest.mark.xfail(
-            reason=f"Test '{test_name}' has memory leak detection issues on ROCm (non-critical)",
-            strict=False,
-        )
-    return lambda func: func
 
 
 def get_platform_info():
