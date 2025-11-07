@@ -133,6 +133,93 @@ jobs:
             cd ../..
           fi
 
+      - name: Extract dependencies from wheels
+        run: |
+          PLATFORM="${{ steps.determine.outputs.platform }}"
+          VERSION="${{ steps.determine.outputs.version }}"
+
+          # Python script to extract dependencies from wheel metadata
+          cat > extract_deps.py << 'PYTHON_SCRIPT'
+import sys
+import zipfile
+import re
+from pathlib import Path
+
+def extract_dependencies(wheel_path):
+    """Extract Requires-Dist from wheel METADATA."""
+    dependencies = []
+
+    try:
+        with zipfile.ZipFile(wheel_path, 'r') as whl:
+            # Find METADATA file (usually in *.dist-info/METADATA)
+            metadata_files = [f for f in whl.namelist() if f.endswith('.dist-info/METADATA')]
+
+            if not metadata_files:
+                print(f"Warning: No METADATA found in {wheel_path}", file=sys.stderr)
+                return dependencies
+
+            metadata_content = whl.read(metadata_files[0]).decode('utf-8')
+
+            # Parse Requires-Dist lines
+            for line in metadata_content.split('\n'):
+                line = line.strip()
+                if line.startswith('Requires-Dist:'):
+                    # Extract dependency specification
+                    dep = line.split(':', 1)[1].strip()
+                    # Remove extras and environment markers
+                    dep = re.split(r'\s*;\s*', dep)[0]
+                    dep = re.split(r'\s*\[', dep)[0]
+                    dependencies.append(dep)
+
+    except Exception as e:
+        print(f"Error reading {wheel_path}: {e}", file=sys.stderr)
+
+    return dependencies
+
+if __name__ == "__main__":
+    wheel_dir = sys.argv[1]
+    wheel_files = list(Path(wheel_dir).glob("fastsafetensors-*.whl"))
+
+    if not wheel_files:
+        print("Error: No fastsafetensors wheels found", file=sys.stderr)
+        sys.exit(1)
+
+    # Use first wheel (all should have same dependencies)
+    wheel_path = wheel_files[0]
+    print(f"Extracting dependencies from: {wheel_path.name}", file=sys.stderr)
+
+    deps = extract_dependencies(wheel_path)
+
+    # Output dependencies one per line
+    for dep in deps:
+        print(dep)
+PYTHON_SCRIPT
+
+          # Extract dependencies for each platform
+          extract_deps_for_platform() {
+            local platform=$1
+            local wheel_dir="wheels/${platform}"
+
+            if [ ! -d "${wheel_dir}" ]; then
+              echo "No wheels directory for ${platform}"
+              return
+            fi
+
+            echo "Extracting dependencies from ${platform} wheels..."
+            python extract_deps.py "${wheel_dir}" > "${wheel_dir}/requirements.txt" 2>&1
+
+            echo "Extracted dependencies:"
+            cat "${wheel_dir}/requirements.txt"
+          }
+
+          if [ "$PLATFORM" = "rocm" ] || [ "$PLATFORM" = "both" ]; then
+            extract_deps_for_platform "rocm"
+          fi
+
+          if [ "$PLATFORM" = "cuda" ] || [ "$PLATFORM" = "both" ]; then
+            extract_deps_for_platform "cuda"
+          fi
+
       - name: Download all dependencies
         run: |
           PLATFORM="${{ steps.determine.outputs.platform }}"
@@ -141,14 +228,20 @@ jobs:
           download_deps() {
             local platform=$1
             local dest_dir="wheels/${platform}"
+            local req_file="${dest_dir}/requirements.txt"
 
             echo "Downloading dependencies for ${platform}..."
+
+            if [ ! -f "${req_file}" ]; then
+              echo "No requirements file found for ${platform}, skipping"
+              return
+            fi
 
             # For each Python version, download dependencies
             for py_ver in 3.9 3.10 3.11 3.12 3.13; do
               echo "Downloading dependencies for Python ${py_ver}"
 
-              # Download dependencies using current Python (pip handles version compatibility)
+              # Download dependencies using extracted requirements
               python -m pip download \
                 --dest "${dest_dir}" \
                 --only-binary :all: \
@@ -157,14 +250,14 @@ jobs:
                 --platform manylinux_2_17_x86_64 \
                 --platform manylinux_2_27_x86_64 \
                 --platform manylinux_2_28_x86_64 \
-                typer 2>/dev/null || echo "Some downloads failed for Python ${py_ver}"
+                -r "${req_file}" 2>/dev/null || echo "Some downloads failed for Python ${py_ver}"
             done
 
             # Also download using current Python for any missing wheels
             python -m pip download \
               --dest "${dest_dir}" \
               --only-binary :all: \
-              typer || true
+              -r "${req_file}" || true
 
             # Summary
             if [ -d "${dest_dir}" ] && [ "$(ls -A ${dest_dir}/*.whl 2>/dev/null)" ]; then
@@ -197,10 +290,12 @@ jobs:
         run: |
           cd gh-pages-repo
           PLATFORM="${{ steps.determine.outputs.platform }}"
+          VERSION="${{ steps.determine.outputs.version }}"
 
           # Function to generate index for a platform
           generate_index() {
             local platform=$1
+            local version="${VERSION}"
 
             echo "Generating index for ${platform}..."
 
@@ -212,9 +307,19 @@ jobs:
 
             # Create directory structure
             mkdir -p "${platform}/packages"
+            mkdir -p "${platform}/manifests"
 
             # Copy all wheels
             if [ -d "../wheels/${platform}" ] && [ "$(ls -A ../wheels/${platform}/*.whl 2>/dev/null)" ]; then
+              # Extract version number (remove 'v' prefix if present)
+              local clean_version="${version#v}"
+
+              # Remove OLD wheels for the SAME version only
+              echo "Removing old fastsafetensors-${clean_version} wheels..."
+              rm -f "${platform}/packages/fastsafetensors-${clean_version}"-*.whl || true
+
+              # Copy new wheels
+              echo "Copying new wheels..."
               cp ../wheels/${platform}/*.whl "${platform}/packages/"
 
               # Generate package list with just filenames (dumb-pypi doesn't accept paths with /)
@@ -222,6 +327,50 @@ jobs:
 
               echo "Package list contents:"
               cat "${platform}/package-list.txt"
+
+              # Create manifest for this version
+              echo "Creating manifest for version ${clean_version}..."
+              local manifest_file="${platform}/manifests/v${clean_version}.json"
+
+              # Read dependencies from requirements.txt
+              local deps_json="[]"
+              if [ -f "../wheels/${platform}/requirements.txt" ]; then
+                deps_json=$(python3 -c "
+import json
+with open('../wheels/${platform}/requirements.txt') as f:
+    deps = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+print(json.dumps(deps))
+")
+              fi
+
+              # List fastsafetensors wheels
+              local fst_wheels_json=$(cd "${platform}/packages" && python3 -c "
+import json, glob
+wheels = sorted([f for f in glob.glob('fastsafetensors-${clean_version}-*.whl')])
+print(json.dumps(wheels))
+")
+
+              # List all downloaded wheels
+              local all_wheels_json=$(cd "${platform}/packages" && python3 -c "
+import json, glob
+wheels = sorted(glob.glob('*.whl'))
+print(json.dumps(wheels))
+")
+
+              # Create manifest JSON
+              cat > "${manifest_file}" << EOF
+{
+  "fastsafetensors_version": "${clean_version}",
+  "published_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "platform": "${platform}",
+  "dependencies": ${deps_json},
+  "fastsafetensors_wheels": ${fst_wheels_json},
+  "total_wheels_in_index": $(echo ${all_wheels_json} | python3 -c "import json, sys; print(len(json.load(sys.stdin)))")
+}
+EOF
+
+              echo "Created manifest:"
+              cat "${manifest_file}"
 
               # Generate PEP 503 compliant index
               # Note: dumb-pypi expects wheel files to be accessible from where it runs
