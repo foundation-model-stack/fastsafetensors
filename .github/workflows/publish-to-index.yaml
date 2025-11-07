@@ -204,6 +204,12 @@ jobs:
 
             echo "Generating index for ${platform}..."
 
+            # Clean up old index files to avoid conflicts
+            rm -rf "${platform}/simple"
+            rm -f "${platform}/package-list.txt"
+            rm -f "${platform}/index.html"
+            rm -f "${platform}/packages.json"
+
             # Create directory structure
             mkdir -p "${platform}/packages"
 
@@ -211,11 +217,15 @@ jobs:
             if [ -d "../wheels/${platform}" ] && [ "$(ls -A ../wheels/${platform}/*.whl 2>/dev/null)" ]; then
               cp ../wheels/${platform}/*.whl "${platform}/packages/"
 
-              # Generate package list
-              ls "${platform}/packages"/*.whl > "${platform}/package-list.txt"
+              # Generate package list with absolute paths
+              find "${platform}/packages" -name "*.whl" -type f > "${platform}/package-list.txt"
+
+              echo "Package list contents:"
+              cat "${platform}/package-list.txt"
 
               # Generate PEP 503 compliant index
               # Note: dumb-pypi creates a /simple/ subdirectory inside output-dir
+              # packages-url is relative from simple/ to packages/: ../packages
               dumb-pypi \
                 --package-list "${platform}/package-list.txt" \
                 --packages-url ../packages \
@@ -223,6 +233,11 @@ jobs:
                 --title "fastsafetensors ${platform^^} Index"
 
               echo "Generated ${platform} index for $(ls ${platform}/packages/*.whl | wc -l) wheels"
+
+              # Debug: show generated structure
+              echo "Generated structure:"
+              ls -la "${platform}/simple/" || echo "No simple/ directory created"
+              ls -la "${platform}/simple/fastsafetensors/" || echo "No fastsafetensors/ directory created"
             else
               echo "No wheels found for ${platform}, skipping index generation"
             fi
