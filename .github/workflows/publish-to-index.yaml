@@ -215,10 +215,11 @@ jobs:
               ls "${platform}/packages"/*.whl > "${platform}/package-list.txt"
 
               # Generate PEP 503 compliant index
+              # Note: dumb-pypi creates a /simple/ subdirectory inside output-dir
               dumb-pypi \
                 --package-list "${platform}/package-list.txt" \
                 --packages-url ../packages \
-                --output-dir "${platform}/simple" \
+                --output-dir "${platform}" \
                 --title "fastsafetensors ${platform^^} Index"
 
               echo "Generated ${platform} index for $(ls ${platform}/packages/*.whl | wc -l) wheels"
