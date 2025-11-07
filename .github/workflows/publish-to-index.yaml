@@ -1,0 +1,198 @@
+name: Publish ROCm wheels to custom index
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., v0.1.15-rocm)'
+        required: true
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish-to-github-pages:
+    name: Publish to GitHub Pages index
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fastsafetensors-rocm repo
+        uses: actions/checkout@v4
+        with:
+          path: fastsafetensors-rocm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install dumb-pypi
+
+      - name: Download ROCm wheels from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Determine version
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+
+          echo "Downloading wheels for ${VERSION}"
+
+          # Create directory for wheels
+          mkdir -p wheels/rocm
+
+          # Download release assets (wheels) using gh CLI
+          cd wheels/rocm
+          gh release download "${VERSION}" \
+            --repo EmbeddedLLM/fastsafetensors-rocm \
+            --pattern "*.whl"
+
+          ls -lah
+
+      - name: Download all dependencies
+        run: |
+          # Create temporary directory for dependency resolution
+          mkdir -p deps_temp
+
+          # For each Python version, download dependencies
+          for py_ver in 3.9 3.10 3.11 3.12 3.13; do
+            echo "Downloading dependencies for Python ${py_ver}"
+
+            # Create a venv for this Python version to resolve dependencies
+            python${py_ver} -m venv deps_temp/venv${py_ver} 2>/dev/null || {
+              echo "Python ${py_ver} not available, skipping"
+              continue
+            }
+
+            source deps_temp/venv${py_ver}/bin/activate
+            pip install --upgrade pip
+
+            # Download dependencies for fastsafetensors (without fastsafetensors itself)
+            # This gets typer and all of typer's dependencies
+            pip download \
+              --dest wheels/rocm \
+              --only-binary :all: \
+              --python-version ${py_ver} \
+              --platform manylinux2014_x86_64 \
+              --platform manylinux_2_17_x86_64 \
+              --platform manylinux_2_27_x86_64 \
+              --platform manylinux_2_28_x86_64 \
+              typer || echo "Failed to download for Python ${py_ver}"
+
+            deactivate
+          done
+
+          # Also download using current Python for any missing wheels
+          pip download \
+            --dest wheels/rocm \
+            --only-binary :all: \
+            typer
+
+          # Remove duplicates and list what we have
+          cd wheels/rocm
+          # Remove duplicate wheels (keep latest version)
+          # This is a simple deduplication - you might want more sophisticated logic
+          ls -1 *.whl | sort | uniq
+
+          echo "Total wheels collected:"
+          ls -1 *.whl | wc -l
+
+          echo "Wheel breakdown by package:"
+          ls -1 *.whl | sed 's/-[0-9].*//' | sort | uniq -c
+
+      - name: Checkout GitHub Pages repository
+        uses: actions/checkout@v4
+        with:
+          repository: EmbeddedLLM/fastsafetensors-rocm
+          ref: gh-pages
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: gh-pages-repo
+
+      - name: Copy wheels and generate index
+        run: |
+          cd gh-pages-repo
+
+          # Create directory structure
+          mkdir -p rocm/packages
+
+          # Copy all wheels
+          cp ../wheels/rocm/*.whl rocm/packages/
+
+          # Generate package list
+          ls rocm/packages/*.whl > rocm/package-list.txt
+
+          # Generate PEP 503 compliant index
+          dumb-pypi \
+            --package-list rocm/package-list.txt \
+            --packages-url ../packages \
+            --output-dir rocm/simple \
+            --title "fastsafetensors ROCm Index"
+
+          echo "Generated index for $(ls rocm/packages/*.whl | wc -l) wheels"
+
+      - name: Create index README
+        run: |
+          cd gh-pages-repo
+
+          cat > rocm/README.md << 'EOF'
+          # fastsafetensors ROCm Package Index
+
+          This is a custom Python package index for ROCm-built fastsafetensors wheels.
+
+          ## Installation
+
+          ```bash
+          # Install fastsafetensors with ROCm support
+          pip install fastsafetensors --index-url https://embeddedllm.github.io/fastsafetensors-rocm/rocm/simple/
+          ```
+
+          ## Available Packages
+
+          This index includes:
+          - `fastsafetensors` - ROCm builds for Python 3.9-3.13
+          - All dependencies (typer, click, etc.) for multiple Python versions and platforms
+
+          ## What's Included
+
+          EOF
+
+          # List packages with counts
+          echo "### Package Inventory" >> rocm/README.md
+          echo "" >> rocm/README.md
+          ls rocm/packages/*.whl | sed 's/.*\///' | sed 's/-[0-9].*//' | sort | uniq -c | awk '{print "- " $2 ": " $1 " wheels"}' >> rocm/README.md
+
+      - name: Commit and push to gh-pages
+        run: |
+          cd gh-pages-repo
+
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          git add rocm/
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update ROCm index - $(date +%Y-%m-%d)"
+            git push
+            echo "Successfully pushed to gh-pages branch"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Published to GitHub Pages! 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Index URL: https://embeddedllm.github.io/fastsafetensors-rocm/rocm/simple/" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "pip install fastsafetensors --index-url https://embeddedllm.github.io/fastsafetensors-rocm/rocm/simple/" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
