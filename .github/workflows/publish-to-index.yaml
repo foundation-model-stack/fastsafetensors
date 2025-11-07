@@ -15,8 +15,6 @@ on:
           - both
           - rocm
           - cuda
-  release:
-    types: [published]
 
 permissions:
   contents: write
@@ -53,26 +51,11 @@ jobs:
       - name: Determine platform and version
         id: determine
         run: |
-          # Determine version
-          if [ "${{ github.event_name }}" = "release" ]; then
-            VERSION="${{ github.event.release.tag_name }}"
-          else
-            VERSION="${{ github.event.inputs.version }}"
-          fi
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          # Get version and platform from workflow inputs
+          VERSION="${{ github.event.inputs.version }}"
+          PLATFORM="${{ github.event.inputs.platform }}"
 
-          # Determine platform from version tag or input
-          if [ "${{ github.event_name }}" = "release" ]; then
-            if [[ "${VERSION}" == *"rocm"* ]]; then
-              PLATFORM="rocm"
-            elif [[ "${VERSION}" == *"cuda"* ]]; then
-              PLATFORM="cuda"
-            else
-              PLATFORM="both"
-            fi
-          else
-            PLATFORM="${{ github.event.inputs.platform }}"
-          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "platform=${PLATFORM}" >> $GITHUB_OUTPUT
 
           echo "Publishing version: ${VERSION}"
