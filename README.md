@@ -72,7 +72,7 @@ The performance gain example can be found at [amd-perf.md](./docs/amd-perf.md)
 ### Install from Github Source
 
 ```bash
-python3 -m pip install git+https://github.com/foundation-model-stack/fastsafetensors.git
+pip install git+https://github.com/foundation-model-stack/fastsafetensors.git
 ```
 
 ### Install from source
