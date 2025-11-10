@@ -1,13 +1,11 @@
 # Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache-2.0
 
-from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple, Union
 
 from . import cpp as fstcpp
 from .common import SafeTensorsMetadata
-from .copier.gds import GdsFileCopier
-from .copier.nogds import NoGdsFileCopier
+from .copier.base import CopierInterface, DummyDeviceBuffer
 from .frameworks import FrameworkOpBase, ProcessGroupBase, TensorBase
 from .st_types import Device, DType
 
@@ -21,23 +19,17 @@ class LazyTensorFactory:
         local_rank: bool,
         factory_idx_bits: int,
         lidx: int,
-        reader: Union[fstcpp.gds_file_reader, fstcpp.nogds_file_reader],
+        copier: CopierInterface,
         framework: FrameworkOpBase,
         debug_log: bool = False,
+        disable_cache=True,
     ):
         self.framework = framework
         self.metadata = metadata
         self.device = device
-        self.copier: Optional[Union[NoGdsFileCopier, GdsFileCopier]] = None
+        self.copier: Optional[CopierInterface] = None
         if local_rank:
-            if isinstance(reader, fstcpp.nogds_file_reader):
-                self.copier = NoGdsFileCopier(
-                    metadata, device, reader, framework, debug_log
-                )
-            else:
-                self.copier = GdsFileCopier(
-                    metadata, device, reader, framework, debug_log
-                )
+            self.copier = copier
         self.tensors: Dict[str, TensorBase] = {}
         self.shuffled: Dict[str, TensorBase] = {}
         self.gbuf: Optional[fstcpp.gds_device_buffer] = None
@@ -46,6 +38,7 @@ class LazyTensorFactory:
         self.factory_idx_bits = factory_idx_bits
         self.lidx = lidx
         self.next_tag = 1
+        self.disable_cache = disable_cache
 
     def submit_io(self, use_buf_register: bool, max_copy_block_size: int):
         if self.copier is not None:
@@ -160,7 +153,11 @@ class LazyTensorFactory:
                     f"shuffle: scatter, tensor_name={tensor_name}, shape={frame.shape}->{new_frame.shape}, self.rank={self.rank}, pg.rank()={pg.rank()}, rank_slices={rank_slices}, len(scatter_list)={len(scatter_list)}"
                 )
             pg.scatter(dst, scatter_list=scatter_list, src=self.rank)
-        self.shuffled[tensor_name] = dst
+        if not self.disable_cache:
+            # Cache tensor for reuse within the same batch to improve performance.
+            # Note: This requires additional (GPU) memory to store the cached tensors.
+            # Enable this only if you have sufficient (GPU) memory and required.
+            self.shuffled[tensor_name] = dst
         return dst
 
     def shuffle_multi_cols(
@@ -218,7 +215,7 @@ class LazyTensorFactory:
 
     def free_dev_ptrs(self):
         self.tensors = {}
-        if self.gbuf is not None:
+        if self.gbuf is not None and not isinstance(self.gbuf, DummyDeviceBuffer):
             self.framework.free_tensor_memory(self.gbuf, self.device)
             if self.debug_log:
                 print(
