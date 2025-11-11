@@ -5,7 +5,7 @@ import math
 from typing import Any, Dict, List, Optional, OrderedDict, Tuple, Union
 
 from . import cpp as fstcpp
-from .common import SafeTensorsMetadata, TensorFrame, get_device_numa_node
+from .common import SafeTensorsMetadata, TensorFrame, get_device_numa_node, is_gpu_found
 from .copier.gds import new_gds_file_copier
 from .file_buffer import FilesBufferOnDevice
 from .frameworks import FrameworkOpBase, TensorBase, get_framework_op

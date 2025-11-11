@@ -5,7 +5,7 @@ import warnings
 from typing import Dict, Optional
 
 from .. import cpp as fstcpp
-from ..common import SafeTensorsMetadata
+from ..common import SafeTensorsMetadata, is_gpu_found
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface
@@ -30,12 +30,29 @@ class GdsFileCopier(CopierInterface):
         self.fh: Optional[fstcpp.gds_file_handle] = None
         self.copy_reqs: Dict[int, int] = {}
         self.aligned_length = 0
-        cudavers = list(map(int, framework.get_cuda_ver().split(".")))
-        # CUDA 12.2 (GDS version 1.7) introduces support for non O_DIRECT file descriptors
-        # Compatible with CUDA 11.x
-        self.o_direct = not (
-            cudavers[0] > 12 or (cudavers[0] == 12 and cudavers[1] >= 2)
-        )
+        cuda_ver = framework.get_cuda_ver()
+        if cuda_ver and cuda_ver != "0.0":
+            # Parse version string (e.g., "cuda-12.1" or "hip-5.7.0")
+            # Extract the numeric part after the platform prefix
+            ver_parts = cuda_ver.split("-", 1)
+            if len(ver_parts) == 2:
+                cudavers = list(map(int, ver_parts[1].split(".")))
+                # CUDA 12.2 (GDS version 1.7) introduces support for non O_DIRECT file descriptors
+                # Compatible with CUDA 11.x
+                # Only applies to CUDA platform (not ROCm/HIP)
+                if ver_parts[0] == "cuda":
+                    self.o_direct = not (
+                        cudavers[0] > 12 or (cudavers[0] == 12 and cudavers[1] >= 2)
+                    )
+                else:
+                    # ROCm/HIP platform, use O_DIRECT
+                    self.o_direct = True
+            else:
+                # Fallback if format is unexpected
+                self.o_direct = True
+        else:
+            # No GPU platform detected, use O_DIRECT
+            self.o_direct = True
 
     def set_o_direct(self, enable: bool):
         self.o_direct = enable
@@ -151,8 +168,10 @@ def new_gds_file_copier(
     nogds: bool = False,
 ):
     device_is_not_cpu = device.type != DeviceType.CPU
-    if device_is_not_cpu and not fstcpp.is_cuda_found():
-        raise Exception("[FAIL] libcudart.so does not exist")
+    if device_is_not_cpu and not is_gpu_found():
+        raise Exception(
+            "[FAIL] GPU runtime library (libcudart.so or libamdhip64.so) does not exist"
+        )
     if not fstcpp.is_cufile_found() and not nogds:
         warnings.warn(
             "libcufile.so does not exist but nogds is False. use nogds=True",

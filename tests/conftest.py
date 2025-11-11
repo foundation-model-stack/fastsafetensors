@@ -1,15 +1,20 @@
 import os
+import sys
 from typing import List
 
 import pytest
 
 from fastsafetensors import SingleGroup
 from fastsafetensors import cpp as fstcpp
+from fastsafetensors.common import is_gpu_found
 from fastsafetensors.cpp import load_nvidia_functions
 from fastsafetensors.frameworks import FrameworkOpBase, get_framework_op
 from fastsafetensors.st_types import Device
 
+# Add tests directory to path to import platform_utils
 TESTS_DIR = os.path.dirname(__file__)
+from platform_utils import get_platform_info
+
 REPO_ROOT = os.path.dirname(os.path.dirname(TESTS_DIR))
 DATA_DIR = os.path.join(REPO_ROOT, ".testdata")
 TF_DIR = os.path.join(DATA_DIR, "transformers_cache")
@@ -19,6 +24,15 @@ os.makedirs(TMP_DIR, 0o777, True)
 
 load_nvidia_functions()
 FRAMEWORK = get_framework_op(os.getenv("TEST_FASTSAFETENSORS_FRAMEWORK", "please set"))
+
+# Print platform information at test startup
+platform_info = get_platform_info()
+print("\n" + "=" * 60)
+print("Platform Detection:")
+print("=" * 60)
+for key, value in platform_info.items():
+    print(f"  {key}: {value}")
+print("=" * 60 + "\n")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -68,7 +82,7 @@ def pg():
 
 @pytest.fixture(scope="session", autouse=True)
 def dev_init() -> None:
-    if fstcpp.is_cuda_found():
+    if is_gpu_found():
         dev_str = "cuda:0" if FRAMEWORK.get_name() == "pytorch" else "gpu:0"
     else:
         dev_str = "cpu"

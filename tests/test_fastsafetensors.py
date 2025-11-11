@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import sys
 from collections import OrderedDict
 from typing import Any, Dict, List, Tuple
 
@@ -10,12 +11,16 @@ import pytest
 from fastsafetensors import SafeTensorsFileLoader, SafeTensorsMetadata, SingleGroup
 from fastsafetensors import cpp as fstcpp
 from fastsafetensors import fastsafe_open
-from fastsafetensors.common import get_device_numa_node
+from fastsafetensors.common import get_device_numa_node, is_gpu_found
 from fastsafetensors.copier.gds import GdsFileCopier
 from fastsafetensors.copier.nogds import NoGdsFileCopier
 from fastsafetensors.dlpack import from_cuda_buffer
 from fastsafetensors.frameworks import FrameworkOpBase
 from fastsafetensors.st_types import Device, DeviceType, DType
+
+# Add tests directory to path to import platform_utils
+sys.path.insert(0, os.path.dirname(__file__))
+from platform_utils import skip_if_rocm_expected_failure
 
 
 def load_safetensors_file(
@@ -58,7 +63,7 @@ def save_safetensors_file(
 
 
 def get_and_check_device(framework: FrameworkOpBase):
-    dev_is_gpu = fstcpp.is_cuda_found()
+    dev_is_gpu = is_gpu_found()
     device = "cpu"
     if dev_is_gpu:
         if framework.get_name() == "pytorch":
@@ -105,18 +110,27 @@ def test_framework(fstcpp_log, framework) -> None:
         framework.is_equal(t, [float(0.0)])
     with pytest.raises(Exception):
         framework.get_process_group(int(0))
+    # Test that get_cuda_ver() returns a string with platform prefix
+    cuda_ver = framework.get_cuda_ver()
+    assert isinstance(cuda_ver, str)
+    # Should be "hip-X.Y.Z", "cuda-X.Y", or "0.0"
+    assert (
+        cuda_ver.startswith("hip-") or cuda_ver.startswith("cuda-") or cuda_ver == "0.0"
+    )
+
+    # Verify it matches what torch reports
     if framework.get_name() == "pytorch":
         import torch
 
-        cuda_ver = str(torch.version.cuda) if torch.cuda.is_available() else "0.0"
-    elif framework.get_name() == "paddle":
-        import paddle
-
-        if paddle.device.is_compiled_with_cuda():
-            cuda_ver = str(paddle.version.cuda())
+        if torch.cuda.is_available():
+            if hasattr(torch.version, "hip") and torch.version.hip:
+                assert cuda_ver.startswith("hip-")
+                assert str(torch.version.hip) in cuda_ver
+            else:
+                assert cuda_ver.startswith("cuda-")
+                assert str(torch.version.cuda) in cuda_ver
         else:
-            cuda_ver = "0.0"
-    assert framework.get_cuda_ver() == cuda_ver
+            assert cuda_ver == "0.0"
 
 
 def test_get_framework_fail(fstcpp_log) -> None:
@@ -228,10 +242,10 @@ def test_close_gds(fstcpp_log) -> None:
 
 def test_get_device_pci_bus(fstcpp_log) -> None:
     bus = fstcpp.get_device_pci_bus(0)
-    if not fstcpp.is_cuda_found():
+    if not is_gpu_found():
         assert bus == ""
     else:
-        print(f"bus for cuda:0: {bus}")
+        print(f"bus for gpu:0: {bus}")
         assert len(bus) > 0
 
 
@@ -326,6 +340,7 @@ def test_NoGdsFileCopier(fstcpp_log, input_files, framework) -> None:
 
 def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
     print("test_GdsFileCopier")
+    skip_if_rocm_expected_failure("test_GdsFileCopier")
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)
     device, dev_is_gpu = get_and_check_device(framework)
     reader = fstcpp.gds_file_reader(4, dev_is_gpu)

@@ -5,6 +5,7 @@ import pytest
 
 from fastsafetensors import SafeTensorsFileLoader
 from fastsafetensors import cpp as fstcpp
+from fastsafetensors.common import is_gpu_found
 
 
 def test_shuffle(fstcpp_log, input_files, pg, framework):
@@ -14,13 +15,13 @@ def test_shuffle(fstcpp_log, input_files, pg, framework):
 
         rank = pg.rank()
         world_size = pg.size()
-        device = "cuda:0" if fstcpp.is_cuda_found() else "cpu"
+        device = "cuda:0" if is_gpu_found() else "cpu"
     elif framework.get_name() == "paddle":
         from safetensors.paddle import load_file
 
         rank = pg.process_group.rank()
         world_size = pg.process_group.size()
-        device = "gpu:0" if fstcpp.is_cuda_found() else "cpu"
+        device = "gpu:0" if is_gpu_found() else "cpu"
     else:
         raise Exception(f"Unknown framework: {framework.get_name()}")
     loader = SafeTensorsFileLoader(
