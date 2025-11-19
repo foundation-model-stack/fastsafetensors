@@ -71,6 +71,9 @@ typedef struct CUfileDrvProps {
 
 int get_alignment_size();
 void set_debug_log(bool _debug_log);
+void set_gil_release(bool enable);
+bool get_gil_release();
+void init_gil_release_from_env();
 int init_gds();
 int close_gds();
 std::string get_device_pci_bus(int deviceId);

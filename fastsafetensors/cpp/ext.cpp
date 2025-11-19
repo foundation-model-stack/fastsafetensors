@@ -9,6 +9,8 @@
 #include <sys/mman.h>
 #include <chrono>
 #include <dlfcn.h>
+#include <cstdlib>
+#include <algorithm>
 
 #include "cuda_compat.h"
 #include "ext.hpp"
@@ -16,6 +18,7 @@
 #define ALIGN 4096
 
 static bool debug_log = false;
+static bool enable_gil_release = false;
 
 static cpp_metrics_t mc = {.bounce_buffer_bytes = 0};
 
@@ -264,6 +267,28 @@ int get_alignment_size()
 void set_debug_log(bool _debug_log)
 {
     debug_log = _debug_log;
+}
+
+void set_gil_release(bool enable) {
+    enable_gil_release = enable;
+}
+
+bool get_gil_release() {
+    return enable_gil_release;
+}
+
+void init_gil_release_from_env() {
+    const char* env_val = std::getenv("FASTSAFETENSORS_ENABLE_GIL_RELEASE");
+    if (env_val != nullptr) {
+        std::string env_str(env_val);
+        // Convert to lowercase for case-insensitive comparison
+        std::transform(env_str.begin(), env_str.end(), env_str.begin(), ::tolower);
+        enable_gil_release = (env_str == "1" || env_str == "true" || env_str == "yes" || env_str == "on");
+        if (debug_log) {
+            std::printf("[DEBUG] GIL release %s via environment variable FASTSAFETENSORS_ENABLE_GIL_RELEASE=%s\n",
+                       enable_gil_release ? "enabled" : "disabled", env_val);
+        }
+    }
 }
 
 int init_gds()
@@ -741,6 +766,8 @@ cpp_metrics_t get_cpp_metrics() {
 
 PYBIND11_MODULE(__MOD_NAME__, m)
 {
+    // Initialize GIL release setting from environment variable on module load
+    init_gil_release_from_env();
     // Export both is_cuda_found and is_hip_found on all platforms
     // Use string concatenation to prevent hipify from converting the export names
 #ifdef USE_ROCM
@@ -771,6 +798,8 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("gpu_free", &gpu_free);
     m.def("load_nvidia_functions", &load_nvidia_functions);
     m.def("get_cpp_metrics", &get_cpp_metrics);
+    m.def("set_gil_release", &set_gil_release);
+    m.def("get_gil_release", &get_gil_release);
 
     pybind11::class_<gds_device_buffer>(m, "gds_device_buffer")
         .def(pybind11::init<const uintptr_t, const uint64_t, bool>())
@@ -780,18 +809,56 @@ PYBIND11_MODULE(__MOD_NAME__, m)
         .def("get_base_address", &gds_device_buffer::get_base_address)
         .def("get_length", &gds_device_buffer::get_length);
 
+    // Helper lambdas to conditionally apply GIL release
+    auto nogds_submit_read = [](nogds_file_reader& self, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off) {
+        if (enable_gil_release) {
+            pybind11::gil_scoped_release release;
+            return self.submit_read(fd, dst, offset, length, ptr_off);
+        } else {
+            return self.submit_read(fd, dst, offset, length, ptr_off);
+        }
+    };
+
+    auto nogds_wait_read = [](nogds_file_reader& self, const int thread_id) {
+        if (enable_gil_release) {
+            pybind11::gil_scoped_release release;
+            return self.wait_read(thread_id);
+        } else {
+            return self.wait_read(thread_id);
+        }
+    };
+
     pybind11::class_<nogds_file_reader>(m, "nogds_file_reader")
         .def(pybind11::init<const bool, const uint64_t, const int, bool>())
-        .def("submit_read", &nogds_file_reader::submit_read)
-        .def("wait_read", &nogds_file_reader::wait_read);
+        .def("submit_read", nogds_submit_read)
+        .def("wait_read", nogds_wait_read);
 
     pybind11::class_<gds_file_handle>(m, "gds_file_handle")
         .def(pybind11::init<std::string, bool, bool>());
 
+    // Helper lambdas for gds_file_reader to conditionally apply GIL release
+    auto gds_submit_read = [](gds_file_reader& self, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length) {
+        if (enable_gil_release) {
+            pybind11::gil_scoped_release release;
+            return self.submit_read(fh, dst, offset, length, ptr_off, file_length);
+        } else {
+            return self.submit_read(fh, dst, offset, length, ptr_off, file_length);
+        }
+    };
+
+    auto gds_wait_read = [](gds_file_reader& self, const int id) {
+        if (enable_gil_release) {
+            pybind11::gil_scoped_release release;
+            return self.wait_read(id);
+        } else {
+            return self.wait_read(id);
+        }
+    };
+
     pybind11::class_<gds_file_reader>(m, "gds_file_reader")
         .def(pybind11::init<const int, bool>())
-        .def("submit_read", &gds_file_reader::submit_read)
-        .def("wait_read", &gds_file_reader::wait_read);
+        .def("submit_read", gds_submit_read)
+        .def("wait_read", gds_wait_read);
 
     pybind11::class_<cpp_metrics_t>(m, "cpp_metrics")
         .def(pybind11::init<>())
