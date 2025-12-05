@@ -1,7 +1,4 @@
-/*
- * Copyright 2024 IBM Inc. All rights reserved
- * SPDX-License-Identifier: Apache-2.0
- */
+// SPDX-License-Identifier: Apache-2.0
 
 #include <fcntl.h>
 #include <cstring>

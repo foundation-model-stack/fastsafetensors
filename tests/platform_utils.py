@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2024 IBM Inc. All rights reserved
 
 """Utilities for platform detection and conditional test execution."""
 

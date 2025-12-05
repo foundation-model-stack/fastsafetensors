@@ -1,4 +1,3 @@
-# Copyright 2025 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod

@@ -1,7 +1,4 @@
-/*
- * Copyright 2024 IBM Inc. All rights reserved
- * SPDX-License-Identifier: Apache-2.0
- */
+// SPDX-License-Identifier: Apache-2.0
 
 #ifndef __EXT_HPP__
 #define __EXT_HPP__

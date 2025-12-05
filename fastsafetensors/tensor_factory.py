@@ -1,4 +1,3 @@
-# Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache-2.0
 
 from typing import Dict, List, Optional, Tuple, Union
