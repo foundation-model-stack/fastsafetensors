@@ -23,19 +23,6 @@ def detect_platform():
     """
     # Check for ROCm installation
     rocm_path = os.environ.get("ROCM_PATH")
-    if not rocm_path:
-        # Try common ROCm installation paths
-        for path in ["/opt/rocm", "/opt/rocm-*"]:
-            if "*" in path:
-                import glob
-
-                matches = sorted(glob.glob(path), reverse=True)
-                if matches:
-                    rocm_path = matches[0]
-                    break
-            elif os.path.exists(path):
-                rocm_path = path
-                break
 
     # Check if ROCm is available
     if rocm_path and os.path.exists(rocm_path):
