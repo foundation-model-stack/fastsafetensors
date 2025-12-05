@@ -4,12 +4,13 @@ import warnings
 from typing import Dict, Optional
 
 from .. import cpp as fstcpp
-from ..common import SafeTensorsMetadata, is_gpu_found
+from ..common import SafeTensorsMetadata, is_gpu_found, init_logger
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface
 from .nogds import NoGdsFileCopier
 
+logger = init_logger(__name__)
 
 class GdsFileCopier(CopierInterface):
     def __init__(
@@ -18,13 +19,11 @@ class GdsFileCopier(CopierInterface):
         device: Device,
         reader: fstcpp.gds_file_reader,
         framework: FrameworkOpBase,
-        debug_log: bool = False,
     ):
         self.framework = framework
         self.metadata = metadata
         self.device = device
         self.reader = reader
-        self.debug_log = debug_log
         self.gbuf = None
         self.fh: Optional[fstcpp.gds_file_handle] = None
         self.copy_reqs: Dict[int, int] = {}
@@ -142,15 +141,13 @@ class GdsFileCopier(CopierInterface):
                 l = self.aligned_length - misaligned_bytes - count
                 if l > length:
                     l = length
-                if self.debug_log:
-                    print(
-                        "wait_io: fix misalignment, src=0x{:x}, misaligned_bytes={}, count={}, tmp=0x{:x}".format(
-                            gbuf.get_base_address(),
-                            misaligned_bytes,
-                            count,
-                            tmp_gbuf.get_base_address(),
-                        )
-                    )
+                logger.debug(
+                    "wait_io: fix misalignment, src=0x%x, misaligned_bytes=%d, count=%d, tmp=0x%x",
+                    gbuf.get_base_address(),
+                    misaligned_bytes,
+                    count,
+                    tmp_gbuf.get_base_address(),
+                )
                 gbuf.memmove(count, misaligned_bytes + count, tmp_gbuf, l)
                 count += l
             self.framework.free_tensor_memory(tmp_gbuf, self.device)
@@ -199,9 +196,8 @@ def new_gds_file_copier(
             metadata: SafeTensorsMetadata,
             device: Device,
             framework: FrameworkOpBase,
-            debug_log: bool = False,
         ) -> CopierInterface:
-            return NoGdsFileCopier(metadata, device, nogds_reader, framework, debug_log)
+            return NoGdsFileCopier(metadata, device, nogds_reader, framework)
 
         return construct_nogds_copier
 
@@ -211,8 +207,7 @@ def new_gds_file_copier(
         metadata: SafeTensorsMetadata,
         device: Device,
         framework: FrameworkOpBase,
-        debug_log: bool = False,
     ) -> CopierInterface:
-        return GdsFileCopier(metadata, device, reader, framework, debug_log)
+        return GdsFileCopier(metadata, device, reader, framework)
 
     return construct_copier

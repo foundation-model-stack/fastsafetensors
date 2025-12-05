@@ -6,12 +6,21 @@ import sys
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+import logging
 
 from . import cpp as fstcpp
 from .dlpack import from_cuda_buffer
 from .frameworks import FrameworkOpBase, TensorBase
 from .st_types import Device, DType
 
+def init_logger(name: str):
+    return logging.getLogger(name)
+
+def set_debug():
+    logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.DEBUG, force=True)
+
+def is_debug(logger: logging.Logger) -> bool:
+    return logger.isEnabledFor(logging.DEBUG)
 
 def is_gpu_found():
     """Check if any GPU (CUDA or HIP) is available.
@@ -80,7 +89,7 @@ class SafeTensorsMetadata:
                     f"validate(tensor {k}): InvalidOffset s={s}, start={start}, e={e}, src={src}"
                 )
             # if (header_length + s) % CUDA_PTR_ALIGN > 0:
-            #    print(f"[WARNING] misaligned tensor is detected at {header_length + s}. this will cause cuda pointer alignment errors later.")
+            #    logger.warning(f"misaligned tensor is detected at {header_length + s}. this will cause cuda pointer alignment errors later.")
             start = e
             nelements = 1
             for sh in t.shape:
