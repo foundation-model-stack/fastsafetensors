@@ -14,7 +14,7 @@ from .tensor_factory import LazyTensorFactory
 
 gl_set_numa = False
 
-loaded_nvidia = False
+loaded_library = False
 
 
 class BaseSafeTensorsFileLoader:
@@ -182,14 +182,14 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
         self.device = self.framework.get_device(device, self.pg)
 
         fstcpp.set_debug_log(debug_log)
-        global loaded_nvidia
-        if not loaded_nvidia:
-            fstcpp.load_nvidia_functions()
+        global loaded_library
+        if not loaded_library:
+            fstcpp.load_library_functions()
             if not nogds:
                 # no need to init gds and consume 10s+ in none-gds case
                 if fstcpp.init_gds() != 0:
                     raise Exception(f"[FAIL] init_gds()")
-            loaded_nvidia = True
+            loaded_library = True
 
         copier = new_gds_file_copier(self.device, bbuf_size_kb, max_threads, nogds)
         super().__init__(
