@@ -173,7 +173,7 @@ def new_gds_file_copier(
             "[FAIL] GPU runtime library (libcudart.so or libamdhip64.so) does not exist"
         )
     if device_is_not_cpu and not nogds:
-        gds_supported = fstcpp.is_gds_supported(device.index)
+        gds_supported = fstcpp.is_gds_supported(device.index if device.index is not None else 0)
         if gds_supported < 0:
             raise Exception(f"is_gds_supported({device.index}) failed")
         if not fstcpp.is_cufile_found():
