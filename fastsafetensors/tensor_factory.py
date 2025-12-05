@@ -10,6 +10,7 @@ from .st_types import Device, DType
 
 logger = init_logger(__name__)
 
+
 class LazyTensorFactory:
     def __init__(
         self,
@@ -42,7 +43,9 @@ class LazyTensorFactory:
         if self.copier is not None:
             self.gbuf = self.copier.submit_io(use_buf_register, max_copy_block_size)
             if self.gbuf:
-                logger.debug("submit_io: new buf, addr=0x%x", self.gbuf.get_base_address())
+                logger.debug(
+                    "submit_io: new buf, addr=0x%x", self.gbuf.get_base_address()
+                )
 
     def wait_io(self, dtype: DType = DType.AUTO, noalign: bool = False):
         if self.copier is not None and self.gbuf is not None:
@@ -66,13 +69,19 @@ class LazyTensorFactory:
         if pg.rank() != dst_rank and pg.rank() != src_rank:
             logger.debug(
                 "push: skip, tensor_name=%s, dst_rank=%d, pg.rank()=%d, tag=%d",
-                tensor_name, dst_rank, pg.rank(), tag,
+                tensor_name,
+                dst_rank,
+                pg.rank(),
+                tag,
             )
             return None
         elif pg.rank() == dst_rank and src_rank == dst_rank:
             logger.debug(
                 "push: nocopy, tensor_name=%s, dst_rank=%d, pg.rank()=%d, tag=%d",
-                tensor_name, dst_rank, pg.rank(), tag
+                tensor_name,
+                dst_rank,
+                pg.rank(),
+                tag,
             )
             return self.tensors[tensor_name].clone().detach()
         frame = self.metadata.tensors[tensor_name]
@@ -84,14 +93,22 @@ class LazyTensorFactory:
             t = self.tensors[tensor_name].clone().detach()
             logger.debug(
                 "push: send, tensor_name=%s, shape=%s, dst_rank=%d, pg.rank()=%d, tag=%d",
-                tensor_name, frame.shape, dst_rank, pg.rank(), tag,
+                tensor_name,
+                frame.shape,
+                dst_rank,
+                pg.rank(),
+                tag,
             )
             pg.send(t, dst_rank, tag=tag)
             return None
 
         logger.debug(
             "push: recv, tensor_name=%s, shape=%s, src_rank=%d, pg.rank()=%d, tag=%d",
-            tensor_name, frame.shape, src_rank, pg.rank(), tag
+            tensor_name,
+            frame.shape,
+            src_rank,
+            pg.rank(),
+            tag,
         )
 
         t = self.framework.get_empty_tensor(frame.shape, frame.dtype, self.device)
@@ -115,7 +132,11 @@ class LazyTensorFactory:
                 )
             logger.debug(
                 "shuffle: broadcast, tensor_name=%s, shape=%s, self.rank=%d, pg.rank()=%d, has_tensor=%s",
-                tensor_name, frame.shape, self.rank, pg.rank(), tensor_name in self.tensors,
+                tensor_name,
+                frame.shape,
+                self.rank,
+                pg.rank(),
+                tensor_name in self.tensors,
             )
             pg.broadcast(dst, self.rank)
         else:
@@ -147,7 +168,13 @@ class LazyTensorFactory:
                 ]  # scatter requires contiguous tensor
             logger.debug(
                 "shuffle: scatter, tensor_name=%s, shape=%s->%s, self.rank=%d, pg.rank()=%d, rank_slices=%s, len(scatter_list)=%s",
-                tensor_name, frame.shape, new_frame.shape, self.rank, pg.rank(), rank_slices, len(scatter_list),
+                tensor_name,
+                frame.shape,
+                new_frame.shape,
+                self.rank,
+                pg.rank(),
+                rank_slices,
+                len(scatter_list),
             )
             pg.scatter(dst, scatter_list=scatter_list, src=self.rank)
         if not self.disable_cache:
@@ -204,7 +231,12 @@ class LazyTensorFactory:
                 )
         logger.debug(
             "shuffle_multi_cols: scatter, tensor_name=%s, shape=%s->%s, self.rank=%d, pg.rank()=%d, len(scatter_list)=%s",
-            tensor_name, frame.shape, new_shape, self.rank, pg.rank(), len(scatter_list),
+            tensor_name,
+            frame.shape,
+            new_shape,
+            self.rank,
+            pg.rank(),
+            len(scatter_list),
         )
         dst = self.framework.get_empty_tensor(new_shape, frame.dtype, self.device)
         pg.scatter(dst, scatter_list=scatter_list, src=self.rank)
@@ -215,7 +247,6 @@ class LazyTensorFactory:
         if self.gbuf is not None and not isinstance(self.gbuf, DummyDeviceBuffer):
             self.framework.free_tensor_memory(self.gbuf, self.device)
             logger.debug(
-                "free_dev_ptrs: delete buf, addr=0x%x",
-                self.gbuf.get_base_address()
+                "free_dev_ptrs: delete buf, addr=0x%x", self.gbuf.get_base_address()
             )
             self.gbuf = None

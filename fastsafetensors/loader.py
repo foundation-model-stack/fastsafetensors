@@ -4,7 +4,13 @@ import math
 from typing import Any, Dict, List, Optional, OrderedDict, Tuple, Union
 
 from . import cpp as fstcpp
-from .common import SafeTensorsMetadata, TensorFrame, get_device_numa_node, init_logger, set_debug
+from .common import (
+    SafeTensorsMetadata,
+    TensorFrame,
+    get_device_numa_node,
+    init_logger,
+    set_debug,
+)
 from .copier.gds import new_gds_file_copier
 from .file_buffer import FilesBufferOnDevice
 from .frameworks import TensorBase, get_framework_op
@@ -90,8 +96,9 @@ class BaseSafeTensorsFileLoader:
                     self.meta[realpath] = (metadata, rank)
                     self.frames.update(metadata.tensors)
                     if rank == self.pg.rank():
-                        logger.debug("add_filenames %d: path=%s",
-                                     len(self.meta), realpath)
+                        logger.debug(
+                            "add_filenames %d: path=%s", len(self.meta), realpath
+                        )
                     rank_next_idx[rank] = next_idx + 1
                 else:
                     completed += 1
@@ -117,9 +124,7 @@ class BaseSafeTensorsFileLoader:
         factory_idx_bits = math.ceil(math.log2(len(self.meta) + 1))
         lidx = 1
         for _, (meta, rank) in sorted(self.meta.items(), key=lambda x: x[0]):
-            copier = self.copier_constructor(
-                meta, self.device, self.framework
-            )
+            copier = self.copier_constructor(meta, self.device, self.framework)
             self_rank = self.pg.rank() == rank
             factory = LazyTensorFactory(
                 meta,

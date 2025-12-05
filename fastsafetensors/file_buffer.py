@@ -3,12 +3,13 @@
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
+from .common import init_logger
 from .frameworks import FrameworkOpBase, ProcessGroupBase, TensorBase
 from .st_types import Device, DType
 from .tensor_factory import LazyTensorFactory
-from .common import init_logger
 
 logger = init_logger(__name__)
+
 
 class FilesBufferOnDevice:
     r"""Device buffer for .safetensors files.
@@ -90,7 +91,8 @@ class FilesBufferOnDevice:
                 if self.pg.rank() == rank:
                     logger.debug(
                         "_get_tensor: free_dev_ptrs, lidx=%d, src=%s",
-                        lidx, loader.metadata.src,
+                        lidx,
+                        loader.metadata.src,
                     )
                 loader.free_dev_ptrs()
         return ret.to(device=device, dtype=dtype)
@@ -197,7 +199,9 @@ class FilesBufferOnDevice:
                     if self.pg.rank() == rank:
                         logger.debug(
                             "get_multi_cols: free_dev_ptrs, rank=%d, lidx=%d, src=%s",
-                            rank, lidx, loader.metadata.src,
+                            rank,
+                            lidx,
+                            loader.metadata.src,
                         )
                     loader.free_dev_ptrs()
         return ret.to(device=device, dtype=dtype)
@@ -214,7 +218,8 @@ class FilesBufferOnDevice:
                     if self.pg.rank() == rank:
                         logger.debug(
                             "as_dict: free_dev_ptrs, rank=%d, src=%s",
-                            rank, loader.metadata.src,
+                            rank,
+                            loader.metadata.src,
                         )
                     loader.free_dev_ptrs()
         if self.auto_mem_delete:

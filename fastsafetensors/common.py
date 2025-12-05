@@ -1,26 +1,32 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import logging
 import os
 import sys
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
-import logging
 
 from . import cpp as fstcpp
 from .dlpack import from_cuda_buffer
 from .frameworks import FrameworkOpBase, TensorBase
 from .st_types import Device, DType
 
+
 def init_logger(name: str):
     return logging.getLogger(name)
 
+
 def set_debug():
-    logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.DEBUG, force=True)
+    logging.basicConfig(
+        format="[%(levelname)s] %(message)s", level=logging.DEBUG, force=True
+    )
+
 
 def is_debug(logger: logging.Logger) -> bool:
     return logger.isEnabledFor(logging.DEBUG)
+
 
 def is_gpu_found():
     """Check if any GPU (CUDA or HIP) is available.
