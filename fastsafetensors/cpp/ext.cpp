@@ -301,9 +301,10 @@ void init_gil_release_from_env() {
 
 int is_gds_supported(int deviceId)
 {
-    cudaError_t err;
-    int driverVersion = 0;
+#ifndef USE_ROCM
     int gdr_support = 1;
+    int driverVersion = 0;
+    cudaError_t err;
 
     err = cuda_fns.cudaDriverGetVersion(&driverVersion);
     if (err != cudaSuccess) {
@@ -319,6 +320,9 @@ int is_gds_supported(int deviceId)
         }
     }
     return gdr_support;
+#endif
+    // ROCm does not have GDS
+    return 0;
 }
 
 int init_gds()
