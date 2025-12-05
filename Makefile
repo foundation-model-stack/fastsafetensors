@@ -21,6 +21,10 @@ unittest:
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_1 CUDA_VISIBLE_DEVICES="" pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py && \
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_2 pytest -s --cov=$(FST_DIR) -s tests/test_vllm.py
 
+test-vllm:
+	@FST_DIR=$(FST_DIR); \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_2 pytest -s --cov=$(FST_DIR) -s tests/test_vllm.py
+
 unittest-parallel:
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_3 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 tests/test_multi.py --cov=$(FST_DIR) -s tests/test_multi.py > /tmp/3.log 2>&1 & \
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_4 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 tests/test_multi.py --cov=$(FST_DIR) -s tests/test_multi.py > /tmp/4.log 2>&1 & \
