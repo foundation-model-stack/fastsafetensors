@@ -39,6 +39,7 @@ typedef struct CUfileError { CUfileOpError err; } CUfileError_t;
 // Define minimal CUDA/HIP types for both platforms to avoid compile-time dependencies
 // We load all GPU functions dynamically at runtime via dlopen()
 typedef enum cudaError { cudaSuccess = 0, cudaErrorMemoryAllocation = 2 } cudaError_t;
+enum cudaDeviceAttr {cudaDevAttrGPUDirectRDMASupported = 116};
 // Platform-specific enum values - CUDA and HIP have different values for HostToDevice
 #ifdef USE_ROCM
 enum cudaMemcpyKind { cudaMemcpyHostToDevice=1, cudaMemcpyDefault = 4 };
@@ -212,6 +213,8 @@ typedef struct ext_funcs {
     cudaError_t (*cudaDeviceMalloc)(void **, size_t);
     cudaError_t (*cudaDeviceFree)(void *);
     int (*numa_run_on_node)(int);
+    cudaError_t (*cudaDriverGetVersion)(int *);
+    cudaError_t (*cudaDeviceGetAttribute)(int *, enum cudaDeviceAttr, int);
 } ext_funcs_t;
 
 typedef struct cpp_metrics {
