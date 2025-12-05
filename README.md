@@ -72,11 +72,11 @@ The performance gain example can be found at [amd-perf.md](./docs/amd-perf.md)
 ### Install from Github Source
 
 ```bash
-pip install git+https://github.com/foundation-model-stack/fastsafetensors.git
+ROCM_PATH=/opt/rocm pip install git+https://github.com/foundation-model-stack/fastsafetensors.git
 ```
 
 ### Install from source
 
 ```bash
-pip install .
+ROCM_PATH=/opt/rocm pip install .
 ```

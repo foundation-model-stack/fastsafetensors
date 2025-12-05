@@ -1,6 +1,6 @@
 [project]
 name = "fastsafetensors"
-version = "0.1.15"
+version = "0.2.0"
 description = "High-performance safetensors model loader"
 authors = [{name = "Takeshi Yoshimura", email = "tyos@jp.ibm.com"}]
 maintainers = [{name = "Takeshi Yoshimura", email = "tyos@jp.ibm.com"}]

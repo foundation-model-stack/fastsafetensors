@@ -16,7 +16,6 @@ class ExampleCopier(CopierInterface):
         device: Device,
         reader,
         framework: FrameworkOpBase,
-        debug_log: bool = False,
     ):
         pass
 
@@ -49,8 +48,7 @@ def new_gds_file_copier(
         metadata: SafeTensorsMetadata,
         device: Device,
         framework: FrameworkOpBase,
-        debug_log: bool = False,
     ) -> CopierInterface:
-        return ExampleCopier(metadata, device, reader, framework, debug_log)
+        return ExampleCopier(metadata, device, reader, framework)
 
     return construct_copier

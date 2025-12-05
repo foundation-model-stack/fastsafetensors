@@ -1,7 +1,7 @@
-# Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import logging
 import os
 import sys
 from collections import OrderedDict
@@ -12,6 +12,20 @@ from . import cpp as fstcpp
 from .dlpack import from_cuda_buffer
 from .frameworks import FrameworkOpBase, TensorBase
 from .st_types import Device, DType
+
+
+def init_logger(name: str):
+    return logging.getLogger(name)
+
+
+def set_debug():
+    logging.basicConfig(
+        format="[%(levelname)s] %(message)s", level=logging.DEBUG, force=True
+    )
+
+
+def is_debug(logger: logging.Logger) -> bool:
+    return logger.isEnabledFor(logging.DEBUG)
 
 
 def is_gpu_found():
@@ -81,7 +95,7 @@ class SafeTensorsMetadata:
                     f"validate(tensor {k}): InvalidOffset s={s}, start={start}, e={e}, src={src}"
                 )
             # if (header_length + s) % CUDA_PTR_ALIGN > 0:
-            #    print(f"[WARNING] misaligned tensor is detected at {header_length + s}. this will cause cuda pointer alignment errors later.")
+            #    logger.warning(f"misaligned tensor is detected at {header_length + s}. this will cause cuda pointer alignment errors later.")
             start = e
             nelements = 1
             for sh in t.shape:

@@ -1,7 +1,4 @@
-/*
- * Copyright 2024 IBM Inc. All rights reserved
- * SPDX-License-Identifier: Apache-2.0
- */
+// SPDX-License-Identifier: Apache-2.0
 
 #include <fcntl.h>
 #include <cstring>
@@ -91,7 +88,7 @@ template <typename T> void mydlsym(T** h, void* lib, std::string const& name) {
     *h = reinterpret_cast<T*>(dlsym(lib, name.c_str()));
 }
 
-static void load_nvidia_functions() {
+static void load_library_functions() {
     cudaError_t (*cudaGetDeviceCount)(int*);
     const char* cufileLib = "libcufile.so.0";
     const char* cudartLib = GPU_RUNTIME_LIB;
@@ -148,7 +145,13 @@ static void load_nvidia_functions() {
             mydlsym(&cuda_fns.cudaDeviceGetPCIBusId, handle_cudart, "cudaDeviceGetPCIBusId");
             mydlsym(&cuda_fns.cudaDeviceMalloc, handle_cudart, "cudaMalloc");
             mydlsym(&cuda_fns.cudaDeviceFree, handle_cudart, "cudaFree");
-            bool success = cuda_fns.cudaMemcpy && cuda_fns.cudaDeviceSynchronize && cuda_fns.cudaHostAlloc && cuda_fns.cudaFreeHost && cuda_fns.cudaDeviceGetPCIBusId && cuda_fns.cudaDeviceMalloc && cuda_fns.cudaDeviceFree;
+            mydlsym(&cuda_fns.cudaDriverGetVersion, handle_cudart, "cudaDriverGetVersion");
+            mydlsym(&cuda_fns.cudaDeviceGetAttribute, handle_cudart, "cudaDeviceGetAttribute");
+            bool success = cuda_fns.cudaMemcpy && cuda_fns.cudaDeviceSynchronize;
+            success = success && cuda_fns.cudaHostAlloc && cuda_fns.cudaFreeHost;
+            success = success && cuda_fns.cudaDeviceGetPCIBusId && cuda_fns.cudaDeviceMalloc;
+            success = success && cuda_fns.cudaDeviceFree && cuda_fns.cudaDriverGetVersion;
+            success = success && cuda_fns.cudaDeviceGetAttribute;
             if (!success) {
                 cuda_found = false;
                 if (init_log) {
@@ -159,6 +162,8 @@ static void load_nvidia_functions() {
             }
         }
         dlclose(handle_cudart);
+    } else if (init_log) {
+        fprintf(stderr, "[DEBUG] %s is not installed. fallback\n", cudartLib);
     }
     if (!cuda_found) {
         cuda_fns.cudaMemcpy = cpu_cudaMemcpy;
@@ -289,6 +294,32 @@ void init_gil_release_from_env() {
                        enable_gil_release ? "enabled" : "disabled", env_val);
         }
     }
+}
+
+int is_gds_supported(int deviceId)
+{
+#ifndef USE_ROCM
+    int gdr_support = 1;
+    int driverVersion = 0;
+    cudaError_t err;
+
+    err = cuda_fns.cudaDriverGetVersion(&driverVersion);
+    if (err != cudaSuccess) {
+        std::fprintf(stderr, "is_gds_supported: cudaDriverGetVersion failed, deviceId=%d, err=%d\n", deviceId, err);
+        return -1;
+    }
+
+    if (driverVersion > 11030) {
+        err = cuda_fns.cudaDeviceGetAttribute(&gdr_support, cudaDevAttrGPUDirectRDMASupported, deviceId);
+        if (err != cudaSuccess) {
+            std::fprintf(stderr, "is_gds_supported: cudaDeviceGetAttribute failed, deviceId=%d, err=%d\n", deviceId, err);
+            return -1;
+        }
+    }
+    return gdr_support;
+#endif
+    // ROCm does not have GDS
+    return 0;
 }
 
 int init_gds()
@@ -787,6 +818,7 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("cufile_version", &cufile_version);
     m.def("set_debug_log", &set_debug_log);
     m.def("get_alignment_size", &get_alignment_size);
+    m.def("is_gds_supported", &is_gds_supported);
     m.def("init_gds", &init_gds);
     m.def("close_gds", &close_gds);
     m.def("get_device_pci_bus", &get_device_pci_bus);
@@ -796,7 +828,7 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("cpu_free", &cpu_free);
     m.def("gpu_malloc", &gpu_malloc);
     m.def("gpu_free", &gpu_free);
-    m.def("load_nvidia_functions", &load_nvidia_functions);
+    m.def("load_library_functions", &load_library_functions);
     m.def("get_cpp_metrics", &get_cpp_metrics);
     m.def("set_gil_release", &set_gil_release);
     m.def("get_gil_release", &get_gil_release);

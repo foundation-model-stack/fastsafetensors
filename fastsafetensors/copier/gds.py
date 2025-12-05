@@ -1,15 +1,16 @@
-# Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
 from typing import Dict, Optional
 
 from .. import cpp as fstcpp
-from ..common import SafeTensorsMetadata, is_gpu_found
+from ..common import SafeTensorsMetadata, init_logger, is_gpu_found
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface
 from .nogds import NoGdsFileCopier
+
+logger = init_logger(__name__)
 
 
 class GdsFileCopier(CopierInterface):
@@ -19,13 +20,11 @@ class GdsFileCopier(CopierInterface):
         device: Device,
         reader: fstcpp.gds_file_reader,
         framework: FrameworkOpBase,
-        debug_log: bool = False,
     ):
         self.framework = framework
         self.metadata = metadata
         self.device = device
         self.reader = reader
-        self.debug_log = debug_log
         self.gbuf = None
         self.fh: Optional[fstcpp.gds_file_handle] = None
         self.copy_reqs: Dict[int, int] = {}
@@ -143,15 +142,13 @@ class GdsFileCopier(CopierInterface):
                 l = self.aligned_length - misaligned_bytes - count
                 if l > length:
                     l = length
-                if self.debug_log:
-                    print(
-                        "wait_io: fix misalignment, src=0x{:x}, misaligned_bytes={}, count={}, tmp=0x{:x}".format(
-                            gbuf.get_base_address(),
-                            misaligned_bytes,
-                            count,
-                            tmp_gbuf.get_base_address(),
-                        )
-                    )
+                logger.debug(
+                    "wait_io: fix misalignment, src=0x%x, misaligned_bytes=%d, count=%d, tmp=0x%x",
+                    gbuf.get_base_address(),
+                    misaligned_bytes,
+                    count,
+                    tmp_gbuf.get_base_address(),
+                )
                 gbuf.memmove(count, misaligned_bytes + count, tmp_gbuf, l)
                 count += l
             self.framework.free_tensor_memory(tmp_gbuf, self.device)
@@ -172,12 +169,24 @@ def new_gds_file_copier(
         raise Exception(
             "[FAIL] GPU runtime library (libcudart.so or libamdhip64.so) does not exist"
         )
-    if not fstcpp.is_cufile_found() and not nogds:
-        warnings.warn(
-            "libcufile.so does not exist but nogds is False. use nogds=True",
-            UserWarning,
+    if device_is_not_cpu and not nogds:
+        gds_supported = fstcpp.is_gds_supported(
+            device.index if device.index is not None else 0
         )
-        nogds = True
+        if gds_supported < 0:
+            raise Exception(f"is_gds_supported({device.index}) failed")
+        if not fstcpp.is_cufile_found():
+            warnings.warn(
+                "libcufile.so does not exist but nogds is False. use nogds=True",
+                UserWarning,
+            )
+            nogds = True
+        elif gds_supported == 0:
+            warnings.warn(
+                "GDS is not supported in this platform but nogds is False. use nogds=True",
+                UserWarning,
+            )
+            nogds = True
 
     if nogds:
         nogds_reader = fstcpp.nogds_file_reader(
@@ -188,9 +197,8 @@ def new_gds_file_copier(
             metadata: SafeTensorsMetadata,
             device: Device,
             framework: FrameworkOpBase,
-            debug_log: bool = False,
         ) -> CopierInterface:
-            return NoGdsFileCopier(metadata, device, nogds_reader, framework, debug_log)
+            return NoGdsFileCopier(metadata, device, nogds_reader, framework)
 
         return construct_nogds_copier
 
@@ -200,8 +208,7 @@ def new_gds_file_copier(
         metadata: SafeTensorsMetadata,
         device: Device,
         framework: FrameworkOpBase,
-        debug_log: bool = False,
     ) -> CopierInterface:
-        return GdsFileCopier(metadata, device, reader, framework, debug_log)
+        return GdsFileCopier(metadata, device, reader, framework)
 
     return construct_copier
