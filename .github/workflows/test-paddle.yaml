@@ -48,6 +48,7 @@ jobs:
           fi
           pip install torch==${torch_ver} --index-url https://download.pytorch.org/whl/cpu # transformers requires torch
           pip install paddlepaddle==3.0.0
+          # TOFIX: safetensors version (0.7.0 had a bug around fp8 in Dec 5 2025)
           pip install pytest pytest-cov setuptools_scm safetensors==0.6.2 transformers==${tf_ver} numpy==${npy_ver}
       - name: Build Package
         run: |
