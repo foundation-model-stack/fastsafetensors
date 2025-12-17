@@ -172,12 +172,24 @@ def new_gds_file_copier(
         raise Exception(
             "[FAIL] GPU runtime library (libcudart.so or libamdhip64.so) does not exist"
         )
-    if not fstcpp.is_cufile_found() and not nogds:
-        warnings.warn(
-            "libcufile.so does not exist but nogds is False. use nogds=True",
-            UserWarning,
+    if device_is_not_cpu and not nogds:
+        gds_supported = fstcpp.is_gds_supported(
+            device.index if device.index is not None else 0
         )
-        nogds = True
+        if gds_supported < 0:
+            raise Exception(f"is_gds_supported({device.index}) failed")
+        if not fstcpp.is_cufile_found():
+            warnings.warn(
+                "libcufile.so does not exist but nogds is False. use nogds=True",
+                UserWarning,
+            )
+            nogds = True
+        elif gds_supported == 0:
+            warnings.warn(
+                "GDS is not supported in this platform but nogds is False. use nogds=True",
+                UserWarning,
+            )
+            nogds = True
 
     if nogds:
         nogds_reader = fstcpp.nogds_file_reader(
