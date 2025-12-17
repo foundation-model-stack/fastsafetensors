@@ -1,4 +1,3 @@
-# Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache-2.0
 
 PODMAN := $(shell podman -v 2> /dev/null)
@@ -19,6 +18,10 @@ unittest:
 	@FST_DIR=$(FST_DIR); \
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_0 pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py && \
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_1 CUDA_VISIBLE_DEVICES="" pytest -s --cov=$(FST_DIR) tests/test_fastsafetensors.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_2 pytest -s --cov=$(FST_DIR) -s tests/test_vllm.py
+
+test-vllm:
+	@FST_DIR=$(FST_DIR); \
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_2 pytest -s --cov=$(FST_DIR) -s tests/test_vllm.py
 
 unittest-parallel:

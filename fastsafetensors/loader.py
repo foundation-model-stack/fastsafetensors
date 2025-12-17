@@ -1,20 +1,27 @@
-# Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache-2.0
 
 import math
 from typing import Any, Dict, List, Optional, OrderedDict, Tuple, Union
 
 from . import cpp as fstcpp
-from .common import SafeTensorsMetadata, TensorFrame, get_device_numa_node, is_gpu_found
+from .common import (
+    SafeTensorsMetadata,
+    TensorFrame,
+    get_device_numa_node,
+    init_logger,
+    set_debug,
+)
 from .copier.gds import new_gds_file_copier
 from .file_buffer import FilesBufferOnDevice
-from .frameworks import FrameworkOpBase, TensorBase, get_framework_op
-from .st_types import Device, DeviceType, DType
+from .frameworks import TensorBase, get_framework_op
+from .st_types import Device, DType
 from .tensor_factory import LazyTensorFactory
 
 gl_set_numa = False
 
-loaded_nvidia = False
+loaded_library = False
+
+logger = init_logger(__name__)
 
 
 class BaseSafeTensorsFileLoader:
@@ -38,14 +45,12 @@ class BaseSafeTensorsFileLoader:
         copier_constructor,
         set_numa: bool = True,
         disable_cache: bool = True,
-        debug_log: bool = False,
         framework="pytorch",
         **kwargs,
     ):
         self.framework = get_framework_op(framework)
         self.pg = self.framework.get_process_group(pg)
         self.device = device
-        self.debug_log = debug_log
         self.meta: Dict[str, Tuple[SafeTensorsMetadata, int]] = {}
         self.frames = OrderedDict[str, TensorFrame]()
         self.disable_cache = disable_cache
@@ -90,8 +95,10 @@ class BaseSafeTensorsFileLoader:
                     metadata = SafeTensorsMetadata.from_file(realpath, self.framework)
                     self.meta[realpath] = (metadata, rank)
                     self.frames.update(metadata.tensors)
-                    if self.debug_log and rank == self.pg.rank():
-                        print(f"add_filenames {len(self.meta)}: path={realpath}")
+                    if rank == self.pg.rank():
+                        logger.debug(
+                            "add_filenames %d: path=%s", len(self.meta), realpath
+                        )
                     rank_next_idx[rank] = next_idx + 1
                 else:
                     completed += 1
@@ -117,9 +124,7 @@ class BaseSafeTensorsFileLoader:
         factory_idx_bits = math.ceil(math.log2(len(self.meta) + 1))
         lidx = 1
         for _, (meta, rank) in sorted(self.meta.items(), key=lambda x: x[0]):
-            copier = self.copier_constructor(
-                meta, self.device, self.framework, self.debug_log
-            )
+            copier = self.copier_constructor(meta, self.device, self.framework)
             self_rank = self.pg.rank() == rank
             factory = LazyTensorFactory(
                 meta,
@@ -130,7 +135,6 @@ class BaseSafeTensorsFileLoader:
                 lidx,
                 copier,
                 self.framework,
-                self.debug_log,
                 disable_cache=self.disable_cache,
             )
             factory.submit_io(use_buf_register, max_copy_block_size)
@@ -182,14 +186,16 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
         self.device = self.framework.get_device(device, self.pg)
 
         fstcpp.set_debug_log(debug_log)
-        global loaded_nvidia
-        if not loaded_nvidia:
-            fstcpp.load_nvidia_functions()
+        if debug_log:
+            set_debug()
+        global loaded_library
+        if not loaded_library:
+            fstcpp.load_library_functions()
             if not nogds:
                 # no need to init gds and consume 10s+ in none-gds case
                 if fstcpp.init_gds() != 0:
                     raise Exception(f"[FAIL] init_gds()")
-            loaded_nvidia = True
+            loaded_library = True
 
         copier = new_gds_file_copier(self.device, bbuf_size_kb, max_threads, nogds)
         super().__init__(
@@ -198,7 +204,6 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
             copier,
             set_numa,
             disable_cache,
-            debug_log,
             framework,
             **kwargs,
         )

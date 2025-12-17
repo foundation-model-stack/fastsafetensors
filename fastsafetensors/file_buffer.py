@@ -1,12 +1,14 @@
-# Copyright 2024 IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache-2.0
 
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
+from .common import init_logger
 from .frameworks import FrameworkOpBase, ProcessGroupBase, TensorBase
 from .st_types import Device, DType
 from .tensor_factory import LazyTensorFactory
+
+logger = init_logger(__name__)
 
 
 class FilesBufferOnDevice:
@@ -86,9 +88,11 @@ class FilesBufferOnDevice:
         if self.auto_mem_delete:
             self.instantiated[rank][lidx][tensor_name] = True
             if len(self.instantiated[rank][lidx]) == len(loader.metadata.tensors):
-                if loader.debug_log and self.pg.rank() == rank:
-                    print(
-                        f"_get_tensor: free_dev_ptrs, lidx={lidx}, src={loader.metadata.src}"
+                if self.pg.rank() == rank:
+                    logger.debug(
+                        "_get_tensor: free_dev_ptrs, lidx=%d, src=%s",
+                        lidx,
+                        loader.metadata.src,
                     )
                 loader.free_dev_ptrs()
         return ret.to(device=device, dtype=dtype)
@@ -192,9 +196,12 @@ class FilesBufferOnDevice:
                 loader = self.rank_loaders[rank][lidix]
                 self.instantiated[rank][lidx][tensor_name] = True
                 if len(self.instantiated[rank][lidx]) == len(loader.metadata.tensors):
-                    if loader.debug_log and self.pg.rank() == rank:
-                        print(
-                            f"get_multi_cols: free_dev_ptrs, rank={rank}, lidx={lidx}, src={loader.metadata.src}"
+                    if self.pg.rank() == rank:
+                        logger.debug(
+                            "get_multi_cols: free_dev_ptrs, rank=%d, lidx=%d, src=%s",
+                            rank,
+                            lidx,
+                            loader.metadata.src,
                         )
                     loader.free_dev_ptrs()
         return ret.to(device=device, dtype=dtype)
@@ -208,9 +215,11 @@ class FilesBufferOnDevice:
             if self.auto_mem_delete:
                 self.instantiated[rank][lidx][tensor_name] = True
                 if len(self.instantiated[rank][lidx]) == len(loader.metadata.tensors):
-                    if loader.debug_log and self.pg.rank() == rank:
-                        print(
-                            f"as_dict: free_dev_ptrs, rank={rank}, src={loader.metadata.src}"
+                    if self.pg.rank() == rank:
+                        logger.debug(
+                            "as_dict: free_dev_ptrs, rank=%d, src=%s",
+                            rank,
+                            loader.metadata.src,
                         )
                     loader.free_dev_ptrs()
         if self.auto_mem_delete:

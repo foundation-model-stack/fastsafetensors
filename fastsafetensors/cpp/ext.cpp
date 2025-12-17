@@ -1,7 +1,4 @@
-/*
- * Copyright 2024 IBM Inc. All rights reserved
- * SPDX-License-Identifier: Apache-2.0
- */
+// SPDX-License-Identifier: Apache-2.0
 
 #include <fcntl.h>
 #include <cstring>
@@ -91,7 +88,7 @@ template <typename T> void mydlsym(T** h, void* lib, std::string const& name) {
     *h = reinterpret_cast<T*>(dlsym(lib, name.c_str()));
 }
 
-static void load_nvidia_functions() {
+static void load_library_functions() {
     cudaError_t (*cudaGetDeviceCount)(int*);
     const char* cufileLib = "libcufile.so.0";
     const char* cudartLib = GPU_RUNTIME_LIB;
@@ -831,7 +828,7 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("cpu_free", &cpu_free);
     m.def("gpu_malloc", &gpu_malloc);
     m.def("gpu_free", &gpu_free);
-    m.def("load_nvidia_functions", &load_nvidia_functions);
+    m.def("load_library_functions", &load_library_functions);
     m.def("get_cpp_metrics", &get_cpp_metrics);
     m.def("set_gil_release", &set_gil_release);
     m.def("get_gil_release", &get_gil_release);

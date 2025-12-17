@@ -1,4 +1,3 @@
-# Copyright 2024- IBM Inc. All rights reserved
 # SPDX-License-Identifier: Apache-2.0
 
 import os
@@ -325,7 +324,7 @@ def test_NoGdsFileCopier(fstcpp_log, input_files, framework) -> None:
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)
     device, dev_is_gpu = get_and_check_device(framework)
     reader = fstcpp.nogds_file_reader(False, 256 * 1024, 4, dev_is_gpu)
-    copier = NoGdsFileCopier(meta, device, reader, framework, True)
+    copier = NoGdsFileCopier(meta, device, reader, framework)
     gbuf = copier.submit_io(False, 10 * 1024 * 1024 * 1024)
     tensors = copier.wait_io(gbuf)
     for key, exp in load_safetensors_file(input_files[0], device, framework).items():
@@ -344,7 +343,7 @@ def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)
     device, dev_is_gpu = get_and_check_device(framework)
     reader = fstcpp.gds_file_reader(4, dev_is_gpu)
-    copier = GdsFileCopier(meta, device, reader, framework, True)
+    copier = GdsFileCopier(meta, device, reader, framework)
     gbuf = copier.submit_io(False, 10 * 1024 * 1024 * 1024)
     tensors = copier.wait_io(gbuf)
     for key, exp in load_safetensors_file(input_files[0], device, framework).items():
