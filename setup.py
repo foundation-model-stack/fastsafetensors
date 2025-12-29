@@ -20,8 +20,8 @@ def detect_platform():
             rocm_version: ROCm version string (e.g., '7.0.1') or None
             rocm_path: Path to ROCm installation or None
     """
-    # Check for ROCm installation
-    rocm_path = os.environ.get("ROCM_PATH")
+    # Safely get ROCM_PATH from environment variables, or use the default
+    rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
 
     # Check if ROCm is available
     if rocm_path and os.path.exists(rocm_path):
