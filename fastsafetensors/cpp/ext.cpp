@@ -57,6 +57,7 @@ static cudaError_t cpu_cudaDeviceGetPCIBusId(char * in, int s, int) {
         in[0] = 0;
     return cudaSuccess;
 }
+static cudaError_t cpu_cudaSetDevice(int) { return cudaSuccess; }
 static int cpu_numa_run_on_node(int) {return 0; }
 
 ext_funcs_t cpu_fns = ext_funcs_t {
@@ -75,6 +76,7 @@ ext_funcs_t cpu_fns = ext_funcs_t {
     .cudaFreeHost = cpu_cudaFreeHost,
     .cudaDeviceGetPCIBusId = cpu_cudaDeviceGetPCIBusId,
     .numa_run_on_node = cpu_numa_run_on_node,
+    .cudaSetDevice = cpu_cudaSetDevice,
 };
 ext_funcs_t cuda_fns;
 
@@ -147,11 +149,12 @@ static void load_library_functions() {
             mydlsym(&cuda_fns.cudaDeviceFree, handle_cudart, "cudaFree");
             mydlsym(&cuda_fns.cudaDriverGetVersion, handle_cudart, "cudaDriverGetVersion");
             mydlsym(&cuda_fns.cudaDeviceGetAttribute, handle_cudart, "cudaDeviceGetAttribute");
+            mydlsym(&cuda_fns.cudaSetDevice, handle_cudart, "cudaSetDevice");
             bool success = cuda_fns.cudaMemcpy && cuda_fns.cudaDeviceSynchronize;
             success = success && cuda_fns.cudaHostAlloc && cuda_fns.cudaFreeHost;
             success = success && cuda_fns.cudaDeviceGetPCIBusId && cuda_fns.cudaDeviceMalloc;
             success = success && cuda_fns.cudaDeviceFree && cuda_fns.cudaDriverGetVersion;
-            success = success && cuda_fns.cudaDeviceGetAttribute;
+            success = success && cuda_fns.cudaDeviceGetAttribute && cuda_fns.cudaSetDevice;
             if (!success) {
                 cuda_found = false;
                 if (init_log) {
@@ -171,6 +174,7 @@ static void load_library_functions() {
         cuda_fns.cudaHostAlloc = cpu_cudaHostAlloc;
         cuda_fns.cudaFreeHost = cpu_cudaFreeHost;
         cuda_fns.cudaDeviceGetPCIBusId = cpu_cudaDeviceGetPCIBusId;
+        cuda_fns.cudaSetDevice = cpu_cudaSetDevice;
     }
 
     cufile_found = false;
@@ -498,9 +502,16 @@ const int gds_device_buffer::memmove(uint64_t _dst_off, uint64_t _src_off, const
 }
 
 
-void nogds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off, thread_states_t *s) {
+void nogds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const int device_id, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off, thread_states_t *s) {
     void * src = nullptr;
     cudaError_t err;
+
+    // Set the CUDA device for this thread. New std::threads do not inherit the
+    // parent thread's CUDA device and default to device 0, which would create
+    // an unwanted CUDA context on device 0.
+    if (device_id >= 0) {
+        fns->cudaSetDevice(device_id);
+    }
     int64_t count;
     bool failed = false;
     void * buffer = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(s->_read_buffer) + s->_bbuf_size_kb * 1024 * (thread_id % s->_max_threads));
@@ -600,7 +611,7 @@ const int nogds_file_reader::submit_read(const int fd, const gds_device_buffer& 
         t->join();
         delete(t);
     }
-    t = new std::thread(nogds_file_reader::_thread, thread_id, _fns, fd, dst, offset, length, ptr_off, &this->_s);
+    t = new std::thread(nogds_file_reader::_thread, thread_id, _fns, this->_device_id, fd, dst, offset, length, ptr_off, &this->_s);
     this->_threads[thread_id % this->_s._max_threads] = t;
     if (debug_log) {
         std::printf("[DEBUG] nogds_file_reader.submit_read #3, thread_id=%d\n", thread_id);
@@ -707,7 +718,13 @@ raw_gds_file_handle::~raw_gds_file_handle() {
     }
 }
 
-void gds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, thread_states_t *s) {
+void gds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const int device_id, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, thread_states_t *s) {
+    // Set the CUDA device for this thread. New std::threads do not inherit the
+    // parent thread's CUDA device and default to device 0, which would create
+    // an unwanted CUDA context on device 0.
+    if (device_id >= 0) {
+        fns->cudaSetDevice(device_id);
+    }
     ssize_t count = 0;
     void * devPtr_base = dst._get_raw_pointer(ptr_off, length);
     std::chrono::steady_clock::time_point begin, begin_notify;
@@ -768,7 +785,7 @@ const int gds_file_reader::submit_read(const gds_file_handle &fh, const gds_devi
         t->join();
         delete(t);
     }
-    t = new std::thread(_thread, id, _fns, fh, dst, offset, length, ptr_off, file_length, &this->_s);
+    t = new std::thread(_thread, id, _fns, this->_device_id, fh, dst, offset, length, ptr_off, file_length, &this->_s);
     this->_threads[thread_index] = t;
     return id;
 }
@@ -861,7 +878,7 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     };
 
     pybind11::class_<nogds_file_reader>(m, "nogds_file_reader")
-        .def(pybind11::init<const bool, const uint64_t, const int, bool>())
+        .def(pybind11::init<const bool, const uint64_t, const int, bool, int>())
         .def("submit_read", nogds_submit_read)
         .def("wait_read", nogds_wait_read);
 
@@ -888,7 +905,7 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     };
 
     pybind11::class_<gds_file_reader>(m, "gds_file_reader")
-        .def(pybind11::init<const int, bool>())
+        .def(pybind11::init<const int, bool, int>())
         .def("submit_read", gds_submit_read)
         .def("wait_read", gds_wait_read);
 
