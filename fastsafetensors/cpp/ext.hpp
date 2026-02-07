@@ -127,6 +127,7 @@ private:
     std::condition_variable _cond;
     std::thread ** _threads; // TOFIX
     ext_funcs_t * _fns;
+    int _device_id;
 
     typedef struct thread_states {
         std::mutex _result_mutex;
@@ -139,13 +140,13 @@ private:
     } thread_states_t;
     thread_states_t _s;
 public:
-    nogds_file_reader(const bool use_mmap, const uint64_t bbuf_size_kb, const uint64_t max_threads, bool use_cuda):
-        _next_thread_id(1), _threads(nullptr), _fns(use_cuda?&cuda_fns:&cpu_fns),
+    nogds_file_reader(const bool use_mmap, const uint64_t bbuf_size_kb, const uint64_t max_threads, bool use_cuda, int device_id):
+        _next_thread_id(1), _threads(nullptr), _fns(use_cuda?&cuda_fns:&cpu_fns), _device_id(device_id),
         _s(thread_states_t{._read_buffer = nullptr, ._use_mmap = use_mmap,
             ._bbuf_size_kb = (bbuf_size_kb + max_threads - 1)/max_threads, ._max_threads = max_threads})
          {}
 
-    static void _thread(const int thread_id, ext_funcs_t *fns, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off, thread_states_t *s); // not exposed to python
+    static void _thread(const int thread_id, ext_funcs_t *fns, const int device_id, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off, thread_states_t *s); // not exposed to python
     const int submit_read(const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off);
     const uintptr_t wait_read(const int thread_id);
     ~nogds_file_reader();
@@ -185,9 +186,10 @@ private:
     } thread_states_t;
     thread_states_t _s;
     ext_funcs_t *_fns;
+    int _device_id;
 public:
-    gds_file_reader(const int max_threads, bool use_cuda): _next_id(1), _threads(nullptr), _s(thread_states_t{._max_threads = max_threads}), _fns(use_cuda?&cuda_fns:&cpu_fns) {}
-    static void _thread(const int thread_id, ext_funcs_t *fns, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, thread_states_t *s);
+    gds_file_reader(const int max_threads, bool use_cuda, int device_id): _next_id(1), _threads(nullptr), _s(thread_states_t{._max_threads = max_threads}), _fns(use_cuda?&cuda_fns:&cpu_fns), _device_id(device_id) {}
+    static void _thread(const int thread_id, ext_funcs_t *fns, const int device_id, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, thread_states_t *s);
     const int submit_read(const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length);
     const ssize_t wait_read(const int id);
 };
@@ -212,6 +214,7 @@ typedef struct ext_funcs {
     int (*numa_run_on_node)(int);
     cudaError_t (*cudaDriverGetVersion)(int *);
     cudaError_t (*cudaDeviceGetAttribute)(int *, enum cudaDeviceAttr, int);
+    cudaError_t (*cudaSetDevice)(int);
 } ext_funcs_t;
 
 typedef struct cpp_metrics {
