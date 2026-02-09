@@ -12,7 +12,12 @@ class gds_device_buffer:
 
 class nogds_file_reader:
     def __init__(
-        self, use_mmap: bool, bbuf_size_kb: int, max_threads: int, use_cuda: bool, device_id: int
+        self,
+        use_mmap: bool,
+        bbuf_size_kb: int,
+        max_threads: int,
+        use_cuda: bool,
+        device_id: int,
     ) -> None: ...
     def submit_read(
         self, fd: int, dst: gds_device_buffer, offset: int, length: int, ptr_off: int

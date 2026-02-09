@@ -81,7 +81,9 @@ def run_nogds_file_read(
     size = meta.size_bytes - meta.header_length
     device, dev_is_gpu = get_and_check_device(framework)
     gbuf = framework.alloc_tensor_memory(size, device)
-    reader = fstcpp.nogds_file_reader(False, 20 * 1024, 1, dev_is_gpu, device.index or 0)
+    reader = fstcpp.nogds_file_reader(
+        False, 20 * 1024, 1, dev_is_gpu, device.index or 0
+    )
     req = reader.submit_read(fd, gbuf, meta.header_length, size, 0)
     assert req > 0
     assert reader.wait_read(req) >= 0
@@ -296,7 +298,9 @@ def test_nogds_file_reader(fstcpp_log, input_files, framework) -> None:
     assert fd > 0
     device, dev_is_gpu = get_and_check_device(framework)
     gbuf = framework.alloc_tensor_memory(s.st_size, device)
-    reader = fstcpp.nogds_file_reader(False, 256 * 1024, 4, dev_is_gpu, device.index or 0)
+    reader = fstcpp.nogds_file_reader(
+        False, 256 * 1024, 4, dev_is_gpu, device.index or 0
+    )
     step = s.st_size // 4
     reqs = []
     off = 0
@@ -323,7 +327,9 @@ def test_NoGdsFileCopier(fstcpp_log, input_files, framework) -> None:
     print("test_NoGdsFileCopier")
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)
     device, dev_is_gpu = get_and_check_device(framework)
-    reader = fstcpp.nogds_file_reader(False, 256 * 1024, 4, dev_is_gpu, device.index or 0)
+    reader = fstcpp.nogds_file_reader(
+        False, 256 * 1024, 4, dev_is_gpu, device.index or 0
+    )
     copier = NoGdsFileCopier(meta, device, reader, framework)
     gbuf = copier.submit_io(False, 10 * 1024 * 1024 * 1024)
     tensors = copier.wait_io(gbuf)
