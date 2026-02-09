@@ -101,6 +101,11 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
     def broadcast(self, dst: TorchTensor, rank: int) -> None:
         if self.real_pg:
             dist.broadcast(dst.real_tensor, rank, group=self.real_pg)
+            # Synchronize to ensure the NCCL broadcast (which runs on
+            # the NCCL internal stream) is fully visible on the default
+            # compute stream before callers read the tensor data.
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
     def scatter(
         self,
@@ -111,6 +116,11 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
         if self.real_pg:
             sl = [t.real_tensor for t in scatter_list]
             dist.scatter(dst.real_tensor, scatter_list=sl, src=src, group=self.real_pg)
+            # Synchronize to ensure the NCCL scatter (which runs on
+            # the NCCL internal stream) is fully visible on the default
+            # compute stream before callers read the tensor data.
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
     def send(
         self,
@@ -129,6 +139,11 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
     ):
         if self.real_pg:
             dist.recv(t.real_tensor, src_rank, group=self.real_pg, tag=tag)
+            # Synchronize to ensure the NCCL recv (which runs on
+            # the NCCL internal stream) is fully visible on the default
+            # compute stream before callers read the tensor data.
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
 
 class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
