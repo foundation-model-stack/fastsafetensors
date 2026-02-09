@@ -63,11 +63,11 @@ class FilesBufferOnDevice:
     def get_filename(self, tensor_name: str) -> str:
         if tensor_name not in self.key_to_rank_lidx:
             return ""
-        (rank, lidx) = self.key_to_rank_lidx[tensor_name]
+        rank, lidx = self.key_to_rank_lidx[tensor_name]
         return self.rank_loaders[rank][lidx].metadata.src
 
     def get_shape(self, tensor_name: str) -> List[int]:
-        (rank, lidx) = self._get_rank_lidx(tensor_name)
+        rank, lidx = self._get_rank_lidx(tensor_name)
         return self.rank_loaders[rank][lidx].metadata.tensors[tensor_name].shape
 
     def _get_rank_lidx(self, tensor_name: str) -> Tuple[int, int]:
@@ -104,7 +104,7 @@ class FilesBufferOnDevice:
         device: Optional[Device] = None,
         dtype: DType = DType.AUTO,
     ) -> TensorBase:
-        (rank, lidix) = self._get_rank_lidx(tensor_name)
+        rank, lidix = self._get_rank_lidx(tensor_name)
         t = self.rank_loaders[rank][lidix].shuffle(self.pg, tensor_name, dim)
         return self._get_tensor(rank, lidix, tensor_name, t, device, dtype)
 
@@ -157,7 +157,7 @@ class FilesBufferOnDevice:
         The destination rank will call torch.distributed.recv.
         Other ranks do nothing.
         """
-        (rank, lidix) = self._get_rank_lidx(tensor_name)
+        rank, lidix = self._get_rank_lidx(tensor_name)
         t = self.rank_loaders[rank][lidix].push(self.pg, tensor_name, dst_rank, rank)
         if t:
             return self._get_tensor(
@@ -192,7 +192,7 @@ class FilesBufferOnDevice:
         ret = self.framework.concat_tensors(ts, dim=dim)
         if self.auto_mem_delete:
             for tensor_name in tensor_names:
-                (rank, lidx) = self._get_rank_lidx(tensor_name)
+                rank, lidx = self._get_rank_lidx(tensor_name)
                 loader = self.rank_loaders[rank][lidix]
                 self.instantiated[rank][lidx][tensor_name] = True
                 if len(self.instantiated[rank][lidx]) == len(loader.metadata.tensors):
@@ -209,7 +209,7 @@ class FilesBufferOnDevice:
     def as_dict(self, tensor_shard_dim: OrderedDict[str, int]) -> Dict[str, TensorBase]:
         tensors: Dict[str, TensorBase] = {}
         for tensor_name, dim in tensor_shard_dim.items():
-            (rank, lidx) = self._get_rank_lidx(tensor_name)
+            rank, lidx = self._get_rank_lidx(tensor_name)
             loader = self.rank_loaders[rank][lidx]
             tensors[tensor_name] = loader.shuffle(self.pg, tensor_name, dim)
             if self.auto_mem_delete:

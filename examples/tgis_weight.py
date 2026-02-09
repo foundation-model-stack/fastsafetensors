@@ -92,7 +92,7 @@ class FastWeights:
         aliases: Optional[Dict[str, List[str]]] = None,
         prefix: Optional[str] = None,
     ):
-        (nogds, max_copier_threads, bbuf_size_kb_total) = get_config(device.index)
+        nogds, max_copier_threads, bbuf_size_kb_total = get_config(device.index)
         st_dtype = dtype_convert[dtype]
         self._loader = SafeTensorsFileLoader(
             pg,
