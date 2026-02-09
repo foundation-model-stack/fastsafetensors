@@ -62,7 +62,7 @@ class DLDevice(ctypes.Structure):
 
 class c_DLDataType(ctypes.Structure):
     def __init__(self, dtype: DType):
-        (self.type_code, self.bits, self.lanes) = self.STDataToDL[dtype]
+        self.type_code, self.bits, self.lanes = self.STDataToDL[dtype]
 
     kDLInt = 0
     kDLUInt = 1
