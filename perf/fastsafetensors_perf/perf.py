@@ -273,7 +273,7 @@ def start_sysstat(
 
 
 def stop_sysstat(id: int):
-    (dool, iostat, iostat_f, memtrace_file) = mon_procs[id]
+    dool, iostat, iostat_f, memtrace_file = mon_procs[id]
     dool.terminate()
     iostat.terminate()
     try:
@@ -441,7 +441,7 @@ def run_mmap_sharded_internal(
     for _, files in sorted(rank_filenames.items(), key=lambda x: x[0]):
         for f in files:
             filenames.append(f)
-    (key_pats, layer_prefix) = get_key_pats(sten_collection_json, model_name)
+    key_pats, layer_prefix = get_key_pats(sten_collection_json, model_name)
 
     t0 = time.time_ns()
     fb = FilesBufferOnMmap(
@@ -598,7 +598,7 @@ def run_gds_sharded_internal(
     if pg is None:
         return
     filenames = get_sten_files(sten_collection_json, model_name, pg.size())
-    (key_pats, layer_prefix) = get_key_pats(sten_collection_json, model_name)
+    key_pats, layer_prefix = get_key_pats(sten_collection_json, model_name)
 
     t0 = time.time_ns()
     if not nogds and exclude_gds_init:
