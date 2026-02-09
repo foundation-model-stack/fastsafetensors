@@ -106,7 +106,8 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
             # Synchronize to ensure the NCCL broadcast (which runs on
             # the NCCL internal stream) is fully visible on the default
             # compute stream before callers read the tensor data.
-            paddle.device.cuda.synchronize()
+            if paddle.device.is_compiled_with_cuda():
+                paddle.device.cuda.synchronize()
 
     def scatter(
         self,
@@ -125,7 +126,8 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
             # Synchronize to ensure the NCCL scatter (which runs on
             # the NCCL internal stream) is fully visible on the default
             # compute stream before callers read the tensor data.
-            paddle.device.cuda.synchronize()
+            if paddle.device.is_compiled_with_cuda():
+                paddle.device.cuda.synchronize()
 
     def send(
         self,
@@ -147,7 +149,8 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
             # Synchronize to ensure the NCCL recv (which runs on
             # the NCCL internal stream) is fully visible on the default
             # compute stream before callers read the tensor data.
-            paddle.device.cuda.synchronize()
+            if paddle.device.is_compiled_with_cuda():
+                paddle.device.cuda.synchronize()
 
 
 class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):

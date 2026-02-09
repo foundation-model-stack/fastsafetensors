@@ -104,7 +104,8 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
             # Synchronize to ensure the NCCL broadcast (which runs on
             # the NCCL internal stream) is fully visible on the default
             # compute stream before callers read the tensor data.
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
     def scatter(
         self,
@@ -118,7 +119,8 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
             # Synchronize to ensure the NCCL scatter (which runs on
             # the NCCL internal stream) is fully visible on the default
             # compute stream before callers read the tensor data.
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
     def send(
         self,
@@ -140,7 +142,8 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
             # Synchronize to ensure the NCCL recv (which runs on
             # the NCCL internal stream) is fully visible on the default
             # compute stream before callers read the tensor data.
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
 
 class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
