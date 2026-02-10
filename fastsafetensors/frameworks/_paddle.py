@@ -137,6 +137,11 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
     ) -> None:
         if self.real_pg:
             pdist.send(t.real_tensor, dst_rank, group=self.real_pg)
+            # Synchronize to ensure the NCCL recv (which runs on
+            # the NCCL internal stream) is fully visible on the default
+            # compute stream before callers read the tensor data.
+            if paddle.device.is_compiled_with_cuda():
+                paddle.device.cuda.synchronize()
 
     def recv(
         self,
