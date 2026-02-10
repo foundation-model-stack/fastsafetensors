@@ -130,6 +130,11 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
     ):
         if self.real_pg:
             dist.send(t.real_tensor, dst_rank, group=self.real_pg, tag=tag)
+            # Synchronize to ensure the NCCL scatter (which runs on
+            # the NCCL internal stream) is fully visible on the default
+            # compute stream before callers read the tensor data.
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
     def recv(
         self,
