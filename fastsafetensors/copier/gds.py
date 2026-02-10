@@ -188,9 +188,10 @@ def new_gds_file_copier(
             )
             nogds = True
 
+    device_id = device.index if device.index is not None else 0
     if nogds:
         nogds_reader = fstcpp.nogds_file_reader(
-            False, bbuf_size_kb, max_threads, device_is_not_cpu
+            False, bbuf_size_kb, max_threads, device_is_not_cpu, device_id
         )
 
         def construct_nogds_copier(
@@ -202,7 +203,7 @@ def new_gds_file_copier(
 
         return construct_nogds_copier
 
-    reader = fstcpp.gds_file_reader(max_threads, device_is_not_cpu)
+    reader = fstcpp.gds_file_reader(max_threads, device_is_not_cpu, device_id)
 
     def construct_copier(
         metadata: SafeTensorsMetadata,
