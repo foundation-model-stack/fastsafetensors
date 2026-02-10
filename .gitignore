@@ -13,6 +13,9 @@ htmlcov/
 *.so
 examples/paddle_case/log
 
+# Pre-commit
+.pre-commit-cache/
+
 # Auto-generated hipified files and directories (created during ROCm build)
 fastsafetensors/cpp/hip/
 fastsafetensors/cpp/*.hip.*

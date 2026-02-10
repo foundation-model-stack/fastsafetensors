@@ -21,6 +21,13 @@ test = [
     "safetensors>=0.4.0",
     "vllm>=0.8.2"
 ]
+dev = [
+    "pre-commit>=3.6.0",
+    "black==25.11.0",
+    "isort==6.1.0",
+    "flake8==7.3.0",
+    "mypy==1.19.1"
+]
 
 [project.urls]
 Repository = "https://github.com/foundation-model-stack/fastsafetensors"

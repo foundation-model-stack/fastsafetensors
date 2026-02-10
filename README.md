@@ -40,6 +40,44 @@ with fastsafe_open(filenames=[filename], nogds=True, device="cpu", debug_log=Tru
         t = f.get_tensor(key).clone().detach() # clone if t is used outside
 ```
 
+## Development
+
+### Pre-commit Hooks
+
+This repository uses pre-commit hooks for automatic code formatting and linting. To set up:
+
+1. Install development dependencies:
+```bash
+pip install -e ".[dev]"
+```
+
+2. Install pre-commit hooks:
+```bash
+pre-commit install
+```
+
+Now, every time you commit, the following checks will run automatically:
+- **black**: Code formatting
+- **isort**: Import sorting
+- **flake8**: Basic linting (syntax errors, undefined names)
+- **mypy**: Type checking
+- **trailing-whitespace**: Remove trailing whitespace
+- **end-of-file-fixer**: Ensure files end with a newline
+- **check-yaml**: Validate YAML files
+- **check-toml**: Validate TOML files
+- **check-merge-conflict**: Detect merge conflict markers
+- **debug-statements**: Detect debug statements
+
+To manually run pre-commit on all files:
+```bash
+pre-commit run --all-files
+```
+
+To skip pre-commit hooks (not recommended):
+```bash
+git commit --no-verify
+```
+
 ## Code of Conduct
 
 Please refer to [Foundation Model Stack Community Code of Conduct](https://github.com/foundation-model-stack/foundation-model-stack/blob/main/code-of-conduct.md).
