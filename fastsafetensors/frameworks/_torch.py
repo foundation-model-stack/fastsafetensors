@@ -88,6 +88,18 @@ class TorchTensor(TensorBase):
         return TorchTensor(self.device, self.dtype, self.real_tensor[_val])
 
 
+def _needs_fp8_cast() -> bool:
+    """Check if FP8 NCCL ops need a bf16 workaround (pre-sm90 GPUs)."""
+    if not torch.cuda.is_available():
+        return False
+    major, _ = torch.cuda.get_device_capability()
+    return major < 9
+
+
+def _is_fp8(dtype: DType) -> bool:
+    return dtype in (DType.F8_E5M2, DType.F8_E4M3)
+
+
 @dataclass
 class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
     real_pg: Optional[dist.ProcessGroup]
@@ -100,10 +112,13 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
 
     def broadcast(self, dst: TorchTensor, rank: int) -> None:
         if self.real_pg:
-            dist.broadcast(dst.real_tensor, rank, group=self.real_pg)
-            # Synchronize to ensure the NCCL broadcast (which runs on
-            # the NCCL internal stream) is fully visible on the default
-            # compute stream before callers read the tensor data.
+            if _is_fp8(dst.dtype) and _needs_fp8_cast():
+                buf = dst.real_tensor.to(torch.bfloat16)
+                dist.broadcast(buf, rank, group=self.real_pg)
+                dst.real_tensor.copy_(buf.to(dst.real_tensor.dtype))
+                del buf
+            else:
+                dist.broadcast(dst.real_tensor, rank, group=self.real_pg)
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
 
@@ -114,11 +129,17 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
         src: int,
     ) -> None:
         if self.real_pg:
-            sl = [t.real_tensor for t in scatter_list]
-            dist.scatter(dst.real_tensor, scatter_list=sl, src=src, group=self.real_pg)
-            # Synchronize to ensure the NCCL scatter (which runs on
-            # the NCCL internal stream) is fully visible on the default
-            # compute stream before callers read the tensor data.
+            if _is_fp8(dst.dtype) and _needs_fp8_cast():
+                sl = [t.real_tensor.to(torch.bfloat16) for t in scatter_list]
+                buf = dst.real_tensor.to(torch.bfloat16)
+                dist.scatter(buf, scatter_list=sl, src=src, group=self.real_pg)
+                dst.real_tensor.copy_(buf.to(dst.real_tensor.dtype))
+                del buf, sl
+            else:
+                sl = [t.real_tensor for t in scatter_list]
+                dist.scatter(
+                    dst.real_tensor, scatter_list=sl, src=src, group=self.real_pg
+                )
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
 
@@ -129,10 +150,12 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
         tag: int,
     ):
         if self.real_pg:
-            dist.send(t.real_tensor, dst_rank, group=self.real_pg, tag=tag)
-            # Synchronize to ensure the NCCL scatter (which runs on
-            # the NCCL internal stream) is fully visible on the default
-            # compute stream before callers read the tensor data.
+            if _is_fp8(t.dtype) and _needs_fp8_cast():
+                buf = t.real_tensor.to(torch.bfloat16)
+                dist.send(buf, dst_rank, group=self.real_pg, tag=tag)
+                del buf
+            else:
+                dist.send(t.real_tensor, dst_rank, group=self.real_pg, tag=tag)
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
 
@@ -143,10 +166,13 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
         tag: int,
     ):
         if self.real_pg:
-            dist.recv(t.real_tensor, src_rank, group=self.real_pg, tag=tag)
-            # Synchronize to ensure the NCCL recv (which runs on
-            # the NCCL internal stream) is fully visible on the default
-            # compute stream before callers read the tensor data.
+            if _is_fp8(t.dtype) and _needs_fp8_cast():
+                buf = t.real_tensor.to(torch.bfloat16)
+                dist.recv(buf, src_rank, group=self.real_pg, tag=tag)
+                t.real_tensor.copy_(buf.to(t.real_tensor.dtype))
+                del buf
+            else:
+                dist.recv(t.real_tensor, src_rank, group=self.real_pg, tag=tag)
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
 
