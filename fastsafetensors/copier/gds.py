@@ -8,7 +8,8 @@ from ..common import SafeTensorsMetadata, init_logger, is_gpu_found
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface
-from .nogds import NoGdsFileCopier
+from .nogds import load_library_func, new_nogds_file_copier
+from .registry import CopierConstructFunc, register_copier_constructor
 
 logger = init_logger(__name__)
 
@@ -158,17 +159,31 @@ class GdsFileCopier(CopierInterface):
         )
 
 
+_inited_gds = False
+
+
+def init_gds():
+    load_library_func()
+    global _inited_gds
+    if not _inited_gds:
+        if fstcpp.init_gds() != 0:
+            raise Exception(f"[FAIL] init_gds()")
+        _inited_gds = True
+
+
+@register_copier_constructor("gds")
 def new_gds_file_copier(
     device: Device,
     bbuf_size_kb: int = 16 * 1024,
     max_threads: int = 16,
-    nogds: bool = False,
-):
+) -> CopierConstructFunc:
+    init_gds()
     device_is_not_cpu = device.type != DeviceType.CPU
     if device_is_not_cpu and not is_gpu_found():
         raise Exception(
             "[FAIL] GPU runtime library (libcudart.so or libamdhip64.so) does not exist"
         )
+    nogds = False
     if device_is_not_cpu and not nogds:
         gds_supported = fstcpp.is_gds_supported(
             device.index if device.index is not None else 0
@@ -190,18 +205,7 @@ def new_gds_file_copier(
 
     device_id = device.index if device.index is not None else 0
     if nogds:
-        nogds_reader = fstcpp.nogds_file_reader(
-            False, bbuf_size_kb, max_threads, device_is_not_cpu, device_id
-        )
-
-        def construct_nogds_copier(
-            metadata: SafeTensorsMetadata,
-            device: Device,
-            framework: FrameworkOpBase,
-        ) -> CopierInterface:
-            return NoGdsFileCopier(metadata, device, nogds_reader, framework)
-
-        return construct_nogds_copier
+        return new_nogds_file_copier(device, bbuf_size_kb, max_threads)
 
     reader = fstcpp.gds_file_reader(max_threads, device_is_not_cpu, device_id)
 
