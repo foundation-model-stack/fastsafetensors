@@ -11,7 +11,7 @@ from .common import (
     init_logger,
     set_debug,
 )
-from .copier.gds import new_gds_file_copier
+from .copier import CopierConstructFunc, CopierType, create_copier_constructor
 from .file_buffer import FilesBufferOnDevice
 from .frameworks import TensorBase, get_framework_op
 from .st_types import Device, DType
@@ -42,7 +42,7 @@ class BaseSafeTensorsFileLoader:
         self,
         pg: Optional[Any],
         device: Device,
-        copier_constructor,
+        copier_type: CopierType,
         set_numa: bool = True,
         disable_cache: bool = True,
         framework="pytorch",
@@ -55,7 +55,11 @@ class BaseSafeTensorsFileLoader:
         self.frames = OrderedDict[str, TensorFrame]()
         self.disable_cache = disable_cache
         self.init_numa(set_numa)
-        self.copier_constructor = copier_constructor
+        self.copier_constructor: CopierConstructFunc = create_copier_constructor(
+            copier_type=copier_type,
+            device=device,
+            **kwargs,
+        )
 
     def init_numa(self, set_numa: bool = True):
         global gl_set_numa
@@ -186,25 +190,19 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
         self.device = self.framework.get_device(device, self.pg)
 
         fstcpp.set_debug_log(debug_log)
-        if debug_log:
-            set_debug()
-        global loaded_library
-        if not loaded_library:
-            fstcpp.load_library_functions()
-            if not nogds:
-                # no need to init gds and consume 10s+ in none-gds case
-                if fstcpp.init_gds() != 0:
-                    raise Exception(f"[FAIL] init_gds()")
-            loaded_library = True
-
-        copier = new_gds_file_copier(self.device, bbuf_size_kb, max_threads, nogds)
+        if nogds:
+            copier_type = "nogds"
+        else:
+            copier_type = "gds"
         super().__init__(
             pg,
             self.device,
-            copier,
+            copier_type,
             set_numa,
             disable_cache,
             framework,
+            bbuf_size_kb=bbuf_size_kb,
+            max_threads=max_threads,
             **kwargs,
         )
 

@@ -6,8 +6,9 @@ from typing import Dict, List
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata
 from ..frameworks import FrameworkOpBase, TensorBase
-from ..st_types import Device, DType
+from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface
+from .registry import CopierConstructFunc, register_copier_constructor
 
 
 class NoGdsFileCopier(CopierInterface):
@@ -64,3 +65,39 @@ class NoGdsFileCopier(CopierInterface):
         return self.metadata.get_tensors(
             gbuf, self.device, self.metadata.header_length, dtype=dtype
         )
+
+
+_loaded_library = False
+
+
+def load_library_func():
+    global _loaded_library
+    if not _loaded_library:
+        fstcpp.load_library_functions()
+        _loaded_library = True
+
+
+@register_copier_constructor("nogds")
+def new_nogds_file_copier(
+    device: Device,
+    bbuf_size_kb: int = 16 * 1024,
+    max_threads: int = 16,
+) -> CopierConstructFunc:
+    load_library_func()
+    device_is_not_cpu = device.type != DeviceType.CPU
+    if device_is_not_cpu and not fstcpp.is_cuda_found():
+        raise Exception("[FAIL] libcudart.so does not exist")
+
+    device_id = device.index if device.index is not None else 0
+    nogds_reader = fstcpp.nogds_file_reader(
+        False, bbuf_size_kb, max_threads, device_is_not_cpu, device_id
+    )
+
+    def construct_nogds_copier(
+        metadata: SafeTensorsMetadata,
+        device: Device,
+        framework: FrameworkOpBase,
+    ) -> CopierInterface:
+        return NoGdsFileCopier(metadata, device, nogds_reader, framework)
+
+    return construct_nogds_copier
