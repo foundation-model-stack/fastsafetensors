@@ -128,8 +128,11 @@ class BaseSafeTensorsFileLoader:
         factory_idx_bits = math.ceil(math.log2(len(self.meta) + 1))
         lidx = 1
         for _, (meta, rank) in sorted(self.meta.items(), key=lambda x: x[0]):
-            copier = self.copier_constructor(meta, self.device, self.framework)
             self_rank = self.pg.rank() == rank
+            if self_rank:
+                copier = self.copier_constructor(meta, self.device, self.framework)
+            else:
+                copier = None
             factory = LazyTensorFactory(
                 meta,
                 self.device,
