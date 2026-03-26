@@ -20,7 +20,7 @@ class LazyTensorFactory:
         local_rank: bool,
         factory_idx_bits: int,
         lidx: int,
-        copier: CopierInterface,
+        copier: Optional[CopierInterface],
         framework: FrameworkOpBase,
         disable_cache=True,
     ):
