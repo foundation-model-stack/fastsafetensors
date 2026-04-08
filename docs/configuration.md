@@ -34,6 +34,16 @@ When no config file is found, `AutoLoader` uses these defaults:
 
 The base loader extension defaults to `copier_type: "gds"` (GPU Direct Storage).
 
+Available `copier_type` values:
+
+| Value        | Description                                                                                                                                         |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `"gds"`      | NVIDIA GPUDirect Storage via cuFile (default on Linux when available)                                                                               |
+| `"fgds"`     | Alternative GPU Direct Storage implementation via [FGDS](https://github.com/Storage-and-OS-for-AI/fgds)                                                                                            |
+| `"nogds"`    | Bounce-buffer pread path (no GPU Direct); fallback when GDS is unavailable                                                                          |
+| `"unified"`  | Unified-memory copier for shared CPU/GPU memory systems (e.g., DGX Spark); automatically selected on unified-memory hosts when `nogds` is requested |
+| `"dstorage"` | DirectStorage backend (Windows only)                                                                                                                |
+
 ## queue_size Semantics
 
 | `queue_size` | Mode | Live chunk buffers per rank | Behavior |
@@ -127,7 +137,23 @@ No config file. Uses `loader="base"`, `gds`, serial mode.
 
 Enables GPU Direct Storage for NVMe-to-GPU transfers, bypassing host CPU/memory.
 
-### 3. Base Loader with Pipeline Mode
+### 3. Base Loader with FGDS
+
+```json
+{
+  "loader": "base",
+  "base": {
+    "copier_type": "fgds",
+    "max_threads": 16
+  }
+}
+```
+
+Uses the FGDS (alternative GPU Direct Storage) backend via `libfgds.so`. This provides
+another direct NVMe-to-GPU path, useful on systems where FGDS is preferred over cuFile GDS.
+When `libfgds.so` is not available, the loader gracefully falls back to the `nogds` copier.
+
+### 4. Base Loader with Pipeline Mode
 
 ```json
 {
@@ -142,7 +168,7 @@ Enables GPU Direct Storage for NVMe-to-GPU transfers, bypassing host CPU/memory.
 
 Overlaps `copy_files` with `broadcast` for higher throughput.
 
-### 4. 3FS Loader
+### 5. 3FS Loader
 
 ```json
 {
@@ -158,7 +184,7 @@ Overlaps `copy_files` with `broadcast` for higher throughput.
 
 Uses ThreeFSLoader with 3FS USRBIO backend.
 
-### 5. Full Reference
+### 6. Full Reference
 
 ```json
 {

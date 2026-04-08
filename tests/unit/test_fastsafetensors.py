@@ -20,6 +20,7 @@ from fastsafetensors import (
     fastsafe_open,
 )
 from fastsafetensors.common import get_device_numa_node, is_gpu_found
+from fastsafetensors.copier.fgds import FgdsFileCopier, get_fgds_device_id
 from fastsafetensors.copier.gds import GdsFileCopier
 from fastsafetensors.copier.nogds import NoGdsFileCopier
 from fastsafetensors.copier.unified import UnifiedMemCopier, is_unified_memory_system
@@ -79,8 +80,7 @@ def get_and_check_device(framework: FrameworkOpBase):
 
 
 def run_nogds_file_read(
-    input_file: str,
-    framework: FrameworkOpBase,
+    input_file: str, framework: FrameworkOpBase
 ) -> Tuple[SafeTensorsMetadata, fstcpp.gds_device_buffer]:
     flags = os.O_RDONLY
     if sys.platform == "win32" and hasattr(os, "O_BINARY"):
@@ -372,6 +372,58 @@ def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
 
+def _fgds_available() -> bool:
+    """Check if libfgds.so can be loaded without raising."""
+    try:
+        from fastsafetensors import cpp as fstcpp
+
+        # FGDS symbols are resolved on demand by load_fgds_library(); the
+        # classes always exist in the cpp extension, but is_fgds_found()
+        # reports whether libfgds.so was actually loaded. Probe it here so a
+        # present libfgds.so is detected (other copiers never load it).
+        fstcpp.load_fgds_library()
+        return fstcpp.is_fgds_found()
+    except Exception:
+        return False
+
+
+def test_FgdsFileCopier(fstcpp_log, input_files, framework) -> None:
+    print("test_FgdsFileCopier")
+    if not is_gpu_found():
+        pytest.skip("FGDS requires a GPU")
+    if not _fgds_available():
+        pytest.skip("libfgds.so is not available on this system")
+    from fastsafetensors import cpp as fstcpp
+
+    device, dev_is_gpu = get_and_check_device(framework)
+    device_id = get_fgds_device_id(device)
+
+    # Open the FGDS driver for this device before registering memory and
+    # issuing DMA. The factory (new_fgds_file_copier) does this via
+    # init_fgds(); this test constructs FgdsFileCopier directly, so it must
+    # init/close explicitly (fgds_read faults if the driver was never opened).
+    if fstcpp.init_fgds(device_id) != 0:
+        pytest.skip("init_fgds failed: FGDS driver cannot be opened")
+    try:
+        meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+        reader = fstcpp.fgds_file_reader(4, device_id)
+        copier = FgdsFileCopier(meta, device, reader, framework, max_threads=4)
+        gbuf = copier.submit_io(False, 10 * 1024 * 1024 * 1024)
+        tensors = copier.wait_io(gbuf)
+        for key, exp in load_safetensors_file(
+            input_files[0], device, framework
+        ).items():
+            actual = tensors[key]
+            assert framework.is_equal(actual, exp)
+        framework.free_tensor_memory(gbuf, device)
+        del copier
+        del reader
+        assert framework.get_mem_used() == 0
+        assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
+    finally:
+        fstcpp.close_fgds(device_id)
+
+
 def _skip_if_not_pytorch(framework: FrameworkOpBase) -> None:
     if framework.get_name() != "pytorch":
         pytest.skip(
@@ -465,16 +517,25 @@ def test_is_unified_memory_system(
 
 
 @pytest.mark.parametrize(
-    "device_str,nogds,unified_env,expected_type",
+    "device_str,nogds,use_fgds,unified_env,expected_type",
     [
-        ("cuda:0", True, "1", "unified"),  # opt-in on GPU
-        ("cuda:0", True, "0", "nogds"),  # opt-out on GPU
-        ("cpu", True, "1", "nogds"),  # CPU device skips unified even with env
-        ("cuda:0", False, "1", "gds"),  # nogds=False always picks gds
+        ("cuda:0", True, False, "1", "unified"),  # opt-in on GPU
+        ("cuda:0", True, False, "0", "nogds"),  # opt-out on GPU
+        ("cpu", True, False, "1", "nogds"),  # CPU device skips unified even with env
+        ("cuda:0", False, False, "1", "gds"),  # nogds=False default picks gds
+        ("cuda:0", False, True, "0", "fgds"),  # use_fgds=True picks fgds
+        ("cpu", False, True, "0", "fgds"),  # use_fgds=True on CPU still selects fgds
+        (
+            "cuda:0",
+            True,
+            True,
+            "0",
+            "nogds",
+        ),  # nogds=True takes precedence over use_fgds
     ],
 )
 def test_SafeTensorsFileLoader_copier_selection(
-    framework, monkeypatch, device_str, nogds, unified_env, expected_type
+    framework, monkeypatch, device_str, nogds, use_fgds, unified_env, expected_type
 ) -> None:
     _skip_if_not_pytorch(framework)
     import fastsafetensors.loader as loader_mod
@@ -496,6 +557,7 @@ def test_SafeTensorsFileLoader_copier_selection(
         device=device_str,
         framework=framework.get_name(),
         nogds=nogds,
+        use_fgds=use_fgds,
     )
     assert captured["copier_type"] == expected_type
 
@@ -695,6 +757,92 @@ def test_SafeTensorsFileLoaderNoGds(fstcpp_log, input_files, framework) -> None:
     loader.close()
     assert framework.get_mem_used() == 0
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
+
+
+def test_SafeTensorsFileLoader_fgds(fstcpp_log, input_files, framework) -> None:
+    """End-to-end test exercising the FGDS copier via the public API.
+
+    When libfgds.so is not available, the fgds constructor gracefully falls
+    back to nogds, so this test runs in every environment and still validates
+    tensor correctness.
+    """
+    device, _ = get_and_check_device(framework)
+    loader = SafeTensorsFileLoader(
+        pg=SingleGroup(),
+        device=device.as_str(),
+        framework=framework.get_name(),
+        nogds=False,
+        use_fgds=True,
+        debug_log=True,
+    )
+    loader.add_filenames({0: input_files})
+    bufs = loader.copy_files_to_device(use_buf_register=True)
+    for key, exp in load_safetensors_file(input_files[0], device, framework).items():
+        actual = bufs.get_tensor_wrapped(key)
+        assert framework.is_equal(actual, exp)
+    bufs.close()
+    loader.close()
+    assert framework.get_mem_used() == 0
+    # When FGDS is truly active (Linux + libfgds.so present + GPU), no bounce
+    # buffer is used. When it falls back to nogds (e.g. Windows or libfgds
+    # missing), the nogds copier uses a bounce buffer, which is expected.
+    if _fgds_available():
+        assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
+
+
+def test_fastsafe_open_use_fgds(fstcpp_log, input_files, framework) -> None:
+    """fastsafe_open must accept and forward use_fgds to the loader."""
+    device, _ = get_and_check_device(framework)
+    tensors = load_safetensors_file(input_files[0], device, framework)
+    with fastsafe_open(
+        input_files,
+        device=device.as_str(),
+        nogds=False,
+        use_fgds=True,
+        framework=framework.get_name(),
+    ) as f:
+        for k in f.keys():
+            t = f.get_tensor_wrapped(k)
+            assert framework.is_equal(t, tensors[k])
+    assert framework.get_mem_used() == 0
+    if _fgds_available():
+        assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
+
+
+def test_new_fgds_copier_fallback_when_unavailable(monkeypatch, framework) -> None:
+    """When FGDS cannot open a file handle (libfgds missing/broken),
+    new_fgds_file_copier must fall back to the nogds copier instead of
+    raising."""
+    from fastsafetensors.copier.fgds import new_fgds_file_copier
+    from fastsafetensors.copier.nogds import NoGdsFileCopier
+    from fastsafetensors.copier.registry import copier_class_of
+
+    # Force CPU so the GPU check in new_fgds_file_copier doesn't complain
+    device = Device.from_str("cpu")
+
+    import fastsafetensors.copier.fgds as fgds_mod
+
+    def _failing_fgds_file_handle(*args, **kwargs):
+        raise RuntimeError("FGDS unavailable (simulated)")
+
+    # FGDS symbols are resolved on demand by load_fgds_library(); monkeypatch
+    # the availability flag and platform so the code reaches the temp-file
+    # probe path, where the failing handle is invoked.
+    monkeypatch.setattr(fgds_mod._cpp, "is_fgds_found", lambda: True)
+    monkeypatch.setattr(fgds_mod.platform, "system", lambda: "Linux", raising=False)
+    monkeypatch.setattr(
+        fgds_mod._cpp,
+        "fgds_file_handle",
+        _failing_fgds_file_handle,
+        raising=False,
+    )
+
+    # Should not raise -- returns a nogds construct function instead
+    construct = new_fgds_file_copier(device, framework=framework)
+    assert callable(construct)
+    # The fallback must tag itself as a nogds copier so the planner sees the
+    # real copier class (mirrors the gds->nogds fallback contract).
+    assert copier_class_of(construct) is NoGdsFileCopier
 
 
 def test_tensor_filter_hides_skipped_tensors(fstcpp_log, input_files, framework):
@@ -908,10 +1056,7 @@ def test_float4_native_shape_and_slices(framework) -> None:
 
     assert framework.get_native_shape(DType.F4, [8, 16]) == [8, 8]
     assert framework.get_native_shape(DType.F4, [16]) == [8]
-    assert framework.get_storage_shape(DType.F4, [8, 16], [16, 1]) == (
-        [64],
-        [1],
-    )
+    assert framework.get_storage_shape(DType.F4, [8, 16], [16, 1]) == ([64], [1])
     assert framework.get_native_slices(
         DType.F4, [8, 16], (slice(None, None, None), slice(4, 12, 1))
     ) == (slice(None, None, None), slice(2, 6, 1))
@@ -1168,9 +1313,7 @@ def test_no_module_level_torch_import_outside_frameworks() -> None:
     import fastsafetensors
 
     pkg_dir = os.path.dirname(fastsafetensors.__file__)
-    allowed = {
-        os.path.join("frameworks", "_torch.py"),
-    }
+    allowed = {os.path.join("frameworks", "_torch.py")}
 
     def imports_torch(stmts) -> bool:
         for node in stmts:

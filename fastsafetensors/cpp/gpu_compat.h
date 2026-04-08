@@ -66,4 +66,7 @@
 #define HIPFILE_SYM_HANDLE_DEREGISTER      "hipFileHandleDeregister"
 #define HIPFILE_SYM_READ                   "hipFileRead"
 
+// fgds library
+#define FGDS_LIB                            "libfgds.so"
+
 #endif // __GPU_COMPAT_H__

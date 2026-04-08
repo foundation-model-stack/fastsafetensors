@@ -6,6 +6,7 @@ from .base import CopierInterface
 if sys.platform == "win32":
     from .dstorage import DStorageFileCopier
 
+from .fgds import FgdsFileCopier
 from .gds import GdsFileCopier
 from .nogds import NoGdsFileCopier
 from .registry import (

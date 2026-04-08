@@ -206,6 +206,20 @@ static bool cufile_found = false;
 
 static int cufile_ver = 0;
 
+// FGDS (FGDS_LIB) function pointers and availability flag. Resolved at
+// runtime in load_fgds_library() (called on demand by the FGDS copier path);
+// never linked at build time. fgds_found mirrors cufile_found for capability
+// probing.
+static bool fgds_found = false;
+static int (*fgds_open)(int) = nullptr;
+static int (*fgds_close)(int) = nullptr;
+static int (*fgds_regmem)(int, uintptr_t, size_t, void**) = nullptr;
+static int (*fgds_deregmem)(int, uintptr_t, size_t) = nullptr;
+static ssize_t (*fgds_read)(fgds_fileid, void*, off_t, size_t, off_t) = nullptr;
+// Tracks devices opened via init_fgds() so close_fgds() can pair them.
+static std::mutex fgds_open_mutex;
+static std::map<int, bool> fgds_opened_devices;
+
 template <typename T> void mydlsym(T** h, void* lib, std::string const& name) {
     *h = reinterpret_cast<T*>(dlsym(lib, name.c_str()));
 }
@@ -404,6 +418,57 @@ static void load_library_functions(const std::string& cudart_override = "") {
     }
 }
 
+// Resolve the FGDS (FGDS_LIB) function pointers. Linux-only NVMe-oF GPUDirect
+// path. Loaded strictly on demand from the FGDS copier factory
+// (init_fgds() -> new_fgds_file_copier), so selecting another copier
+// (gds/nogds/unified/dstorage) never dlopens libfgds.so. FGDS is only
+// meaningful with a GPU present, so it also requires gpu_found, which
+// load_library_functions() sets first. Idempotent: returns immediately once
+// the symbols are resolved.
+void load_fgds_library()
+{
+    if (fgds_found) {
+        return;
+    }
+#ifndef _MSC_VER
+    if (!gpu_found) {
+        return;
+    }
+    bool init_log = getenv(ENV_ENABLE_INIT_LOG);
+    int mode = RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE;
+    void* handle_fgds = dlopen(FGDS_LIB, mode);
+    if (!handle_fgds) {
+        if (init_log) {
+            fprintf(stderr, "[DEBUG] %s is not installed. fallback\n", FGDS_LIB);
+        }
+        return;
+    }
+    mydlsym(&fgds_open, handle_fgds, "fgds_open");
+    mydlsym(&fgds_close, handle_fgds, "fgds_close");
+    mydlsym(&fgds_regmem, handle_fgds, "fgds_regmem");
+    mydlsym(&fgds_deregmem, handle_fgds, "fgds_deregmem");
+    mydlsym(&fgds_read, handle_fgds, "fgds_read");
+    bool success = fgds_open && fgds_close && fgds_regmem &&
+                   fgds_deregmem && fgds_read;
+    if (!success) {
+        if (init_log) {
+            fprintf(stderr, "[DEBUG] %s does not contain required FGDS functions. fallback\n", FGDS_LIB);
+        }
+        fgds_open = nullptr;
+        fgds_close = nullptr;
+        fgds_regmem = nullptr;
+        fgds_deregmem = nullptr;
+        fgds_read = nullptr;
+    } else {
+        if (init_log) {
+            fprintf(stderr, "[DEBUG] loaded: %s done\n", FGDS_LIB);
+        }
+        fgds_found = true;
+    }
+    dlclose(handle_fgds);
+#endif
+}
+
 bool is_cuda_found()
 {
     return gpu_found && !is_hip_runtime;
@@ -423,6 +488,45 @@ bool is_cufile_found()
 int cufile_version()
 {
     return cufile_ver;
+}
+
+bool is_fgds_found()
+{
+    return fgds_found;
+}
+
+// Open the FGDS device exactly once per device_id. Mirrors init_gds(), which
+// calls cuFileDriverOpen() once; here fgds_open() is per-device so we track
+// opened devices and make the call idempotent. The matching close_fgds() must
+// be invoked for each opened device (e.g. via Python atexit).
+int init_fgds(int device_id)
+{
+    if (!fgds_found || !fgds_open) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(fgds_open_mutex);
+    if (fgds_opened_devices.count(device_id)) {
+        return 0;
+    }
+    int ret = fgds_open(device_id);
+    if (ret == 0) {
+        fgds_opened_devices[device_id] = true;
+    }
+    return ret;
+}
+
+int close_fgds(int device_id)
+{
+    if (!fgds_found || !fgds_close) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(fgds_open_mutex);
+    if (!fgds_opened_devices.count(device_id)) {
+        return 0;
+    }
+    int ret = fgds_close(device_id);
+    fgds_opened_devices.erase(device_id);
+    return ret;
 }
 
 int get_alignment_size()
@@ -970,6 +1074,128 @@ const ssize_t gds_file_reader::wait_read(const int id) {
     return ret;
 }
 
+// --- FGDS (FGDS_LIB) classes ---
+
+fgds_device_buffer::fgds_device_buffer(const uintptr_t dev_ptr, const uint64_t length)
+    : _devPtr(dev_ptr), _length(length) {}
+
+uintptr_t fgds_device_buffer::get_base_address() const {
+    return _devPtr;
+}
+
+uint64_t fgds_device_buffer::get_length() const {
+    return _length;
+}
+
+fgds_file_handle::fgds_file_handle(std::string filename, bool o_direct, int device_id)
+    : _fd(-1), _device_id(device_id) {
+    int flags = O_RDONLY;
+#if defined(O_DIRECT)
+    if (o_direct) {
+        flags |= O_DIRECT;
+    }
+#endif
+    _fd = open(filename.c_str(), flags, 0644);
+    if (_fd < 0) {
+        throw std::runtime_error("Failed to open file: " + filename);
+    }
+}
+
+fgds_file_handle::~fgds_file_handle() {
+    if (_fd >= 0) {
+        close(_fd);
+        _fd = -1;
+    }
+}
+
+int fgds_file_handle::get_device_id() const {
+    return _device_id;
+}
+
+int fgds_file_handle::get_fd() const {
+    return _fd;
+}
+
+// FGDS reader thread: invokes fgds_read() directly from the global function
+// pointers resolved in load_fgds_library(). No wrapper object is passed
+// to the thread, so there is no object-lifetime dependency beyond the
+// extension module itself.
+static void fgds_reader_thread(int thread_id, int fd, int device_id,
+                                uintptr_t dev_ptr, uint64_t length,
+                                uint64_t offset, uint64_t ptr_off,
+                                std::map<int, ssize_t>* results,
+                                std::mutex* result_lock) {
+    ssize_t count = 0;
+    void* devPtr_base = reinterpret_cast<void*>(dev_ptr);
+
+    try {
+        fgds_fileid fid;
+        fid.fd = fd;
+        fid.device_id = device_id;
+        count = fgds_read(fid, devPtr_base, ptr_off, length, offset);
+        if (count < 0) {
+            std::fprintf(stderr, "fgds_file_reader._thread: fgds_read returned an error: count=%zd\n", count);
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "fgds_file_reader._thread: exception: %s\n", e.what());
+        count = -1;
+    }
+
+    std::lock_guard<std::mutex> guard(*result_lock);
+    (*results)[thread_id] = count;
+}
+
+fgds_file_reader::fgds_file_reader(const int max_threads, int device_id)
+    : _max_threads(max_threads), _device_id(device_id), _threads(nullptr), _next_id(0) {
+    _threads = new std::thread*[max_threads];
+    for (int i = 0; i < max_threads; ++i) {
+        _threads[i] = nullptr;
+    }
+}
+
+fgds_file_reader::~fgds_file_reader() {
+    if (_threads) {
+        for (int i = 0; i < _max_threads; ++i) {
+            if (_threads[i] != nullptr) {
+                _threads[i]->join();
+                delete _threads[i];
+            }
+        }
+        delete[] _threads;
+    }
+}
+
+const int fgds_file_reader::submit_read(const fgds_file_handle& fh, const fgds_device_buffer& dst,
+                                         const uint64_t offset, const uint64_t length,
+                                         const uint64_t ptr_off) {
+    int id = _next_id++;
+    size_t thread_index = (size_t)(id % _max_threads);
+    if (_threads[thread_index] != nullptr) {
+        _threads[thread_index]->join();
+        delete _threads[thread_index];
+    }
+
+    _threads[thread_index] = new std::thread(
+        fgds_reader_thread, id, fh.get_fd(), fh.get_device_id(),
+        dst.get_base_address(), length, offset, ptr_off, &_results, &_result_lock);
+
+    return id;
+}
+
+const ssize_t fgds_file_reader::wait_read(const int id) {
+    size_t thread_index = (size_t)(id % _max_threads);
+    if (_threads[thread_index] != nullptr) {
+        _threads[thread_index]->join();
+        delete _threads[thread_index];
+        _threads[thread_index] = nullptr;
+    }
+
+    std::lock_guard<std::mutex> guard(_result_lock);
+    ssize_t ret = _results[id];
+    _results.erase(id);
+    return ret;
+}
+
 cpp_metrics_t get_cpp_metrics() {
     return mc;
 }
@@ -1133,6 +1359,10 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("is_gds_supported", &is_gds_supported);
     m.def("init_gds", &init_gds);
     m.def("close_gds", &close_gds);
+    m.def("is_fgds_found", &is_fgds_found);
+    m.def("load_fgds_library", &load_fgds_library);
+    m.def("init_fgds", &init_fgds, pybind11::arg("device_id"));
+    m.def("close_fgds", &close_fgds, pybind11::arg("device_id"));
     m.def("get_device_pci_bus", &get_device_pci_bus);
     m.def("set_numa_node", &set_numa_node);
     m.def("read_buffer", &read_buffer);
@@ -1218,6 +1448,56 @@ PYBIND11_MODULE(__MOD_NAME__, m)
         .def(pybind11::init<const int, bool, int>())
         .def("submit_read", gds_submit_read)
         .def("wait_read", gds_wait_read);
+
+    // FGDS classes. Symbols are resolved at runtime; on platforms without
+    // FGDS_LIB these classes still exist but fgds operations return errors.
+    pybind11::class_<fgds_file_handle>(m, "fgds_file_handle")
+        .def(pybind11::init<std::string, bool, int>())
+        .def("get_device_id", &fgds_file_handle::get_device_id)
+        .def("get_fd", &fgds_file_handle::get_fd);
+
+    pybind11::class_<fgds_device_buffer>(m, "fgds_device_buffer")
+        .def(pybind11::init<const uintptr_t, const uint64_t>())
+        .def("get_base_address", &fgds_device_buffer::get_base_address)
+        .def("get_length", &fgds_device_buffer::get_length);
+
+    // Helper lambdas for fgds_file_reader to conditionally apply GIL release
+    auto fgds_submit_read = [](fgds_file_reader& self, const fgds_file_handle &fh, const fgds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off) {
+        if (enable_gil_release) {
+            pybind11::gil_scoped_release release;
+            return self.submit_read(fh, dst, offset, length, ptr_off);
+        } else {
+            return self.submit_read(fh, dst, offset, length, ptr_off);
+        }
+    };
+
+    auto fgds_wait_read = [](fgds_file_reader& self, const int id) {
+        if (enable_gil_release) {
+            pybind11::gil_scoped_release release;
+            return self.wait_read(id);
+        } else {
+            return self.wait_read(id);
+        }
+    };
+
+    pybind11::class_<fgds_file_reader>(m, "fgds_file_reader")
+        .def(pybind11::init<const int, int>())
+        .def("submit_read", fgds_submit_read)
+        .def("wait_read", fgds_wait_read);
+    // FGDS memory registration helpers. fgds_open/fgds_close are exposed as
+    // init_fgds/close_fgds above so device lifetime is explicit.
+    m.def("fgds_regmem", [](int device_id, uintptr_t addr, size_t size, pybind11::object /*target_addr*/) {
+        if (!fgds_regmem) return -1;
+        void* target_addr = nullptr;
+        return fgds_regmem(device_id, addr, size, &target_addr);
+    }, pybind11::arg("device_id"), pybind11::arg("addr"),
+       pybind11::arg("size"), pybind11::arg("target_addr"));
+
+    m.def("fgds_deregmem", [](int device_id, uintptr_t addr, size_t size) {
+        if (!fgds_deregmem) return -1;
+        return fgds_deregmem(device_id, addr, size);
+    }, pybind11::arg("device_id"), pybind11::arg("addr"),
+       pybind11::arg("size"));
 
     pybind11::class_<cpp_metrics_t>(m, "cpp_metrics")
         .def(pybind11::init<>())
