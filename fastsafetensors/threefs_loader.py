@@ -2,8 +2,6 @@
 
 from typing import Any, List, Optional
 
-from fastsafetensor_3fs_reader import extract_mount_point
-
 from . import cpp as fstcpp
 from .common import init_logger
 from .frameworks import get_framework_op
@@ -110,6 +108,8 @@ class ParallelThreeFSLoader(PipelineParallel):
         framework: str = "pytorch",
         **kwargs,
     ):
+        from fastsafetensor_3fs_reader import extract_mount_point
+
         mount_point: str = extract_mount_point(hf_weights_files[0])
 
         loader = ThreeFSLoader(

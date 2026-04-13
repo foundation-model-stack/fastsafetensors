@@ -2,7 +2,6 @@
 
 from typing import Dict
 
-from fastsafetensor_3fs_reader import ThreeFSFileReader
 from fastsafetensors import cpp as fstcpp
 from fastsafetensors.common import SafeTensorsMetadata, init_logger
 from fastsafetensors.copier.base import CopierInterface
@@ -15,12 +14,13 @@ from fastsafetensors.st_types import Device, DType
 
 logger = init_logger(__name__)
 
+
 class ThreeFSFileCopier(CopierInterface):
     def __init__(
         self,
         metadata: SafeTensorsMetadata,
         device: Device,
-        reader: ThreeFSFileReader,
+        reader,  # duck-typed: must have read_chunked(path, dev_ptr, file_offset, total_length, chunk_size) -> int
         framework: FrameworkOpBase,
     ):
         self.framework = framework
@@ -69,6 +69,7 @@ class ThreeFSFileCopier(CopierInterface):
             gbuf, self.device, self.metadata.header_length, dtype=dtype
         )
 
+
 @register_copier_constructor("3fs")
 def new_threefs_file_copier(
     device: Device,
@@ -78,6 +79,8 @@ def new_threefs_file_copier(
     buffer_size: int = 64 * 1024 * 1024,
     **kwargs,
 ) -> CopierConstructFunc:
+    from fastsafetensor_3fs_reader import ThreeFSFileReader
+
     reader = ThreeFSFileReader(
         mount_point=mount_point,
         entries=entries,

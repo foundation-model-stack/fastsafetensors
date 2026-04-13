@@ -9,6 +9,5 @@ from .registry import (
     create_copier_constructor,
     register_copier_constructor,
 )
-from .unified import UnifiedMemCopier
-
 from .threefs import ThreeFSFileCopier
+from .unified import UnifiedMemCopier
