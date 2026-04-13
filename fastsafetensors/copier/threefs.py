@@ -3,6 +3,7 @@
 from typing import Dict
 
 from fastsafetensor_3fs_reader import ThreeFSFileReader
+
 from fastsafetensors import cpp as fstcpp
 from fastsafetensors.common import SafeTensorsMetadata, init_logger
 from fastsafetensors.copier.base import CopierInterface
@@ -14,6 +15,7 @@ from fastsafetensors.frameworks import FrameworkOpBase, TensorBase
 from fastsafetensors.st_types import Device, DType
 
 logger = init_logger(__name__)
+
 
 class ThreeFSFileCopier(CopierInterface):
     def __init__(
@@ -68,6 +70,7 @@ class ThreeFSFileCopier(CopierInterface):
         return self.metadata.get_tensors(
             gbuf, self.device, self.metadata.header_length, dtype=dtype
         )
+
 
 @register_copier_constructor("3fs")
 def new_threefs_file_copier(
