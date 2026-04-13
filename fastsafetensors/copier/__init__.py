@@ -9,3 +9,8 @@ from .registry import (
     create_copier_constructor,
     register_copier_constructor,
 )
+
+try:
+    from .threefs import ThreeFSFileCopier
+except ImportError:
+    pass
