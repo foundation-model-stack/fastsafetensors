@@ -41,6 +41,10 @@ static cudaError_t cpu_cudaMemcpy(void * dst, const void * src, size_t size, enu
     std::memcpy(dst, src, size);
     return cudaSuccess;
 }
+static cudaError_t cpu_cudaMemcpyAsync(void * dst, const void * src, size_t size, enum cudaMemcpyKind kind, cudaStream_t) {
+    std::memcpy(dst, src, size);
+    return cudaSuccess;
+}
 static cudaError_t cpu_cudaDeviceSynchronize() { return cudaSuccess; }
 static cudaError_t cpu_cudaHostAlloc(void ** p, size_t length, unsigned int) {
     if (posix_memalign(p, ALIGN, length) < 0) {
@@ -71,6 +75,7 @@ ext_funcs_t cpu_fns = ext_funcs_t {
     .cuFileHandleDeregister = cpu_cuFileHandleDeregister,
     .cuFileRead = nullptr,
     .cudaMemcpy = cpu_cudaMemcpy,
+    .cudaMemcpyAsync = cpu_cudaMemcpyAsync,
     .cudaDeviceSynchronize = cpu_cudaDeviceSynchronize,
     .cudaHostAlloc = cpu_cudaHostAlloc,
     .cudaFreeHost = cpu_cudaFreeHost,
@@ -141,6 +146,7 @@ static void load_library_functions() {
         }
         if (cuda_found) {
             mydlsym(&cuda_fns.cudaMemcpy, handle_cudart, "cudaMemcpy");
+            mydlsym(&cuda_fns.cudaMemcpyAsync, handle_cudart, "cudaMemcpyAsync");
             mydlsym(&cuda_fns.cudaDeviceSynchronize, handle_cudart, "cudaDeviceSynchronize");
             mydlsym(&cuda_fns.cudaHostAlloc, handle_cudart, "cudaHostAlloc");
             mydlsym(&cuda_fns.cudaFreeHost, handle_cudart, "cudaFreeHost");
@@ -812,6 +818,21 @@ cpp_metrics_t get_cpp_metrics() {
 
 // Bindings
 
+// Async host-to-device memcpy for unified memory copier
+static int memcpy_h2d_async(uintptr_t dst, uintptr_t src, size_t size) {
+    if (!cuda_fns.cudaMemcpyAsync) {
+        return -1;
+    }
+    cudaError_t err = cuda_fns.cudaMemcpyAsync(
+        reinterpret_cast<void *>(dst),
+        reinterpret_cast<const void *>(src),
+        size,
+        cudaMemcpyHostToDevice,
+        nullptr  // default stream
+    );
+    return static_cast<int>(err);
+}
+
 PYBIND11_MODULE(__MOD_NAME__, m)
 {
     // Initialize GIL release setting from environment variable on module load
@@ -846,6 +867,7 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("gpu_malloc", &gpu_malloc);
     m.def("gpu_free", &gpu_free);
     m.def("load_library_functions", &load_library_functions);
+    m.def("memcpy_h2d_async", &memcpy_h2d_async);
     m.def("get_cpp_metrics", &get_cpp_metrics);
     m.def("set_gil_release", &set_gil_release);
     m.def("get_gil_release", &get_gil_release);

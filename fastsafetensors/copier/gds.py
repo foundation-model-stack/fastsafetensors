@@ -205,6 +205,11 @@ def new_gds_file_copier(
 
     device_id = device.index if device.index is not None else 0
     if nogds:
+        # Prefer unified copier on systems with shared CPU/GPU memory
+        from .unified import is_unified_memory_system, new_unified_copier
+
+        if device_is_not_cpu and is_unified_memory_system():
+            return new_unified_copier(device)
         return new_nogds_file_copier(device, bbuf_size_kb, max_threads)
 
     reader = fstcpp.gds_file_reader(max_threads, device_is_not_cpu, device_id)

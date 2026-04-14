@@ -12,9 +12,10 @@ from .common import (
     set_debug,
 )
 from .copier import CopierConstructFunc, CopierType, create_copier_constructor
+from .copier.unified import is_unified_memory_system
 from .file_buffer import FilesBufferOnDevice
 from .frameworks import TensorBase, get_framework_op
-from .st_types import Device, DType
+from .st_types import Device, DeviceType, DType
 from .tensor_factory import LazyTensorFactory
 
 gl_set_numa = False
@@ -193,10 +194,16 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
         self.device = self.framework.get_device(device, self.pg)
 
         fstcpp.set_debug_log(debug_log)
-        if nogds:
-            copier_type = "nogds"
-        else:
+
+        if not nogds:
             copier_type = "gds"
+        elif self.device.type != DeviceType.CPU and is_unified_memory_system():
+            # When GDS is unavailable, prefer the unified copier on systems
+            # with shared CPU/GPU memory (e.g., DGX Spark) over the
+            # bounce-buffer nogds path.
+            copier_type = "unified"
+        else:
+            copier_type = "nogds"
         super().__init__(
             pg,
             self.device,
