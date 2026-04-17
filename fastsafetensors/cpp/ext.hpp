@@ -43,6 +43,7 @@ enum cudaMemcpyKind { cudaMemcpyHostToDevice=1, cudaMemcpyDefault = 4 };
 #else
 enum cudaMemcpyKind { cudaMemcpyHostToDevice=2, cudaMemcpyDefault = 4 };
 #endif
+typedef void * cudaStream_t;
 
 
 typedef enum CUfileFeatureFlags {
@@ -205,6 +206,7 @@ typedef struct ext_funcs {
     void (*cuFileHandleDeregister)(CUfileHandle_t);
     ssize_t (*cuFileRead)(CUfileHandle_t, void *, size_t, off_t, off_t);
     cudaError_t (*cudaMemcpy)(void *, const void *, size_t, enum cudaMemcpyKind);
+    cudaError_t (*cudaMemcpyAsync)(void *, const void *, size_t, enum cudaMemcpyKind, cudaStream_t);
     cudaError_t (*cudaDeviceSynchronize)(void);
     cudaError_t (*cudaHostAlloc)(void **, size_t, unsigned int);
     cudaError_t (*cudaFreeHost)(void *);

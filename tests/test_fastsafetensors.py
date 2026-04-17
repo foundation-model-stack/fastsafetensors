@@ -13,6 +13,7 @@ from fastsafetensors import fastsafe_open
 from fastsafetensors.common import get_device_numa_node, is_gpu_found
 from fastsafetensors.copier.gds import GdsFileCopier
 from fastsafetensors.copier.nogds import NoGdsFileCopier
+from fastsafetensors.copier.unified import UnifiedMemCopier, is_unified_memory_system
 from fastsafetensors.dlpack import from_cuda_buffer
 from fastsafetensors.frameworks import FrameworkOpBase
 from fastsafetensors.st_types import Device, DeviceType, DType
@@ -359,6 +360,129 @@ def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
     del reader
     assert framework.get_mem_used() == 0
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
+
+
+def _skip_if_not_pytorch(framework: FrameworkOpBase) -> None:
+    if framework.get_name() != "pytorch":
+        pytest.skip("UnifiedMemCopier uses torch.from_file / pin_memory directly")
+
+
+def test_UnifiedMemCopier(fstcpp_log, input_files, framework, monkeypatch) -> None:
+    print("test_UnifiedMemCopier")
+    _skip_if_not_pytorch(framework)
+    import ctypes
+
+    import torch
+
+    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+    device, dev_is_gpu = get_and_check_device(framework)
+
+    if not dev_is_gpu:
+        # Stand in for the CUDA-only primitives so the flow can run on CPU CI.
+        monkeypatch.setattr(torch.Tensor, "pin_memory", lambda self: self)
+
+        def fake_memcpy_h2d_async(dst, src, size):
+            ctypes.memmove(dst, src, size)
+            return 0
+
+        monkeypatch.setattr(fstcpp, "memcpy_h2d_async", fake_memcpy_h2d_async)
+        monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+
+    copier = UnifiedMemCopier(meta, device, framework)
+    gbuf = copier.submit_io(False, 10 * 1024 * 1024 * 1024)
+    tensors = copier.wait_io(gbuf)
+    for key, exp in load_safetensors_file(input_files[0], device, framework).items():
+        actual = tensors[key]
+        assert framework.is_equal(actual, exp)
+    # Lifecycle: mmap + pinned references released in wait_io
+    assert copier._file_tensor is None
+    assert copier._pinned is None
+    framework.free_tensor_memory(gbuf, device)
+    assert framework.get_mem_used() == 0
+    assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
+
+
+def test_UnifiedMemCopier_cuda_error(
+    fstcpp_log, input_files, framework, monkeypatch
+) -> None:
+    print("test_UnifiedMemCopier_cuda_error")
+    _skip_if_not_pytorch(framework)
+    import torch
+
+    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+    device, _ = get_and_check_device(framework)
+
+    monkeypatch.setattr(torch.Tensor, "pin_memory", lambda self: self)
+    monkeypatch.setattr(fstcpp, "memcpy_h2d_async", lambda dst, src, size: 99)
+
+    copier = UnifiedMemCopier(meta, device, framework)
+    with pytest.raises(RuntimeError, match="99"):
+        copier.submit_io(False, 10 * 1024 * 1024 * 1024)
+    # gbuf must be freed and mmap/pin refs released on error
+    assert framework.get_mem_used() == 0
+    assert copier._file_tensor is None
+    assert copier._pinned is None
+
+
+@pytest.mark.parametrize(
+    "env,cuda_available,device_name,expected",
+    [
+        ("1", False, None, True),
+        ("0", True, "NVIDIA GB10 Tegra Blackwell", False),
+        (None, False, None, False),
+        (None, True, "NVIDIA A100-SXM4", False),
+        (None, True, "NVIDIA GB10 Tegra Blackwell", True),
+    ],
+)
+def test_is_unified_memory_system(
+    monkeypatch, env, cuda_available, device_name, expected
+) -> None:
+    import torch
+
+    if env is None:
+        monkeypatch.delenv("FASTSAFETENSORS_UNIFIED_MEM", raising=False)
+    else:
+        monkeypatch.setenv("FASTSAFETENSORS_UNIFIED_MEM", env)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda_available)
+    if device_name is not None:
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda idx: device_name)
+    assert is_unified_memory_system() is expected
+
+
+@pytest.mark.parametrize(
+    "device_str,nogds,unified_env,expected_type",
+    [
+        ("cuda:0", True, "1", "unified"),  # opt-in on GPU
+        ("cuda:0", True, "0", "nogds"),  # opt-out on GPU
+        ("cpu", True, "1", "nogds"),  # CPU device skips unified even with env
+        ("cuda:0", False, "1", "gds"),  # nogds=False always picks gds
+    ],
+)
+def test_SafeTensorsFileLoader_copier_selection(
+    framework, monkeypatch, device_str, nogds, unified_env, expected_type
+) -> None:
+    _skip_if_not_pytorch(framework)
+    import fastsafetensors.loader as loader_mod
+
+    monkeypatch.setenv("FASTSAFETENSORS_UNIFIED_MEM", unified_env)
+
+    captured = {}
+
+    def spy_create_copier_constructor(copier_type, device, **kwargs):
+        captured["copier_type"] = copier_type
+        return lambda metadata, device, framework: None
+
+    monkeypatch.setattr(
+        loader_mod, "create_copier_constructor", spy_create_copier_constructor
+    )
+
+    SafeTensorsFileLoader(
+        pg=SingleGroup(),
+        device=device_str,
+        framework=framework.get_name(),
+        nogds=nogds,
+    )
+    assert captured["copier_type"] == expected_type
 
 
 def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
