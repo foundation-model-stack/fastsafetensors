@@ -68,6 +68,9 @@ class UnifiedMemCopier(CopierInterface):
             data_length,
         )
         if ret != 0:
+            self.framework.free_tensor_memory(gbuf, self.device)
+            self._pinned = None
+            self._file_tensor = None
             raise RuntimeError(
                 f"cudaMemcpyAsync failed with error {ret} " f"for {self.metadata.src}"
             )
