@@ -37,12 +37,7 @@ typedef struct CUfileError { CUfileOpError err; } CUfileError_t;
 // We load all GPU functions dynamically at runtime via dlopen()
 typedef enum cudaError { cudaSuccess = 0, cudaErrorMemoryAllocation = 2 } cudaError_t;
 enum cudaDeviceAttr {cudaDevAttrGPUDirectRDMASupported = 116};
-// Platform-specific enum values - CUDA and HIP have different values for HostToDevice
-#ifndef USE_ROCM
 enum cudaMemcpyKind { cudaMemcpyHostToDevice=1, cudaMemcpyDefault = 4 };
-#else
-enum cudaMemcpyKind { cudaMemcpyHostToDevice=2, cudaMemcpyDefault = 4 };
-#endif
 typedef void * cudaStream_t;
 
 
