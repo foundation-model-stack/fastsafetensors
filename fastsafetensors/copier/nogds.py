@@ -4,7 +4,7 @@ import os
 from typing import Dict, List
 
 from .. import cpp as fstcpp
-from ..common import SafeTensorsMetadata
+from ..common import SafeTensorsMetadata, is_gpu_found
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface
@@ -85,7 +85,7 @@ def new_nogds_file_copier(
 ) -> CopierConstructFunc:
     load_library_func()
     device_is_not_cpu = device.type != DeviceType.CPU
-    if device_is_not_cpu and not fstcpp.is_cuda_found():
+    if device_is_not_cpu and is_gpu_found():
         raise Exception("[FAIL] libcudart.so does not exist")
 
     device_id = device.index if device.index is not None else 0
