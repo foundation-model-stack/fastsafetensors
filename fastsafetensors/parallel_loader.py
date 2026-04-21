@@ -153,6 +153,9 @@ class PipelineParallel:
         # Logging setup - get from environment variable, default to False
         self.print_log = os.getenv("FASTSAFETENSORS_DEBUG", "false").lower() == "true"
         self.log_prefix = f"PG{pg.rank() if pg is not None else 0}"
+        # When pg.size() == 1, tensors reference the underlying gbuf memory
+        # which will be freed in fb.close(). Clone to ensure data survives.
+        self.need_clone = pg.size() == 1 if pg is not None else True
 
         fstcpp.set_gil_release(True)
 
@@ -311,6 +314,8 @@ class PipelineParallel:
             ) as timer:
                 for key in batch.keys:
                     tensor = batch.fb.get_tensor(key)
+                    if self.need_clone:
+                        tensor = tensor.clone()
                     yield key, tensor
             get_tensor_time = timer.elapsed_ms
         finally:
