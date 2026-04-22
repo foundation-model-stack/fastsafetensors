@@ -1,5 +1,5 @@
 fastsafetensors is an efficient safetensors model loader.
-This library is tested with Python 3.9-3.13 and PyTorch 2.1-2.9.
+This library is tested with Python 3.9-3.13 and PyTorch 2.1-2.7.
 
 Disclaimer: This repository contains a research prototype. It should be used with caution.
 
