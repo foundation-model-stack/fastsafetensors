@@ -82,6 +82,7 @@ def new_nogds_file_copier(
     device: Device,
     bbuf_size_kb: int = 16 * 1024,
     max_threads: int = 16,
+    **kwargs,
 ) -> CopierConstructFunc:
     load_library_func()
     device_is_not_cpu = device.type != DeviceType.CPU

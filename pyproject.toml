@@ -28,6 +28,9 @@ dev = [
     "flake8==7.3.0",
     "mypy==1.19.1"
 ]
+threefs = [
+    "fastsafetensor-3fs-reader>=0.3.3",
+]
 
 [project.urls]
 Repository = "https://github.com/foundation-model-stack/fastsafetensors"

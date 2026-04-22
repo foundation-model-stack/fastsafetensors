@@ -153,6 +153,10 @@ class PipelineParallel:
         # Logging setup - get from environment variable, default to False
         self.print_log = os.getenv("FASTSAFETENSORS_DEBUG", "false").lower() == "true"
         self.log_prefix = f"PG{pg.rank() if pg is not None else 0}"
+        # When pg.size() == 1, tensors reference the underlying gbuf memory
+        # which will be freed in fb.close(). Clone to ensure data survives.
+        self.need_clone = pg.size() == 1 if pg is not None else True
+
         fstcpp.set_gil_release(True)
 
     def _create_batches(self, pg) -> List[List[str]]:
@@ -305,12 +309,13 @@ class PipelineParallel:
             self._log_message(
                 f"Batch {batch.batch_id}: tensor key len: {len(batch.keys)}"
             )
-            # Consumer operation: extract tensors
             with TimingContext(
                 "get_tensor", self._log_message, batch.batch_id
             ) as timer:
                 for key in batch.keys:
                     tensor = batch.fb.get_tensor(key)
+                    if self.need_clone:
+                        tensor = tensor.clone()
                     yield key, tensor
             get_tensor_time = timer.elapsed_ms
         finally:
@@ -323,8 +328,9 @@ class PipelineParallel:
             f"Batch {batch.batch_id} summary: "
             f"add_filenames={batch.add_filenames_time:.3f}ms, "
             f"copy_files={batch.copy_files_time:.3f}ms, "
-            f"get_tensor={get_tensor_time:.3f}ms, "
-            f"close={close_time:.3f}ms"
+            f"get_tensor_total={get_tensor_time:.3f}ms, "
+            f"close={close_time:.3f}ms, "
+            f"num_keys={len(batch.keys)}"
         )
         # sync
         if self.queue_size < 0 and self.consumer_processed is not None:
@@ -448,7 +454,7 @@ class ParallelLoader(PipelineParallel):
             nogds (bool): If True, turn off GDS and fallback to pread with bounce buffer.
             set_numa (bool): If True, set NUMA node for optimal memory allocation.
             debug_log (bool): Enable debug logs.
-            framework (str): Framework to use for tensor operations
+            framework (str): Framework to use for tensor operations.
         """
         loader = SafeTensorsFileLoader(
             pg,
