@@ -1,38 +1,38 @@
 fastsafetensors is an efficient safetensors model loader.
-This library is tested with python 3.9-13 and pytorch 2.1-2.7.
+This library is tested with Python 3.9-3.13 and PyTorch 2.1-2.9.
 
 Disclaimer: This repository contains a research prototype. It should be used with caution.
 
 # Features
 
 We introduced three major features to optimize model loading performance:
-1. Batched, lazy tensor instantiations
+1. Batched, lazy tensor instantiation.
 2. GPU offloading for sharding, type conversions, and device pointer alignment.
-3. GPU Direct Storage enablement for file loading from storage to GPU memory
+3. GPU Direct Storage enablement for file loading from storage to GPU memory.
 
-A major design difference from the original safetensors file loader is *NOT* to use `mmap`.
-It loads tensors on-demand with mmap'ed files,
+A major design difference from the original safetensors file loader is that fastsafetensors does *NOT* use `mmap`.
+The original loader loads tensors on demand from memory-mapped files,
 but unfortunately, it cannot fully utilize high-throughput I/O such as NVMe SSDs.
-So, we asynchronously transfer files in parallel to saturate storage throughput.
-Then, fastsafetensors lazily instantiates tensors at GPU device memory with DLPack.
+Therefore, we asynchronously transfer files in parallel to saturate storage throughput.
+The loader then lazily instantiates tensors in GPU device memory with DLPack.
 
-Another design change is to offload sharding and other manipulations on tensors to GPUs.
-The original loader provides slicing for sharding at user programs before copying to device memory. However, it incurrs high CPU usages for host memory accesses.
-So, we introduce a special APIs to run sharding with `torch.distributed` collective operations such as `broadcast` and `scatter`.
+Another design change is to offload sharding and other tensor manipulations to GPUs.
+The original loader provides slicing for sharding in user programs before copying to device memory. However, it incurs high CPU usage for host memory accesses.
+Therefore, we introduce special APIs to run sharding with `torch.distributed` collective operations such as `broadcast` and `scatter`.
 The offloading is also applied to other tensor manipulations such as type conversions.
 
-The above two design can be naturally extended to utilize device-to-device data transfers with GPU Direct Storage.
-The technology helps to minimize copy overheads from NVMe SSDs to GPU memory with host CPU and memory bypassed.
+The above two designs can be naturally extended to utilize device-to-device data transfers with GPU Direct Storage.
+The technology helps minimize copy overheads from NVMe SSDs to GPU memory by bypassing host CPU and memory.
 
-## Basic API usages
+## Basic API usage
 
 `SafeTensorsFileLoader` is a low-level entrypoint. To use it, pass either `SingleGroup()` for simple inference or `ProcessGroup()` (from `torch.distributed`) for tensor-parallel inference. The loader supports both CPU and CUDA devices, with optional GPU Direct Storage (GDS) support. You can specify the device and GDS settings using the `device` and `nogds` arguments, respectively. Note that if GDS is not available, the loader will fail to open files when `nogds=False`. For more information on enabling GDS, please refer to the NVIDIA documentation.
 
-After creating a `SafeTensorsFileLoader` instance, first map target files and a rank using the `.add_filenames()` method. Then, call `.copy_file_to_device()` to trigger the actual file copies on aggregated GPU memory fragments and directly instantiate a group of Tensors. Once the files are loaded, you can retrieve a tensor using the `.get_tensor()` method. Additionally, you can obtain sharded tensors by `.get_sharded()`, which internally run collective operations in `torch.distributed`.
+After creating a `SafeTensorsFileLoader` instance, first map target files and a rank using the `.add_filenames()` method. Then, call `.copy_file_to_device()` to trigger the actual file copies on aggregated GPU memory fragments and directly instantiate a group of tensors. Once the files are loaded, you can retrieve a tensor using the `.get_tensor()` method. Additionally, you can obtain sharded tensors by `.get_sharded()`, which internally runs collective operations in `torch.distributed`.
 
-Important: To release the GPU memory allocated for tensors, you must explicitly call the `.close()` method. This is because Fastsafetensors allows multiple tensors to share a limited number of GPU memory fragments. As a result, it is the user's responsibility to ensure that all tensors are properly released before calling `.close()`, which will then safely release the underlying GPU memory.
+Important: To release the GPU memory allocated for tensors, you must explicitly call the `.close()` method. This is because fastsafetensors allows multiple tensors to share a limited number of GPU memory fragments. As a result, it is the user's responsibility to ensure that all tensors are properly released before calling `.close()`, which will then safely release the underlying GPU memory.
 
-`fastsafe_open` is an easier entrypoint. You can force turning off GDS and run in the fallback mode if `nogds==True`. However, users must be aware of the above tricky memory management model, which should be fixed in future releases.
+`fastsafe_open` is an easier entrypoint. You can force GDS off and run in fallback mode if `nogds=True`. However, users must be aware of the above tricky memory management model, which should be fixed in future releases.
 
 ```python
 with fastsafe_open(filenames=[filename], nogds=True, device="cpu", debug_log=True) as f:
@@ -44,7 +44,9 @@ with fastsafe_open(filenames=[filename], nogds=True, device="cpu", debug_log=Tru
 
 ### Pre-commit Hooks
 
-This repository uses pre-commit hooks for automatic code formatting and linting. To set up:
+Our CI workflow checks code formatting and linting with Python 3.13. Therefore, we recommend testing your code with Python 3.13 and running the following pre-commit hooks before contributing your code.
+
+To set up:
 
 1. Install development dependencies:
 ```bash
@@ -104,10 +106,10 @@ pip install .
 
 ## For ROCm
 
-On ROCm, there are not GDS equivalent support. So fastsafetensors support only supports `nogds=True` mode.
-The performance gain example can be found at [amd-perf.md](./docs/amd-perf.md)
+On ROCm, there is no GDS-equivalent support, so fastsafetensors only supports `nogds=True` mode.
+The performance gain example can be found at [amd-perf.md](./docs/amd-perf.md).
 
-### Install from Github Source
+### Install from GitHub Source
 
 ```bash
 ROCM_PATH=/opt/rocm pip install git+https://github.com/foundation-model-stack/fastsafetensors.git
