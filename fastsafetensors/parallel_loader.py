@@ -7,7 +7,17 @@ import time
 from typing import Any, Generator, List, Optional, Tuple, Union
 
 import torch
-from tqdm.auto import tqdm
+
+try:
+    from tqdm.auto import tqdm
+
+    _TQDM_AVAILABLE = True
+except ImportError:
+    _TQDM_AVAILABLE = False
+
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
+
 
 from . import BaseSafeTensorsFileLoader, SafeTensorsFileLoader
 from . import cpp as fstcpp
@@ -25,8 +35,12 @@ def enable_tqdm(use_tqdm_on_load: bool):
     Returns:
         bool: True if tqdm should be enabled, False otherwise
     """
-    return use_tqdm_on_load and (
-        not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+    return (
+        _TQDM_AVAILABLE
+        and use_tqdm_on_load
+        and (
+            not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+        )
     )
 
 

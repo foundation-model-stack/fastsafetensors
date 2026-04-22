@@ -7,12 +7,22 @@ maintainers = [{name = "Takeshi Yoshimura", email = "tyos@jp.ibm.com"}]
 readme = "README.md"
 license = {text = "Apache-2.0"}
 keywords = ["fastsafetensors", "safetensors", "GDS"]
-requires-python = ">= 3.9"
+requires-python = ">= 3.10, < 3.15"
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
     "typer>=0.9.0",
 ]
 
 [project.optional-dependencies]
+progress = [
+    "tqdm>=4.66.0",
+]
 test = [
     "torch>=2.5.1",
     "pytest>=8.1.1",
