@@ -6,4 +6,3 @@ RUN python3.11 -m pip install pip wheel setuptools pybind11
 RUN python3.10 -m pip install pip wheel setuptools pybind11
 RUN python3.12 -m pip install pip wheel setuptools pybind11
 RUN python3.13 -m pip install pip wheel setuptools pybind11
-RUN python3.14 -m pip install pip wheel setuptools pybind11
