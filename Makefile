@@ -53,11 +53,11 @@ builder: Dockerfile.build
 	$(CONCMD) build -t fastsafetensors-builder:latest - < Dockerfile.build
 
 dist: builder
+	$(CONCMD) run -u `id -u` -w /fastsafetensors --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.14 setup.py bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
 	$(CONCMD) run -u `id -u` -w /fastsafetensors --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.13 setup.py bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
 	$(CONCMD) run -u `id -u` -w /fastsafetensors --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.12 setup.py bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
 	$(CONCMD) run -u `id -u` -w /fastsafetensors --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.11 setup.py bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
 	$(CONCMD) run -u `id -u` -w /fastsafetensors --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.10 setup.py sdist bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
-	$(CONCMD) run -u `id -u` -w /fastsafetensors --rm -v $(CURDIR):/fastsafetensors -e CC=c++ -it fastsafetensors-builder:latest python3.9 setup.py bdist_wheel --python-tag=py3 -p manylinux_2_34_x86_64
 
 .PHONY: upload-test
 upload-test:
