@@ -35,16 +35,16 @@ jobs:
           tf_ver=4.52
           npy_ver=2.2
           torch_ver=2.7
-          if [ "${{ matrix.python-version }}" = "3.9" ]; then
-            npy_ver=1.26
-            tf_ver=4.40
-            torch_ver=2.1
-          elif [ "${{ matrix.python-version }}" = "3.10" ]; then
+          if [ "${{ matrix.python-version }}" = "3.10" ]; then
             torch_ver=2.3
           elif [ "${{ matrix.python-version }}" = "3.11" ]; then
             torch_ver=2.5
           elif [ "${{ matrix.python-version }}" = "3.12" ]; then
             torch_ver=2.6
+          elif [ "${{ matrix.python-version }}" = "3.13" ]; then
+            torch_ver=2.7
+          elif [ "${{ matrix.python-version }}" = "3.14" ]; then
+            torch_ver=2.9
           fi
           pip install torch==${torch_ver} --index-url https://download.pytorch.org/whl/cpu # transformers requires torch
           pip install paddlepaddle==3.0.0
