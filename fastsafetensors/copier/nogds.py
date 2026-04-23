@@ -86,7 +86,9 @@ def new_nogds_file_copier(
     load_library_func()
     device_is_not_cpu = device.type != DeviceType.CPU
     if device_is_not_cpu and not is_gpu_found():
-        raise Exception("[FAIL] libcudart.so does not exist")
+        raise Exception(
+            "[FAIL] GPU runtime library not found (expected libcudart.so or libamdhip64.so)"
+        )
 
     device_id = device.index if device.index is not None else 0
     nogds_reader = fstcpp.nogds_file_reader(
