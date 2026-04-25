@@ -86,7 +86,6 @@ ext_funcs_t cpu_fns = ext_funcs_t {
 ext_funcs_t cuda_fns;
 
 static bool cuda_found = false;
-static bool is_hip_runtime = false;  // Track if we loaded HIP (not auto-hipified)
 static bool cufile_found = false;
 
 static int cufile_ver = 0;
@@ -124,38 +123,34 @@ static void load_library_functions() {
 
     void* handle_cudart = dlopen(cudartLib, mode);
     if (handle_cudart) {
-        mydlsym(&cudaGetDeviceCount, handle_cudart, "cudaGetDeviceCount");
+        mydlsym(&cudaGetDeviceCount, handle_cudart, GPU_SYM_GET_DEVICE_COUNT);
         if (cudaGetDeviceCount) {
             int count;
             if (cudaGetDeviceCount(&count) != cudaSuccess) {
                 count = 0; // why cudaGetDeviceCount returns non-zero for errors?
             }
             cuda_found = count > 0;
-            // Detect if we loaded HIP runtime (ROCm) vs CUDA runtime
-            if (cuda_found && std::string(cudartLib).find("hip") != std::string::npos) {
-                is_hip_runtime = true;
-            }
             if (init_log) {
-                fprintf(stderr, "[DEBUG] device count=%d, cuda_found=%d, is_hip_runtime=%d\n", count, cuda_found, is_hip_runtime);
+                fprintf(stderr, "[DEBUG] device count=%d, cuda_found=%d\n", count, cuda_found);
             }
         } else {
             cuda_found = false;
             if (init_log) {
-                fprintf(stderr, "[DEBUG] No cudaGetDeviceCount, fallback!\n");
+                fprintf(stderr, "[DEBUG] No %s, fallback!\n", GPU_SYM_GET_DEVICE_COUNT);
             }
         }
         if (cuda_found) {
-            mydlsym(&cuda_fns.cudaMemcpy, handle_cudart, "cudaMemcpy");
-            mydlsym(&cuda_fns.cudaMemcpyAsync, handle_cudart, "cudaMemcpyAsync");
-            mydlsym(&cuda_fns.cudaDeviceSynchronize, handle_cudart, "cudaDeviceSynchronize");
-            mydlsym(&cuda_fns.cudaHostAlloc, handle_cudart, "cudaHostAlloc");
-            mydlsym(&cuda_fns.cudaFreeHost, handle_cudart, "cudaFreeHost");
-            mydlsym(&cuda_fns.cudaDeviceGetPCIBusId, handle_cudart, "cudaDeviceGetPCIBusId");
-            mydlsym(&cuda_fns.cudaDeviceMalloc, handle_cudart, "cudaMalloc");
-            mydlsym(&cuda_fns.cudaDeviceFree, handle_cudart, "cudaFree");
-            mydlsym(&cuda_fns.cudaDriverGetVersion, handle_cudart, "cudaDriverGetVersion");
-            mydlsym(&cuda_fns.cudaDeviceGetAttribute, handle_cudart, "cudaDeviceGetAttribute");
-            mydlsym(&cuda_fns.cudaSetDevice, handle_cudart, "cudaSetDevice");
+            mydlsym(&cuda_fns.cudaMemcpy, handle_cudart, GPU_SYM_MEMCPY);
+            mydlsym(&cuda_fns.cudaMemcpyAsync, handle_cudart, GPU_SYM_MEMCPY_ASYNC);
+            mydlsym(&cuda_fns.cudaDeviceSynchronize, handle_cudart, GPU_SYM_DEVICE_SYNCHRONIZE);
+            mydlsym(&cuda_fns.cudaHostAlloc, handle_cudart, GPU_SYM_HOST_ALLOC);
+            mydlsym(&cuda_fns.cudaFreeHost, handle_cudart, GPU_SYM_FREE_HOST);
+            mydlsym(&cuda_fns.cudaDeviceGetPCIBusId, handle_cudart, GPU_SYM_DEVICE_GET_PCI_BUS_ID);
+            mydlsym(&cuda_fns.cudaDeviceMalloc, handle_cudart, GPU_SYM_DEVICE_MALLOC);
+            mydlsym(&cuda_fns.cudaDeviceFree, handle_cudart, GPU_SYM_DEVICE_FREE);
+            mydlsym(&cuda_fns.cudaDriverGetVersion, handle_cudart, GPU_SYM_DRIVER_GET_VERSION);
+            mydlsym(&cuda_fns.cudaDeviceGetAttribute, handle_cudart, GPU_SYM_DEVICE_GET_ATTRIBUTE);
+            mydlsym(&cuda_fns.cudaSetDevice, handle_cudart, GPU_SYM_SET_DEVICE);
             bool success = cuda_fns.cudaMemcpy && cuda_fns.cudaDeviceSynchronize;
             success = success && cuda_fns.cudaHostAlloc && cuda_fns.cudaFreeHost;
             success = success && cuda_fns.cudaDeviceGetPCIBusId && cuda_fns.cudaDeviceMalloc;
@@ -253,14 +248,6 @@ bool is_cuda_found()
 bool cuda_not_available()
 {
     return false;  // On ROCm, CUDA is never available
-}
-
-// Separate function for checking HIP runtime detection (not hipified)
-// On CUDA: checks if HIP runtime was detected
-// On ROCm: not used (is_cuda_found gets hipified to is_hip_found)
-bool check_hip_runtime()
-{
-    return is_hip_runtime;
 }
 
 bool is_cufile_found()
@@ -837,20 +824,13 @@ PYBIND11_MODULE(__MOD_NAME__, m)
 {
     // Initialize GIL release setting from environment variable on module load
     init_gil_release_from_env();
-    // Export both is_cuda_found and is_hip_found on all platforms
-    // Use string concatenation to prevent hipify from converting the export names
+    // Export both is_cuda_found and is_hip_found on all platforms.
 #ifdef USE_ROCM
-    // On ROCm after hipify:
-    // - is_cuda_found() becomes is_hip_found(), so export it as "is_hip_found"
-    // - Export cuda_not_available() as "is_cuda_found" (CUDA not available on ROCm)
-    m.def(("is_" "cuda" "_found"), &cuda_not_available);  // Returns false on ROCm
-    m.def(("is_" "hip" "_found"), &is_cuda_found);  // hipified to is_hip_found, returns hip status
+    m.def("is_cuda_found", &cuda_not_available);
+    m.def("is_hip_found", &is_cuda_found);
 #else
-    // On CUDA:
-    // - is_cuda_found() checks for CUDA
-    // - check_hip_runtime() checks if HIP runtime was loaded
-    m.def(("is_" "cuda" "_found"), &is_cuda_found);
-    m.def(("is_" "hip" "_found"), &check_hip_runtime);
+    m.def("is_cuda_found", &is_cuda_found);
+    m.def("is_hip_found", &cuda_not_available);
 #endif
     m.def("is_cufile_found", &is_cufile_found);
     m.def("cufile_version", &cufile_version);
