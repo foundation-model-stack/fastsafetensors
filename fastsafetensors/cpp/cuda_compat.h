@@ -1,34 +1,61 @@
 // SPDX-License-Identifier: Apache-2.0
 /*
  * CUDA/HIP compatibility layer for fastsafetensors
- * Minimal compatibility header - only defines what hipify-perl doesn't handle
+ *
+ * All GPU functions are loaded at runtime via dlopen()/dlsym() — no CUDA or
+ * HIP headers are included and no GPU runtime library is linked at build time.
+ * This header provides the two things the preprocessor can handle that dlsym
+ * string literals cannot: the library filename and the per-platform symbol names.
  */
 
 #ifndef __CUDA_COMPAT_H__
 #define __CUDA_COMPAT_H__
 
-// Platform detection - this gets hipified to check __HIP_PLATFORM_AMD__
 #ifdef __HIP_PLATFORM_AMD__
   #ifndef USE_ROCM
     #define USE_ROCM
   #endif
-  // Note: We do NOT include <hip/hip_runtime.h> here to avoid compile-time dependencies.
-  // Instead, we dynamically load the ROCm runtime library (libamdhip64.so) at runtime
-  // using dlopen(), just like we do for CUDA (libcudart.so).
-  // Minimal types are defined in ext.hpp.
-#else
-  // For CUDA platform, we also avoid including headers and define minimal types in ext.hpp
 #endif
 
-// Runtime library name - hipify-perl doesn't change string literals
+// Runtime library loaded via dlopen()
 #ifdef USE_ROCM
   #define GPU_RUNTIME_LIB "libamdhip64.so"
 #else
   #define GPU_RUNTIME_LIB "libcudart.so"
 #endif
 
-// Custom function pointer names that hipify-perl doesn't recognize
-// These are our own naming in ext_funcs struct, not standard CUDA API
+// Symbol names passed to dlsym().
+// Replaces the hipify-perl string-literal transformation so the source
+// compiles for either backend without any external build-time tooling.
+#ifdef USE_ROCM
+  #define GPU_SYM_GET_DEVICE_COUNT      "hipGetDeviceCount"
+  #define GPU_SYM_MEMCPY                "hipMemcpy"
+  #define GPU_SYM_MEMCPY_ASYNC          "hipMemcpyAsync"
+  #define GPU_SYM_DEVICE_SYNCHRONIZE    "hipDeviceSynchronize"
+  #define GPU_SYM_HOST_ALLOC            "hipHostMalloc"
+  #define GPU_SYM_FREE_HOST             "hipHostFree"
+  #define GPU_SYM_DEVICE_GET_PCI_BUS_ID "hipDeviceGetPCIBusId"
+  #define GPU_SYM_DEVICE_MALLOC         "hipMalloc"
+  #define GPU_SYM_DEVICE_FREE           "hipFree"
+  #define GPU_SYM_DRIVER_GET_VERSION    "hipDriverGetVersion"
+  #define GPU_SYM_DEVICE_GET_ATTRIBUTE  "hipDeviceGetAttribute"
+  #define GPU_SYM_SET_DEVICE            "hipSetDevice"
+#else
+  #define GPU_SYM_GET_DEVICE_COUNT      "cudaGetDeviceCount"
+  #define GPU_SYM_MEMCPY                "cudaMemcpy"
+  #define GPU_SYM_MEMCPY_ASYNC          "cudaMemcpyAsync"
+  #define GPU_SYM_DEVICE_SYNCHRONIZE    "cudaDeviceSynchronize"
+  #define GPU_SYM_HOST_ALLOC            "cudaHostAlloc"
+  #define GPU_SYM_FREE_HOST             "cudaFreeHost"
+  #define GPU_SYM_DEVICE_GET_PCI_BUS_ID "cudaDeviceGetPCIBusId"
+  #define GPU_SYM_DEVICE_MALLOC         "cudaMalloc"
+  #define GPU_SYM_DEVICE_FREE           "cudaFree"
+  #define GPU_SYM_DRIVER_GET_VERSION    "cudaDriverGetVersion"
+  #define GPU_SYM_DEVICE_GET_ATTRIBUTE  "cudaDeviceGetAttribute"
+  #define GPU_SYM_SET_DEVICE            "cudaSetDevice"
+#endif
+
+// Internal struct field name aliases for ROCm builds
 #ifdef USE_ROCM
   #define cudaDeviceMalloc hipDeviceMalloc
   #define cudaDeviceFree hipDeviceFree
