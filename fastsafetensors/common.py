@@ -100,7 +100,7 @@ class SafeTensorsMetadata:
             nelements = 1
             for sh in t.shape:
                 nelements *= sh
-            nbytes = nelements * framework.get_dtype_size(t.dtype)
+            nbytes = int(nelements * framework.get_dtype_size(t.dtype))
             if (e - s) != nbytes:
                 raise Exception(
                     f"validate(tensor {k}): TensorInvalidInfo, e-s={e-s}, nbytes={nbytes}, src={src}"
@@ -195,16 +195,25 @@ class SafeTensorsMetadata:
                 - copy_start_offset
             )
             disk_dtype = self.framework.as_workaround_dtype(t.dtype)
+            dl_shape, dl_strides = self.framework.get_storage_shape(
+                t.dtype, t.shape, t.strides
+            )
             dl_tensor = from_cuda_buffer(
                 dst_dev_ptr,
-                t.shape,
-                t.strides,
+                dl_shape,
+                dl_strides,
                 disk_dtype,
                 device,
             )
             t2 = self.framework.from_dlpack(dl_tensor, device, disk_dtype)
             if disk_dtype != t.dtype:
                 t2 = t2.view(t.dtype)
+            # For packed sub-byte dtypes, reshape to the framework-native shape.
+            # e.g. F4 (float4_e2m1fn_x2): safetensors shape counts FP4 values,
+            # but PyTorch shape counts packed pairs (2 FP4 per byte).
+            native_shape = self.framework.get_native_shape(t.dtype, t.shape)
+            if native_shape != t.shape:
+                t2 = t2.reshape(native_shape)
 
             if dtype != DType.AUTO and dtype != t.dtype:
                 if self.framework.get_dtype_size(dtype) > self.framework.get_dtype_size(
