@@ -89,6 +89,14 @@ class c_DLDataType(ctypes.Structure):
         DType.F32: (kDLFloat, 32, 1),
         DType.F64: (kDLFloat, 64, 1),
         DType.BF16: (kDLBfloat, 16, 1),
+        # F8_E8M0 is an unsigned 8-bit scale format (torch.float8_e8m0fnu).
+        # DLPack has no float8 type code, so we expose it as opaque uint8
+        # bytes — consistent with the U8 workaround used for NCCL ops.
+        DType.F8_E8M0: (kDLUInt, 8, 1),
+        # F4 is packed FP4 (torch.float4_e2m1fn_x2): two 4-bit values per byte.
+        # DLPack has no sub-byte type code, so we expose it as opaque uint8
+        # bytes — consistent with the U8 workaround used for NCCL ops.
+        DType.F4: (kDLUInt, 8, 1),
     }
 
 
