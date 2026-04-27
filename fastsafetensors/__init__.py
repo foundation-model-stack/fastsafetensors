@@ -4,12 +4,14 @@ from importlib.metadata import version
 
 __version__ = version(__name__)
 
+from .auto_loader import AutoLoader
 from .common import (
     SafeTensorsMetadata,
     SingleGroup,
     TensorFrame,
     get_device_numa_node,
 )
+from .config import LoaderConfig, load_config
 from .file_buffer import FilesBufferOnDevice
-from .loader import BaseSafeTensorsFileLoader, SafeTensorsFileLoader, fastsafe_open
+from .loader import SafeTensorsFileLoader, fastsafe_open
 from .parallel_loader import ParallelLoader

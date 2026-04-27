@@ -19,8 +19,8 @@ except ImportError:
         return iterable
 
 
-from . import BaseSafeTensorsFileLoader, SafeTensorsFileLoader
 from . import cpp as fstcpp
+from .loader import BaseSafeTensorsFileLoader, SafeTensorsFileLoader
 
 
 def enable_tqdm(use_tqdm_on_load: bool):
@@ -133,11 +133,21 @@ class PipelineParallel:
         loader: BaseSafeTensorsFileLoader,
         hf_weights_files: List[str],
         max_concurrent_producers: int = 1,
-        queue_size: int = 0,  # Changed default to 0 for unbuffered behavior
+        # queue_size semantics:
+        #   -1 : fully serial — copy_files → broadcast → copy_files (1 batch in GPU mem)
+        #    0 : unbuffered pipeline — 1 copying + 1 broadcasting concurrently (2 batches)
+        #   >0 : buffered pipeline — up to (queue_size+1) batches in GPU mem
+        queue_size: int = 0,
         use_tqdm_on_load: bool = True,
         **kwargs,
     ):
 
+        if max_concurrent_producers != 1:
+            raise ValueError(
+                f"max_concurrent_producers must be 1 (got {max_concurrent_producers}). "
+                "Concurrent producers > 1 are not yet supported because broadcast "
+                "batches must be processed in strict order across all ranks."
+            )
         self.loader = loader
         self.hf_weights_files = hf_weights_files
         self.max_concurrent_producers = max_concurrent_producers
