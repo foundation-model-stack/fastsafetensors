@@ -40,6 +40,11 @@ with fastsafe_open(filenames=[filename], nogds=True, device="cpu", debug_log=Tru
         t = f.get_tensor(key).clone().detach() # clone if t is used outside
 ```
 
+## Configuration
+
+`UnifiedLoader` supports file-based configuration for loader type, pipeline mode, copy settings, and more.
+See [Configuration Guide](./docs/configuration.md) for defaults, examples, and all available options.
+
 ## Development
 
 ### Pre-commit Hooks

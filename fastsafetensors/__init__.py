@@ -10,6 +10,8 @@ from .common import (
     TensorFrame,
     get_device_numa_node,
 )
+from .config import LoaderConfig, load_config
 from .file_buffer import FilesBufferOnDevice
-from .loader import BaseSafeTensorsFileLoader, SafeTensorsFileLoader, fastsafe_open
+from .loader import SafeTensorsFileLoader, fastsafe_open
 from .parallel_loader import ParallelLoader
+from .unified_loader import UnifiedLoader
