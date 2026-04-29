@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from . import cpp as fstcpp
 from .common import init_logger
@@ -12,25 +12,30 @@ logger = init_logger(__name__)
 
 
 class ThreeFSLoader(BaseSafeTensorsFileLoader):
-    """Load .safetensors files using 3FS USRBIO for high-performance I/O.
+    """Load .safetensors files using 3FS USRBIO for high-performance I/O."""
 
-    Args:
-        pg (Optional[Any]): Process group-like objects for distributed loading.
-        device (str): Target device where tensors will be loaded (CPU, CUDA, etc.).
-        mount_point (str): 3FS mount point path (e.g., "/mnt/3fs").
-        debug_log (bool): Enable detailed debug logging.
-        disable_cache (bool): Whether to disable caching of loaded tensors.
-        framework (str): Deep learning framework to use ("pytorch" or "paddle").
-        **kwargs: Additional arguments passed to BaseSafeTensorsFileLoader.
+    @classmethod
+    def process_extension_config(
+        cls, ext_config: Mapping[str, Any], **kwargs: Any
+    ) -> Dict[str, Any]:
+        """Infer ``mount_point`` from file paths if not explicitly configured."""
+        out = dict(ext_config)
+        if not out.get("mount_point") or str(out["mount_point"]).strip() == "":
+            files = kwargs.get("hf_weights_files", [])
+            if files:
+                try:
+                    from fastsafetensor_3fs_reader import extract_mount_point
 
-    Examples:
-        >>> from fastsafetensors.threefs_loader import ThreeFSLoader
-        >>> loader = ThreeFSLoader(None, device="cuda:0", mount_point="/mnt/3fs")
-        >>> loader.add_filenames({0: ["/mnt/3fs/model.safetensors"]})
-        >>> bufs = loader.copy_files_to_device()
-        >>> tensor = bufs.get_tensor("weight")
-        >>> loader.close()
-    """
+                    out["mount_point"] = extract_mount_point(files[0])
+                    logger.info(
+                        "Inferred 3FS mount_point=%s from file paths",
+                        out["mount_point"],
+                    )
+                except ImportError:
+                    logger.debug(
+                        "fastsafetensor_3fs_reader not available, using default mount_point"
+                    )
+        return out
 
     def __init__(
         self,
@@ -40,6 +45,7 @@ class ThreeFSLoader(BaseSafeTensorsFileLoader):
         debug_log: bool = False,
         disable_cache: bool = True,
         framework: str = "pytorch",
+        set_numa: bool = True,
         **kwargs,
     ):
         self.framework = get_framework_op(framework)
@@ -55,7 +61,7 @@ class ThreeFSLoader(BaseSafeTensorsFileLoader):
             pg,
             self.device,
             copier_type="3fs",
-            set_numa=True,
+            set_numa=set_numa,
             disable_cache=disable_cache,
             framework=framework,
             mount_point=mount_point,
