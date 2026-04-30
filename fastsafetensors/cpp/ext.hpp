@@ -9,6 +9,11 @@
 #include <thread>
 #include <map>
 
+#ifdef _MSC_VER
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#endif
+
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -199,7 +204,11 @@ typedef struct ext_funcs {
     CUfileError_t (*cuFileBufDeregister)(const void *);
     CUfileError_t (*cuFileHandleRegister)(CUfileHandle_t *, CUfileDescr_t *);
     void (*cuFileHandleDeregister)(CUfileHandle_t);
+#ifdef _MSC_VER
+    ssize_t (*cuFileRead)(CUfileHandle_t, void *, size_t, int64_t, int64_t);
+#else
     ssize_t (*cuFileRead)(CUfileHandle_t, void *, size_t, off_t, off_t);
+#endif
     cudaError_t (*cudaMemcpy)(void *, const void *, size_t, enum cudaMemcpyKind);
     cudaError_t (*cudaMemcpyAsync)(void *, const void *, size_t, enum cudaMemcpyKind, cudaStream_t);
     cudaError_t (*cudaDeviceSynchronize)(void);

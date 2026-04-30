@@ -3,6 +3,7 @@
 
 import ctypes
 import os
+import sys
 
 
 class MockFileReader:
@@ -20,7 +21,10 @@ class MockFileReader:
         self, path, dev_ptr, file_offset, total_length, chunk_size=0, **kwargs
     ) -> int:
         if path not in self._fd_map:
-            self._fd_map[path] = os.open(path, os.O_RDONLY)
+            flags = os.O_RDONLY
+            if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            self._fd_map[path] = os.open(path, flags)
         fd = self._fd_map[path]
         data = os.pread(fd, total_length, file_offset)
         if dev_ptr != 0:

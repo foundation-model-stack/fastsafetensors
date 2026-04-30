@@ -1,20 +1,62 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#ifdef _MSC_VER
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include <fcntl.h>
 #include <cstring>
+#ifdef _MSC_VER
+#include <io.h>
+#include <malloc.h>
+#include <share.h>
+#include <stdio.h>
+#include <cstdint>
+#include "mman.h"
+#include "dlfcn.h"
+// Windows-compatible posix_memalign
+static inline int posix_memalign(void **memptr, size_t alignment, size_t size) {
+    *memptr = _aligned_malloc(size, alignment);
+    return (*memptr) ? 0 : errno;
+}
+// Windows-compatible pread
+static inline int64_t pread(int fd, void *buf, size_t count, int64_t offset) {
+    int64_t cur = _lseeki64(fd, 0, 1 /*SEEK_CUR*/);
+    if (cur < 0) return -1;
+    if (_lseeki64(fd, offset, 0 /*SEEK_SET*/) < 0) return -1;
+    int rd = _read(fd, buf, (unsigned int)count);
+    _lseeki64(fd, cur, 0 /*SEEK_SET*/);
+    return rd;
+}
+#ifndef RTLD_NODELETE
+#define RTLD_NODELETE 0
+#endif
+// Map POSIX names to MSVC equivalents
+#define open  _open
+#define close _close
+#define O_RDONLY _O_RDONLY
+#ifndef O_DIRECT
+#define O_DIRECT 0
+#endif
+#else
 #include <unistd.h>
 #include <sys/mman.h>
 #include <chrono>
 #include <dlfcn.h>
+#endif
+#include <chrono>
 #include <cstdlib>
 #include <algorithm>
 
 #include "cuda_compat.h"
 #include "ext.hpp"
+#ifdef _MSC_VER
+#include "dstorage_compat.h"
+#endif
 
 #define ALIGN 4096
 
-static bool debug_log = false;
+bool debug_log = false;  // non-static: referenced by dstorage_compat.cpp on Windows
 static bool enable_gil_release = false;
 
 static cpp_metrics_t mc = {.bounce_buffer_bytes = 0};
@@ -53,7 +95,11 @@ static cudaError_t cpu_cudaHostAlloc(void ** p, size_t length, unsigned int) {
     return cudaSuccess;
 }
 static cudaError_t cpu_cudaFreeHost(void * p) {
+#ifdef _MSC_VER
+    _aligned_free(p);
+#else
     free(p);
+#endif
     return cudaSuccess;
 }
 static cudaError_t cpu_cudaDeviceGetPCIBusId(char * in, int s, int) {
@@ -86,7 +132,18 @@ ext_funcs_t cpu_fns = ext_funcs_t {
 ext_funcs_t cuda_fns;
 
 static bool cuda_found = false;
+static bool is_hip_runtime = false;  // Track if we loaded HIP (not auto-hipified)
 static bool cufile_found = false;
+
+#ifdef _MSC_VER
+static bool dstorage_found = false;
+// Defined in dstorage_compat.cpp
+extern void init_dstorage_if_available(void* handle_cudart, bool init_log);
+extern void shutdown_dstorage();
+extern bool dstorage_available();
+extern dstorage_context g_ds_ctx;
+extern dstorage_funcs_t g_ds_fns;
+#endif
 
 static int cufile_ver = 0;
 
@@ -94,27 +151,37 @@ template <typename T> void mydlsym(T** h, void* lib, std::string const& name) {
     *h = reinterpret_cast<T*>(dlsym(lib, name.c_str()));
 }
 
-static void load_library_functions() {
+static void load_library_functions(const std::string& cudart_override = "") {
     cudaError_t (*cudaGetDeviceCount)(int*);
+#ifdef _MSC_VER
+    const char* cufileLib = "cufile.dll";
+    const char* numaLib = nullptr;  // NUMA not available on Windows
+#else
     const char* cufileLib = "libcufile.so.0";
-    const char* cudartLib = GPU_RUNTIME_LIB;
     const char* numaLib = "libnuma.so.1";
+#endif
+    // Use the runtime-provided library name if given, otherwise fall back
+    // to the compile-time default from cuda_compat.h (GPU_RUNTIME_LIB).
+    std::string cudart_name = cudart_override.empty() ? GPU_RUNTIME_LIB : cudart_override;
+    const char* cudartLib = cudart_name.c_str();
     bool init_log = getenv(ENV_ENABLE_INIT_LOG);
     int mode = RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE;
 
-    void* handle_numa = dlopen(numaLib, mode);
-    if (handle_numa) {
-        mydlsym(&cpu_fns.numa_run_on_node, handle_numa, "numa_run_on_node");
-        if (cpu_fns.numa_run_on_node) {
-            cuda_fns.numa_run_on_node = cpu_fns.numa_run_on_node;
-            if (init_log) {
-                fprintf(stderr, "[DEBUG] loaded: %s\n", numaLib);
+    if (numaLib) {
+        void* handle_numa = dlopen(numaLib, mode);
+        if (handle_numa) {
+            mydlsym(&cpu_fns.numa_run_on_node, handle_numa, "numa_run_on_node");
+            if (cpu_fns.numa_run_on_node) {
+                cuda_fns.numa_run_on_node = cpu_fns.numa_run_on_node;
+                if (init_log) {
+                    fprintf(stderr, "[DEBUG] loaded: %s\n", numaLib);
+                }
             }
+            dlclose(handle_numa);
         }
-        dlclose(handle_numa);
     }
     if (!cpu_fns.numa_run_on_node) {
-        if (init_log) {
+        if (init_log && numaLib) {
             fprintf(stderr, "[DEBUG] %s is not installed. fallback\n", numaLib);
         }
         cpu_fns.numa_run_on_node = cpu_numa_run_on_node;
@@ -130,6 +197,10 @@ static void load_library_functions() {
                 count = 0; // why cudaGetDeviceCount returns non-zero for errors?
             }
             cuda_found = count > 0;
+            // Detect if we loaded HIP runtime (ROCm) vs CUDA runtime
+            if (cuda_found && std::string(cudartLib).find("hip") != std::string::npos) {
+                is_hip_runtime = true;
+            }
             if (init_log) {
                 fprintf(stderr, "[DEBUG] device count=%d, cuda_found=%d\n", count, cuda_found);
             }
@@ -165,6 +236,19 @@ static void load_library_functions() {
                 fprintf(stderr, "[DEBUG] loaded: %s\n", cudartLib);
             }
         }
+        // DirectStorage (Windows only) — the Windows equivalent of cuFile/GDS.
+        // Must be initialized before dlclose(handle_cudart) since it needs to
+        // resolve CUDA interop symbols from the cudart library handle.
+#ifdef _MSC_VER
+        if (cuda_found) {
+            init_dstorage_if_available(handle_cudart, init_log);
+            dstorage_found = dstorage_available();
+            if (init_log) {
+                fprintf(stderr, "[DEBUG] DirectStorage: %s\n",
+                        dstorage_found ? "available" : "not available");
+            }
+        }
+#endif
         dlclose(handle_cudart);
     } else if (init_log) {
         fprintf(stderr, "[DEBUG] %s is not installed. fallback\n", cudartLib);
@@ -236,6 +320,14 @@ static void load_library_functions() {
     }
 }
 
+bool is_dstorage_found() {
+#ifdef _MSC_VER
+    return dstorage_found;
+#else
+    return false;
+#endif
+}
+
 // Note: is_cuda_found gets auto-hipified to is_hip_found on ROCm builds
 // So this function will be is_hip_found() after hipification on ROCm
 bool is_cuda_found()
@@ -248,6 +340,14 @@ bool is_cuda_found()
 bool cuda_not_available()
 {
     return false;  // On ROCm, CUDA is never available
+}
+
+// Separate function for checking HIP runtime detection (not hipified)
+// On CUDA: checks if HIP runtime was detected
+// On ROCm: not used (is_cuda_found gets hipified to is_hip_found)
+bool check_hip_runtime()
+{
+    return is_hip_runtime;
 }
 
 bool is_cufile_found()
@@ -356,6 +456,9 @@ int close_gds()
         std::printf("[DEBUG] close_gds: cuFileDriverClose, elapsed=%" PRId64 " us\n",
             std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
     }
+#ifdef _MSC_VER
+    shutdown_dstorage();
+#endif
     return 0;
 }
 
@@ -403,7 +506,11 @@ uintptr_t cpu_malloc(uint64_t length) {
 
 void cpu_free(uintptr_t addr) {
     void *p = reinterpret_cast<void *>(addr);
+#ifdef _MSC_VER
+    _aligned_free(p);
+#else
     free(p);
+#endif
 }
 
 uintptr_t gpu_malloc(uint64_t length) {
@@ -833,6 +940,7 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("is_hip_found", &cuda_not_available);
 #endif
     m.def("is_cufile_found", &is_cufile_found);
+    m.def("is_dstorage_found", &is_dstorage_found);
     m.def("cufile_version", &cufile_version);
     m.def("set_debug_log", &set_debug_log);
     m.def("get_alignment_size", &get_alignment_size);
@@ -846,7 +954,8 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("cpu_free", &cpu_free);
     m.def("gpu_malloc", &gpu_malloc);
     m.def("gpu_free", &gpu_free);
-    m.def("load_library_functions", &load_library_functions);
+    m.def("load_library_functions", &load_library_functions,
+          pybind11::arg("cudart_lib_name") = "");
     m.def("memcpy_h2d_async", &memcpy_h2d_async);
     m.def("get_cpp_metrics", &get_cpp_metrics);
     m.def("set_gil_release", &set_gil_release);
@@ -914,4 +1023,45 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     pybind11::class_<cpp_metrics_t>(m, "cpp_metrics")
         .def(pybind11::init<>())
         .def_readwrite("bounce_buffer_bytes", &cpp_metrics_t::bounce_buffer_bytes);
+
+#ifdef _MSC_VER
+    // DirectStorage file handle — wraps IDStorageFile (Windows only)
+    pybind11::class_<dstorage_file_handle>(m, "dstorage_file_handle")
+        .def(pybind11::init([](const std::string& filename) {
+            return new dstorage_file_handle(filename, &g_ds_ctx);
+        }));
+
+    // DirectStorage file reader — the Windows GDS equivalent
+    auto ds_submit_read = [](dstorage_file_reader& self,
+                             const dstorage_file_handle& fh,
+                             const gds_device_buffer& dst,
+                             const uint64_t offset,
+                             const uint64_t length,
+                             const uint64_t ptr_off,
+                             const uint64_t file_length) {
+        void* cuda_ptr = dst._get_raw_pointer(0, dst.get_length());
+        if (enable_gil_release) {
+            pybind11::gil_scoped_release release;
+            return self.submit_read(fh, cuda_ptr, offset, length, ptr_off, file_length);
+        } else {
+            return self.submit_read(fh, cuda_ptr, offset, length, ptr_off, file_length);
+        }
+    };
+
+    auto ds_wait_read = [](dstorage_file_reader& self, const int id) {
+        if (enable_gil_release) {
+            pybind11::gil_scoped_release release;
+            return self.wait_read(id);
+        } else {
+            return self.wait_read(id);
+        }
+    };
+
+    pybind11::class_<dstorage_file_reader>(m, "dstorage_file_reader")
+        .def(pybind11::init([](const int device_id, int max_threads) {
+            return new dstorage_file_reader(device_id, max_threads, &g_ds_ctx, &g_ds_fns);
+        }))
+        .def("submit_read", ds_submit_read)
+        .def("wait_read", ds_wait_read);
+#endif
 }

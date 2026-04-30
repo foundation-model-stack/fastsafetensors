@@ -48,7 +48,8 @@ class ThreeFSLoader(BaseSafeTensorsFileLoader):
 
         global loaded_library
         if not loaded_library:
-            fstcpp.load_library_functions()
+            from .copier.nogds import _resolve_cudart_lib_name
+            fstcpp.load_library_functions(_resolve_cudart_lib_name())
             loaded_library = True
         fstcpp.set_debug_log(debug_log)
         super().__init__(

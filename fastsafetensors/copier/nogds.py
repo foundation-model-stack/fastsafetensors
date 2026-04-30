@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import sys
 from typing import Dict, List
 
 from .. import cpp as fstcpp
@@ -22,7 +23,12 @@ class NoGdsFileCopier(CopierInterface):
         self.framework = framework
         self.metadata = metadata
         self.reader = reader
-        self.fd = os.open(metadata.src, os.O_RDONLY, 0o644)
+        flags = os.O_RDONLY
+        # On Windows, O_RDONLY defaults to text mode which translates \r\n
+        # and stops at 0x1A (Ctrl+Z), corrupting binary tensor data.
+        if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        self.fd = os.open(metadata.src, flags, 0o644)
         if self.fd < 0:
             raise Exception(
                 f"NoGdsFileCopier.__init__: failed to open, file={metadata.src}"
@@ -70,10 +76,61 @@ class NoGdsFileCopier(CopierInterface):
 _loaded_library = False
 
 
+def _resolve_cudart_lib_name() -> str:
+    """Resolve the CUDA runtime library name for the current platform.
+
+    On Windows, the cudart DLL includes the major version number
+    (e.g. cudart64_12.dll). This function detects it from CUDA_HOME
+    or the FASTSAFETENSORS_CUDART_LIB environment variable.
+
+    Returns:
+        Library name string, or "" to use the compiled-in default.
+    """
+    if sys.platform != "win32":
+        return ""  # Linux uses libcudart.so which is version-agnostic
+
+    # Allow explicit override via environment variable
+    override = os.environ.get("FASTSAFETENSORS_CUDART_LIB", "")
+    if override:
+        return override
+
+    # Try to detect from CUDA_HOME / CUDA_PATH
+    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+    if cuda_home:
+        nvcc = os.path.join(cuda_home, "bin", "nvcc.exe")
+        if os.path.isfile(nvcc):
+            try:
+                import subprocess
+                output = subprocess.check_output(
+                    [nvcc, "-V"], universal_newlines=True, stderr=subprocess.STDOUT
+                )
+                tokens = output.split()
+                release_idx = tokens.index("release") + 1
+                version_str = tokens[release_idx].rstrip(",")
+                cuda_major = version_str.split(".")[0]
+                dll_name = f"cudart64_{cuda_major}.dll"
+                return dll_name
+            except Exception:
+                pass
+
+        # Fallback: scan CUDA_HOME/bin for cudart64_*.dll
+        bin_dir = os.path.join(cuda_home, "bin")
+        if os.path.isdir(bin_dir):
+            import glob
+            matches = glob.glob(os.path.join(bin_dir, "cudart64_*.dll"))
+            if matches:
+                # Pick the one with the highest version number
+                matches.sort(reverse=True)
+                return os.path.basename(matches[0])
+
+    return ""  # fall back to compiled-in default
+
+
 def load_library_func():
     global _loaded_library
     if not _loaded_library:
-        fstcpp.load_library_functions()
+        cudart_lib = _resolve_cudart_lib_name()
+        fstcpp.load_library_functions(cudart_lib)
         _loaded_library = True
 
 
@@ -88,7 +145,7 @@ def new_nogds_file_copier(
     device_is_not_cpu = device.type != DeviceType.CPU
     if device_is_not_cpu and not is_gpu_found():
         raise Exception(
-            "[FAIL] GPU runtime library not found (expected libcudart.so or libamdhip64.so)"
+            "[FAIL] GPU runtime library not found (expected libcudart.so, libamdhip64.so, or cudart64_XX.dll)"
         )
 
     device_id = device.index if device.index is not None else 0

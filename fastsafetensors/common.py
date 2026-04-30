@@ -106,9 +106,20 @@ class SafeTensorsMetadata:
                     f"validate(tensor {k}): TensorInvalidInfo, e-s={e-s}, nbytes={nbytes}, src={src}"
                 )
         self.size_bytes = size_bytes
-        if start + header_length != size_bytes:
+        if start + header_length > size_bytes:
             raise Exception(
                 f"MetadataIncompleteBuffer, src={src}, start={start}, header_length={header_length}, size_bytes={size_bytes}"
+            )
+        if start + header_length < size_bytes:
+            # Trailing padding bytes after tensor data are allowed.
+            # This occurs with sub-byte dtypes (FP4, NF4) where alignment
+            # padding is added, or when the header is padded for page alignment.
+            trailing = size_bytes - (start + header_length)
+            logger = init_logger(__name__)
+            logger.debug(
+                "trailing %d bytes after tensor data in %s (alignment padding)",
+                trailing,
+                src,
             )
 
     @classmethod
@@ -174,7 +185,12 @@ class SafeTensorsMetadata:
 
     @classmethod
     def from_file(self, filename: str, framework: FrameworkOpBase):
-        fd = os.open(filename, os.O_RDONLY, 0o644)
+        flags = os.O_RDONLY
+        # On Windows, O_RDONLY defaults to text mode which translates \r\n -> \n,
+        # corrupting binary data and causing size mismatches on large files.
+        if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        fd = os.open(filename, flags, 0o644)
         ret = self.from_fd(fd, filename, framework=framework, keep_orig_dict=False)
         os.close(fd)
         return ret
