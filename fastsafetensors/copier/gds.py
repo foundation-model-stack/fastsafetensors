@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
+import platform
 from typing import Dict, Optional
 
 from .. import cpp as fstcpp
@@ -182,7 +183,7 @@ def new_gds_file_copier(
     device_is_not_cpu = device.type != DeviceType.CPU
     if device_is_not_cpu and not is_gpu_found():
         raise Exception(
-            "[FAIL] GPU runtime library (libcudart.so or libamdhip64.so) does not exist"
+            "[FAIL] GPU runtime library not found (expected libcudart.so, libamdhip64.so, or cudart64_XX.dll)"
         )
     nogds = False
     if device_is_not_cpu and not nogds:
@@ -192,10 +193,12 @@ def new_gds_file_copier(
         if gds_supported < 0:
             raise Exception(f"is_gds_supported({device.index}) failed")
         if not fstcpp.is_cufile_found():
-            warnings.warn(
-                "libcufile.so does not exist but nogds is False. use nogds=True",
-                UserWarning,
-            )
+            # Windows does not have cuFile, do not warning about it
+            if platform.system() != "Windows":
+                warnings.warn(
+                    "libcufile.so does not exist but nogds is False. use nogds=True",
+                    UserWarning,
+                )
             nogds = True
         elif gds_supported == 0:
             warnings.warn(

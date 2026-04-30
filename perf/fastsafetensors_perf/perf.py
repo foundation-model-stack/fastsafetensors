@@ -400,14 +400,14 @@ def drop_cache(
         for filename in filenames:
             targets[os.path.realpath(filename)] = True
     for filename in targets.keys():
-        fd = os.open(filename, os.O_RDONLY)
+        fd = os.open(filename, os.O_RDONLY | (os.O_BINARY if sys.platform == "win32" and hasattr(os, "O_BINARY") else 0))
         s = os.fstat(fd)
         if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
             os.posix_fadvise(fd, 0, s.st_size, os.POSIX_FADV_DONTNEED)  # type: ignore[attr-defined]
         os.close(fd)
         print(f"DROP_CACHE: {filename}, {s.st_size/1024/1024/1024} GiB")
         total += s.st_size
-    fd = os.open(sten_collection_json, os.O_RDONLY)
+    fd = os.open(sten_collection_json, os.O_RDONLY | (os.O_BINARY if sys.platform == "win32" and hasattr(os, "O_BINARY") else 0))
     s = os.fstat(fd)
     if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
         os.posix_fadvise(fd, 0, s.st_size, os.POSIX_FADV_DONTNEED)  # type: ignore[attr-defined]
