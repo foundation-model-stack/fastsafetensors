@@ -154,7 +154,7 @@ template <typename T> void mydlsym(T** h, void* lib, std::string const& name) {
 static void load_library_functions(const std::string& cudart_override = "") {
     cudaError_t (*cudaGetDeviceCount)(int*);
 #ifdef _MSC_VER
-    const char* cufileLib = "cufile.dll";
+    const char* cufileLib = nullptr; // cuFile not available on Windows
     const char* numaLib = nullptr;  // NUMA not available on Windows
 #else
     const char* cufileLib = "libcufile.so.0";
@@ -263,7 +263,7 @@ static void load_library_functions(const std::string& cudart_override = "") {
     }
 
     cufile_found = false;
-    if (cuda_found) {
+    if (cuda_found && cufileLib) {
         void* handle_cufile = dlopen(cufileLib, mode);
         if (handle_cufile) {
             CUfileError_t (*cuFileGetVersion)(int *);

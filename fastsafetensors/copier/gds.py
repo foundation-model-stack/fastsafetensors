@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
+import platform
 from typing import Dict, Optional
 
 from .. import cpp as fstcpp
@@ -192,10 +193,12 @@ def new_gds_file_copier(
         if gds_supported < 0:
             raise Exception(f"is_gds_supported({device.index}) failed")
         if not fstcpp.is_cufile_found():
-            warnings.warn(
-                "libcufile.so does not exist but nogds is False. use nogds=True",
-                UserWarning,
-            )
+            # Windows does not have cuFile, do not warning about it
+            if platform.system() != "Windows":
+                warnings.warn(
+                    "libcufile.so does not exist but nogds is False. use nogds=True",
+                    UserWarning,
+                )
             nogds = True
         elif gds_supported == 0:
             warnings.warn(
