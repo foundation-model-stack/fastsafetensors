@@ -3,7 +3,7 @@
 from typing import Any, List, Optional
 
 from . import cpp as fstcpp
-from .common import init_logger
+from .common import init_logger, resolve_cudart_lib_name
 from .frameworks import get_framework_op
 from .loader import BaseSafeTensorsFileLoader, loaded_library
 from .parallel_loader import PipelineParallel
@@ -48,8 +48,7 @@ class ThreeFSLoader(BaseSafeTensorsFileLoader):
 
         global loaded_library
         if not loaded_library:
-            from .copier.nogds import _resolve_cudart_lib_name
-            fstcpp.load_library_functions(_resolve_cudart_lib_name())
+            fstcpp.load_library_functions(resolve_cudart_lib_name())
             loaded_library = True
         fstcpp.set_debug_log(debug_log)
         super().__init__(

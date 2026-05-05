@@ -50,11 +50,10 @@ static inline int64_t pread(int fd, void *buf, size_t count, int64_t offset) {
 
 #include "cuda_compat.h"
 #include "ext.hpp"
-#ifdef _MSC_VER
-#include "dstorage_compat.h"
-#endif
 
 #define ALIGN 4096
+
+void init_dstorage_bindings(pybind11::module_&);
 
 bool debug_log = false;  // non-static: referenced by dstorage_compat.cpp on Windows
 static bool enable_gil_release = false;
@@ -128,22 +127,15 @@ ext_funcs_t cpu_fns = ext_funcs_t {
     .cudaDeviceGetPCIBusId = cpu_cudaDeviceGetPCIBusId,
     .numa_run_on_node = cpu_numa_run_on_node,
     .cudaSetDevice = cpu_cudaSetDevice,
+    .cudaImportExternalMemory = nullptr,
+    .cudaExternalMemoryGetMappedBuffer = nullptr,
+    .cudaDestroyExternalMemory = nullptr,
 };
 ext_funcs_t cuda_fns;
 
 static bool cuda_found = false;
 static bool is_hip_runtime = false;  // Track if we loaded HIP (not auto-hipified)
 static bool cufile_found = false;
-
-#ifdef _MSC_VER
-static bool dstorage_found = false;
-// Defined in dstorage_compat.cpp
-extern void init_dstorage_if_available(void* handle_cudart, bool init_log);
-extern void shutdown_dstorage();
-extern bool dstorage_available();
-extern dstorage_context g_ds_ctx;
-extern dstorage_funcs_t g_ds_fns;
-#endif
 
 static int cufile_ver = 0;
 
@@ -222,11 +214,16 @@ static void load_library_functions(const std::string& cudart_override = "") {
             mydlsym(&cuda_fns.cudaDriverGetVersion, handle_cudart, GPU_SYM_DRIVER_GET_VERSION);
             mydlsym(&cuda_fns.cudaDeviceGetAttribute, handle_cudart, GPU_SYM_DEVICE_GET_ATTRIBUTE);
             mydlsym(&cuda_fns.cudaSetDevice, handle_cudart, GPU_SYM_SET_DEVICE);
+            mydlsym(&cuda_fns.cudaImportExternalMemory, handle_cudart, "cudaImportExternalMemory");
+            mydlsym(&cuda_fns.cudaExternalMemoryGetMappedBuffer, handle_cudart, "cudaExternalMemoryGetMappedBuffer");
+            mydlsym(&cuda_fns.cudaDestroyExternalMemory, handle_cudart, "cudaDestroyExternalMemory");
             bool success = cuda_fns.cudaMemcpy && cuda_fns.cudaDeviceSynchronize;
             success = success && cuda_fns.cudaHostAlloc && cuda_fns.cudaFreeHost;
             success = success && cuda_fns.cudaDeviceGetPCIBusId && cuda_fns.cudaDeviceMalloc;
             success = success && cuda_fns.cudaDeviceFree && cuda_fns.cudaDriverGetVersion;
             success = success && cuda_fns.cudaDeviceGetAttribute && cuda_fns.cudaSetDevice;
+            success = success && cuda_fns.cudaImportExternalMemory && cuda_fns.cudaExternalMemoryGetMappedBuffer;
+            success = success && cuda_fns.cudaDestroyExternalMemory;
             if (!success) {
                 cuda_found = false;
                 if (init_log) {
@@ -236,19 +233,6 @@ static void load_library_functions(const std::string& cudart_override = "") {
                 fprintf(stderr, "[DEBUG] loaded: %s\n", cudartLib);
             }
         }
-        // DirectStorage (Windows only) — the Windows equivalent of cuFile/GDS.
-        // Must be initialized before dlclose(handle_cudart) since it needs to
-        // resolve CUDA interop symbols from the cudart library handle.
-#ifdef _MSC_VER
-        if (cuda_found) {
-            init_dstorage_if_available(handle_cudart, init_log);
-            dstorage_found = dstorage_available();
-            if (init_log) {
-                fprintf(stderr, "[DEBUG] DirectStorage: %s\n",
-                        dstorage_found ? "available" : "not available");
-            }
-        }
-#endif
         dlclose(handle_cudart);
     } else if (init_log) {
         fprintf(stderr, "[DEBUG] %s is not installed. fallback\n", cudartLib);
@@ -260,6 +244,9 @@ static void load_library_functions(const std::string& cudart_override = "") {
         cuda_fns.cudaFreeHost = cpu_cudaFreeHost;
         cuda_fns.cudaDeviceGetPCIBusId = cpu_cudaDeviceGetPCIBusId;
         cuda_fns.cudaSetDevice = cpu_cudaSetDevice;
+        cuda_fns.cudaImportExternalMemory = nullptr;
+        cuda_fns.cudaExternalMemoryGetMappedBuffer = nullptr;
+        cuda_fns.cudaDestroyExternalMemory = nullptr;
     }
 
     cufile_found = false;
@@ -318,14 +305,6 @@ static void load_library_functions(const std::string& cudart_override = "") {
 
         cuda_fns.cuFileRead = nullptr;
     }
-}
-
-bool is_dstorage_found() {
-#ifdef _MSC_VER
-    return dstorage_found;
-#else
-    return false;
-#endif
 }
 
 // Note: is_cuda_found gets auto-hipified to is_hip_found on ROCm builds
@@ -456,9 +435,6 @@ int close_gds()
         std::printf("[DEBUG] close_gds: cuFileDriverClose, elapsed=%" PRId64 " us\n",
             std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
     }
-#ifdef _MSC_VER
-    shutdown_dstorage();
-#endif
     return 0;
 }
 
@@ -929,6 +905,9 @@ static int memcpy_h2d_async(uintptr_t dst, uintptr_t src, size_t size) {
 
 PYBIND11_MODULE(__MOD_NAME__, m)
 {
+#ifdef _MSC_VER
+    init_dstorage_bindings(m);
+#endif
     // Initialize GIL release setting from environment variable on module load
     init_gil_release_from_env();
     // Export both is_cuda_found and is_hip_found on all platforms.
@@ -940,7 +919,6 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("is_hip_found", &cuda_not_available);
 #endif
     m.def("is_cufile_found", &is_cufile_found);
-    m.def("is_dstorage_found", &is_dstorage_found);
     m.def("cufile_version", &cufile_version);
     m.def("set_debug_log", &set_debug_log);
     m.def("get_alignment_size", &get_alignment_size);
@@ -960,6 +938,25 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("get_cpp_metrics", &get_cpp_metrics);
     m.def("set_gil_release", &set_gil_release);
     m.def("get_gil_release", &get_gil_release);
+
+    m.def("cuda_memcpy_device_to_host", [](uintptr_t dev_ptr, size_t size) -> pybind11::bytes {
+        if (!cuda_fns.cudaMemcpy || !cuda_fns.cudaSetDevice) {
+            throw std::runtime_error("CUDA functions not loaded");
+        }
+        cuda_fns.cudaSetDevice(0); // or pass device_id
+        std::string buf(size, '\0');
+        cudaError_t err = cuda_fns.cudaMemcpy(buf.data(), reinterpret_cast<const void*>(dev_ptr), size, cudaMemcpyDeviceToHost);
+        if (err != cudaSuccess) {
+            throw std::runtime_error("cudaMemcpy failed: " + std::to_string(err));
+        }
+        return pybind11::bytes(buf);
+    }, pybind11::arg("dev_ptr"), pybind11::arg("size"));
+
+    m.def("cuda_memcpy_host_to_device", [](uintptr_t dev_ptr, pybind11::bytes data) -> void {
+        std::string s = data;
+        cudaError_t err = cuda_fns.cudaMemcpy(reinterpret_cast<void*>(dev_ptr), s.data(), s.size(), cudaMemcpyHostToDevice);
+        if (err != cudaSuccess) throw std::runtime_error("cudaMemcpy H2D failed");
+    });
 
     pybind11::class_<gds_device_buffer>(m, "gds_device_buffer")
         .def(pybind11::init<const uintptr_t, const uint64_t, bool>())
@@ -1023,45 +1020,4 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     pybind11::class_<cpp_metrics_t>(m, "cpp_metrics")
         .def(pybind11::init<>())
         .def_readwrite("bounce_buffer_bytes", &cpp_metrics_t::bounce_buffer_bytes);
-
-#ifdef _MSC_VER
-    // DirectStorage file handle — wraps IDStorageFile (Windows only)
-    pybind11::class_<dstorage_file_handle>(m, "dstorage_file_handle")
-        .def(pybind11::init([](const std::string& filename) {
-            return new dstorage_file_handle(filename, &g_ds_ctx);
-        }));
-
-    // DirectStorage file reader — the Windows GDS equivalent
-    auto ds_submit_read = [](dstorage_file_reader& self,
-                             const dstorage_file_handle& fh,
-                             const gds_device_buffer& dst,
-                             const uint64_t offset,
-                             const uint64_t length,
-                             const uint64_t ptr_off,
-                             const uint64_t file_length) {
-        void* cuda_ptr = dst._get_raw_pointer(0, dst.get_length());
-        if (enable_gil_release) {
-            pybind11::gil_scoped_release release;
-            return self.submit_read(fh, cuda_ptr, offset, length, ptr_off, file_length);
-        } else {
-            return self.submit_read(fh, cuda_ptr, offset, length, ptr_off, file_length);
-        }
-    };
-
-    auto ds_wait_read = [](dstorage_file_reader& self, const int id) {
-        if (enable_gil_release) {
-            pybind11::gil_scoped_release release;
-            return self.wait_read(id);
-        } else {
-            return self.wait_read(id);
-        }
-    };
-
-    pybind11::class_<dstorage_file_reader>(m, "dstorage_file_reader")
-        .def(pybind11::init([](const int device_id, int max_threads) {
-            return new dstorage_file_reader(device_id, max_threads, &g_ds_ctx, &g_ds_fns);
-        }))
-        .def("submit_read", ds_submit_read)
-        .def("wait_read", ds_wait_read);
-#endif
 }

@@ -14,9 +14,8 @@ from threefs.mock_reader import extract_mount_point as mock_extract_mount_point
 
 from fastsafetensors import SingleGroup
 from fastsafetensors import cpp as fstcpp
-from fastsafetensors.common import is_gpu_found
+from fastsafetensors.common import is_gpu_found, resolve_cudart_lib_name
 from fastsafetensors.cpp import load_library_functions
-from fastsafetensors.copier.nogds import _resolve_cudart_lib_name
 from fastsafetensors.frameworks import FrameworkOpBase, get_framework_op
 from fastsafetensors.st_types import Device
 
@@ -35,7 +34,7 @@ def mock_3fs_reader():
     yield
 
 
-load_library_functions(_resolve_cudart_lib_name())
+load_library_functions(resolve_cudart_lib_name())
 FRAMEWORK = get_framework_op(os.getenv("TEST_FASTSAFETENSORS_FRAMEWORK", "please set"))
 
 

@@ -3,6 +3,7 @@
 from .base import CopierInterface
 from .gds import GdsFileCopier
 from .nogds import NoGdsFileCopier
+from .dstorage import DStorageFileCopier
 from .registry import (
     CopierConstructFunc,
     CopierType,

@@ -50,6 +50,84 @@ def get_device_numa_node(device: Optional[int]) -> Optional[int]:
     with open(syspath) as f:
         return int(f.read().strip())
 
+def resolve_cudart_lib_name() -> str:
+    """Resolve the CUDA runtime library name for the current platform.
+
+    Returns:
+        Library name string, or "" to use the compiled-in default.
+    """
+    if sys.platform != "win32":
+        return ""  # Non Windows platforms uses version-agnostic, return empty (default to cuda_compat.h GPU_RUNTIME_LIB)
+
+    # Allow explicit override via environment variable
+    override = os.environ.get("FASTSAFETENSORS_CUDART_LIB", "")
+    if override:
+        return override
+
+    import glob
+
+    def _find_cudart_in_dir(d: str) -> str:
+        """Scan a directory for cudart64_*.dll files, return the best match."""
+        if not os.path.isdir(d):
+            return ""
+        matches = glob.glob(os.path.join(d, "cudart64_*.dll"))
+        if matches:
+            matches.sort(reverse=True)
+            return os.path.basename(matches[0])
+        return ""
+
+    def _detect_from_nvcc(cuda_home: str) -> str:
+        """Try to detect the CUDA major version from nvcc -V output."""
+        nvcc = os.path.join(cuda_home, "bin", "nvcc.exe")
+        if not os.path.isfile(nvcc):
+            return ""
+        try:
+            import subprocess
+            output = subprocess.check_output(
+                [nvcc, "-V"], universal_newlines=True, stderr=subprocess.STDOUT
+            )
+            tokens = output.split()
+            release_idx = tokens.index("release") + 1
+            version_str = tokens[release_idx].rstrip(",")
+            cuda_major = version_str.split(".")[0]
+            return f"cudart64_{cuda_major}.dll"
+        except Exception:
+            return ""
+
+    # Try to detect from CUDA_HOME / CUDA_PATH
+    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+    if cuda_home:
+        result = _detect_from_nvcc(cuda_home)
+        if result:
+            return result
+        result = _find_cudart_in_dir(os.path.join(cuda_home, "bin"))
+        if result:
+            return result
+
+    # Scan directories on PATH for cudart64_*.dll
+    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+    for d in path_dirs:
+        result = _find_cudart_in_dir(d)
+        if result:
+            return result
+
+    # Scan common NVIDIA install locations
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    nvidia_base = os.path.join(program_files, "NVIDIA GPU Computing Toolkit", "CUDA")
+    if os.path.isdir(nvidia_base):
+        # List version directories (e.g. v12.6, v11.8), newest first
+        try:
+            versions = sorted(os.listdir(nvidia_base), reverse=True)
+        except OSError:
+            versions = []
+        for ver_dir in versions:
+            result = _find_cudart_in_dir(
+                os.path.join(nvidia_base, ver_dir, "bin")
+            )
+            if result:
+                return result
+
+    return ""  # fall back to compiled-in default
 
 # keep this for compatibility
 class SingleGroup:

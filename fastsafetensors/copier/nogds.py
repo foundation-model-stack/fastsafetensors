@@ -5,7 +5,7 @@ import sys
 from typing import Dict, List
 
 from .. import cpp as fstcpp
-from ..common import SafeTensorsMetadata, is_gpu_found
+from ..common import SafeTensorsMetadata, is_gpu_found, resolve_cudart_lib_name
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface
@@ -72,64 +72,12 @@ class NoGdsFileCopier(CopierInterface):
             gbuf, self.device, self.metadata.header_length, dtype=dtype
         )
 
-
 _loaded_library = False
-
-
-def _resolve_cudart_lib_name() -> str:
-    """Resolve the CUDA runtime library name for the current platform.
-
-    On Windows, the cudart DLL includes the major version number
-    (e.g. cudart64_12.dll). This function detects it from CUDA_HOME
-    or the FASTSAFETENSORS_CUDART_LIB environment variable.
-
-    Returns:
-        Library name string, or "" to use the compiled-in default.
-    """
-    if sys.platform != "win32":
-        return ""  # Linux uses libcudart.so which is version-agnostic
-
-    # Allow explicit override via environment variable
-    override = os.environ.get("FASTSAFETENSORS_CUDART_LIB", "")
-    if override:
-        return override
-
-    # Try to detect from CUDA_HOME / CUDA_PATH
-    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
-    if cuda_home:
-        nvcc = os.path.join(cuda_home, "bin", "nvcc.exe")
-        if os.path.isfile(nvcc):
-            try:
-                import subprocess
-                output = subprocess.check_output(
-                    [nvcc, "-V"], universal_newlines=True, stderr=subprocess.STDOUT
-                )
-                tokens = output.split()
-                release_idx = tokens.index("release") + 1
-                version_str = tokens[release_idx].rstrip(",")
-                cuda_major = version_str.split(".")[0]
-                dll_name = f"cudart64_{cuda_major}.dll"
-                return dll_name
-            except Exception:
-                pass
-
-        # Fallback: scan CUDA_HOME/bin for cudart64_*.dll
-        bin_dir = os.path.join(cuda_home, "bin")
-        if os.path.isdir(bin_dir):
-            import glob
-            matches = glob.glob(os.path.join(bin_dir, "cudart64_*.dll"))
-            if matches:
-                # Pick the one with the highest version number
-                matches.sort(reverse=True)
-                return os.path.basename(matches[0])
-
-    return ""  # fall back to compiled-in default
-
 
 def load_library_func():
     global _loaded_library
     if not _loaded_library:
-        cudart_lib = _resolve_cudart_lib_name()
+        cudart_lib = resolve_cudart_lib_name()
         fstcpp.load_library_functions(cudart_lib)
         _loaded_library = True
 
