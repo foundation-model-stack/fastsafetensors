@@ -29,12 +29,18 @@ dtype_convert: Dict[DType, Any] = {
 need_workaround_dtypes: Dict[DType, DType] = {
     DType.F8_E5M2: DType.I8,
     DType.F8_E4M3: DType.I8,
+    DType.F8_E8M0: DType.U8,
+    DType.F4: DType.U8,
 }
 
 if hasattr(torch, "float8_e5m2"):
     dtype_convert[DType.F8_E5M2] = torch.float8_e5m2
 if hasattr(torch, "float8_e4m3fn"):
     dtype_convert[DType.F8_E4M3] = torch.float8_e4m3fn
+if hasattr(torch, "float8_e8m0fnu"):
+    dtype_convert[DType.F8_E8M0] = torch.float8_e8m0fnu
+if hasattr(torch, "float4_e2m1fn_x2"):
+    dtype_convert[DType.F4] = torch.float4_e2m1fn_x2
 if hasattr(torch, "uint16"):
     dtype_convert[DType.U16] = torch.uint16
 if hasattr(torch, "uint32"):
@@ -87,6 +93,9 @@ class TorchTensor(TensorBase):
     def __getitem__(self, _val) -> "TorchTensor":
         return TorchTensor(self.device, self.dtype, self.real_tensor[_val])
 
+    def reshape(self, shape: List[int]) -> "TorchTensor":
+        return TorchTensor(self.device, self.dtype, self.real_tensor.reshape(shape))
+
 
 def _needs_fp8_cast() -> bool:
     """Check if FP8 NCCL ops need a bf16 workaround (pre-sm90 GPUs)."""
@@ -97,7 +106,7 @@ def _needs_fp8_cast() -> bool:
 
 
 def _is_fp8(dtype: DType) -> bool:
-    return dtype in (DType.F8_E5M2, DType.F8_E4M3)
+    return dtype in (DType.F8_E5M2, DType.F8_E4M3, DType.F8_E8M0)
 
 
 @dataclass
@@ -211,8 +220,9 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
     def get_empty_tensor(
         self, shape: List[int], dtype: DType, device: Device
     ) -> TorchTensor:
+        native_shape = self.get_native_shape(dtype, shape)
         dst = torch.empty(
-            size=shape, dtype=dtype_convert[dtype], device=device.as_str()
+            size=native_shape, dtype=dtype_convert[dtype], device=device.as_str()
         )
         return TorchTensor(device, dtype, dst)
 
@@ -220,8 +230,13 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
         ts = [tensor.real_tensor for tensor in tensors]
         return TorchTensor(tensors[0].device, tensors[0].dtype, torch.cat(ts, dim=dim))
 
-    def get_dtype_size(self, dtype: DType) -> int:
-        return dtype_convert[dtype].itemsize
+    def get_dtype_size(self, dtype: DType) -> float:
+        if dtype == DType.F4:
+            # float4_e2m1fn_x2 packs two 4-bit values into one byte.
+            # safetensors stores shape in FP4-element count, so the byte
+            # size per logical element is 0.5.
+            return 0.5
+        return float(dtype_convert[dtype].itemsize)
 
     def from_dlpack(self, dl_tensor: Any, device: Device, dtype: DType) -> TorchTensor:
         t = torch.from_dlpack(dl_tensor)
@@ -252,6 +267,32 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
         if dtype in need_workaround_dtypes:
             return need_workaround_dtypes[dtype]
         return dtype
+
+    def get_storage_shape(
+        self, dtype: DType, shape: List[int], strides: List[int]
+    ) -> "tuple[List[int], List[int]]":
+        size = self.get_dtype_size(dtype)
+        if size < 1.0:
+            # Packed sub-byte dtype: collapse to flat byte count so the
+            # workaround-dtype DLPack tensor doesn't overread the buffer.
+            import math
+
+            nbytes = int(math.prod(shape) * size)
+            return [nbytes], [1]
+        return shape, strides
+
+    def get_native_shape(self, dtype: DType, st_shape: List[int]) -> List[int]:
+        size = self.get_dtype_size(dtype)
+        if size < 1.0:
+            # safetensors counts logical sub-byte elements; PyTorch counts
+            # packed storage units (bytes). Compress the last dimension.
+            import math
+
+            ratio = int(round(1.0 / size))  # e.g. 2 for F4 (2 FP4 per byte)
+            if len(st_shape) > 1:
+                return list(st_shape[:-1]) + [st_shape[-1] // ratio]
+            return [int(math.prod(st_shape) * size)]
+        return st_shape
 
     def get_process_group(self, pg: Optional[Any]) -> TorchProcessGroup:
         if pg is not None:

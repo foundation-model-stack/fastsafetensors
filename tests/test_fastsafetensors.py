@@ -662,6 +662,65 @@ def test_float8_e4m3fn_to_int8(fstcpp_log, tmp_dir, framework) -> None:
     _test_type(tmp_dir, DType.F8_E4M3, device, framework, DType.I8)
 
 
+def test_float4_e2m1fn_x2(fstcpp_log, tmp_dir, framework) -> None:
+    """Test bit-exact round-trip for F4 (torch.float4_e2m1fn_x2).
+
+    F4 is a packed FP4 format (two 4-bit values per byte, dtype string "F4" in
+    safetensors) used for expert weight matrices in models like DeepSeek V4-Flash.
+
+    The safetensors shape is in FP4-element count while torch.float4_e2m1fn_x2
+    counts packed byte-pairs, so the PyTorch shape has half as many elements in
+    the last dimension.  fastsafetensors handles the shape conversion internally.
+    """
+    if framework.get_name() != "pytorch":
+        pytest.skip("F4 is only available in PyTorch")
+        return
+    import torch
+
+    if not hasattr(torch, "float4_e2m1fn_x2"):
+        pytest.skip("torch.float4_e2m1fn_x2 requires PyTorch 2.10+")
+        return
+    device, _ = get_and_check_device(framework)
+    filename = os.path.join(tmp_dir, "f4.safetensors")
+    # F4 tensors cannot be created via randn/cast; create via uint8 view.
+    # Shape [8, 16] in FP4-element terms = shape [8, 8] in float4_e2m1fn_x2.
+    u8 = torch.arange(64, dtype=torch.uint8, device=device.as_str()).reshape(8, 8)
+    t0 = u8.view(torch.float4_e2m1fn_x2)
+    save_safetensors_file({"a": t0}, filename, {"fst": "sample"}, framework)
+    t_ref = load_safetensors_file(filename, device, framework)
+    with fastsafe_open(
+        filenames=[filename],
+        nogds=True,
+        device=device.as_str(),
+        framework=framework.get_name(),
+        debug_log=True,
+    ) as f:
+        for key in f.keys():
+            t1 = f.get_tensor_wrapped(key).clone().detach()
+            assert framework.is_equal(t1, t_ref[key])
+    assert framework.get_mem_used() == 0
+    assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
+
+
+def test_float8_e8m0fnu(fstcpp_log, tmp_dir, framework) -> None:
+    """Test bit-exact round-trip for F8_E8M0 (torch.float8_e8m0fnu).
+
+    F8_E8M0 is an unsigned 8-bit exponent-only format used as per-tile
+    quantization scales in models like DeepSeek V4-Flash.  It has no mantissa
+    bits, so ordinary randn -> cast is safe for creating test tensors.
+    """
+    if framework.get_name() != "pytorch":
+        pytest.skip("F8_E8M0 is only available in PyTorch")
+        return
+    import torch
+
+    if not hasattr(torch, "float8_e8m0fnu"):
+        pytest.skip("torch.float8_e8m0fnu requires PyTorch 2.5+")
+        return
+    device, _ = get_and_check_device(framework)
+    _test_type(tmp_dir, DType.F8_E8M0, device, framework)
+
+
 def test_cpp_metrics(fstcpp_log, framework) -> None:
     device, _ = get_and_check_device(framework)
     exp_length = 0

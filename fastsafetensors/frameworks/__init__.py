@@ -45,6 +45,15 @@ class TensorBase:
     def __getitem__(self, _val) -> "TensorBase":
         pass
 
+    def reshape(self, shape: List[int]) -> "TensorBase":
+        """Reshape the tensor.  Default implementation raises NotImplementedError.
+        Frameworks that support packed sub-byte dtypes (e.g. F4) must override
+        this to handle shape adjustment after buffer loading.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement reshape()"
+        )
+
 
 T = TypeVar("T", bound=TensorBase)
 
@@ -127,7 +136,14 @@ class FrameworkOpBase(ABC, Generic[T, K]):
         pass
 
     @abstractmethod
-    def get_dtype_size(self, dtype: DType) -> int:
+    def get_dtype_size(self, dtype: DType) -> float:
+        """Return the number of bytes per logical element for this dtype.
+
+        For packed sub-byte types (e.g. F4 / float4_e2m1fn_x2, where two
+        FP4 values share a single byte), this returns a fractional value
+        (0.5 for F4).  Callers should use ``int(nelements *
+        get_dtype_size(dtype))`` when computing byte counts.
+        """
         pass
 
     @abstractmethod
@@ -145,6 +161,29 @@ class FrameworkOpBase(ABC, Generic[T, K]):
     @abstractmethod
     def as_workaround_dtype(self, dtype: DType) -> DType:
         pass
+
+    def get_storage_shape(
+        self, dtype: DType, shape: List[int], strides: List[int]
+    ) -> "tuple[List[int], List[int]]":
+        """Return the (shape, strides) to use for the workaround-dtype DLPack
+        tensor when loading from a device buffer.
+
+        For most dtypes this is just (shape, strides).  Packed sub-byte dtypes
+        (e.g. F4 / float4_e2m1fn_x2) store multiple logical values per byte;
+        the safetensors shape counts logical values while DLPack / PyTorch work
+        in bytes, so the shape must be collapsed to a flat byte count.
+        """
+        return shape, strides
+
+    def get_native_shape(self, dtype: DType, st_shape: List[int]) -> List[int]:
+        """Return the framework-native tensor shape for a safetensors tensor.
+
+        For most dtypes this matches *st_shape* exactly.  For packed sub-byte
+        dtypes the safetensors shape counts logical (sub-byte) elements while
+        the framework counts packed storage units (bytes), so the shape is
+        compressed by the packing ratio.
+        """
+        return st_shape
 
     @abstractmethod
     def get_process_group(self, pg: Optional[Any]) -> ProcessGroupBase:
