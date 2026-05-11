@@ -12,8 +12,6 @@
 #include <share.h>
 #include <stdio.h>
 #include <cstdint>
-#include "mman.h"
-#include "dlfcn.h"
 // Windows-compatible posix_memalign
 static inline int posix_memalign(void **memptr, size_t alignment, size_t size) {
     *memptr = _aligned_malloc(size, alignment);
@@ -28,9 +26,45 @@ static inline int64_t pread(int fd, void *buf, size_t count, int64_t offset) {
     _lseeki64(fd, cur, 0 /*SEEK_SET*/);
     return rd;
 }
+// --- Windows equivalents for dlfcn.h ---
+#include <windows.h>
+#define RTLD_LAZY    0
+#define RTLD_GLOBAL  0
 #ifndef RTLD_NODELETE
 #define RTLD_NODELETE 0
 #endif
+
+static inline void* dlopen(const char* filename, int) {
+    if (!filename) return nullptr;
+    return reinterpret_cast<void*>(LoadLibraryA(filename));
+}
+static inline void* dlsym(void* handle, const char* symbol) {
+    return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(handle), symbol));
+}
+static inline int dlclose(void* handle) {
+    return FreeLibrary(reinterpret_cast<HMODULE>(handle)) ? 0 : -1;
+}
+
+// --- Windows equivalents for mmap/munmap ---
+#define PROT_READ   1
+#define MAP_PRIVATE 2
+#define MAP_FAILED  ((void*)-1)
+
+static inline void* mmap(void* /*addr*/, size_t length, int /*prot*/, int /*flags*/, int fd, int64_t offset) {
+    HANDLE hFile = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+    if (hFile == INVALID_HANDLE_VALUE) return MAP_FAILED;
+    DWORD offsetHigh = static_cast<DWORD>(offset >> 32);
+    DWORD offsetLow  = static_cast<DWORD>(offset & 0xFFFFFFFF);
+    HANDLE hMapping = CreateFileMappingA(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (!hMapping) return MAP_FAILED;
+    void* ptr = MapViewOfFile(hMapping, FILE_MAP_READ, offsetHigh, offsetLow, length);
+    CloseHandle(hMapping);  // view keeps the mapping alive
+    return ptr ? ptr : MAP_FAILED;
+}
+static inline int munmap(void* addr, size_t /*length*/) {
+    return UnmapViewOfFile(addr) ? 0 : -1;
+}
+
 // Map POSIX names to MSVC equivalents
 #define open  _open
 #define close _close
@@ -938,25 +972,6 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("get_cpp_metrics", &get_cpp_metrics);
     m.def("set_gil_release", &set_gil_release);
     m.def("get_gil_release", &get_gil_release);
-
-    m.def("cuda_memcpy_device_to_host", [](uintptr_t dev_ptr, size_t size) -> pybind11::bytes {
-        if (!cuda_fns.cudaMemcpy || !cuda_fns.cudaSetDevice) {
-            throw std::runtime_error("CUDA functions not loaded");
-        }
-        cuda_fns.cudaSetDevice(0); // or pass device_id
-        std::string buf(size, '\0');
-        cudaError_t err = cuda_fns.cudaMemcpy(buf.data(), reinterpret_cast<const void*>(dev_ptr), size, cudaMemcpyDeviceToHost);
-        if (err != cudaSuccess) {
-            throw std::runtime_error("cudaMemcpy failed: " + std::to_string(err));
-        }
-        return pybind11::bytes(buf);
-    }, pybind11::arg("dev_ptr"), pybind11::arg("size"));
-
-    m.def("cuda_memcpy_host_to_device", [](uintptr_t dev_ptr, pybind11::bytes data) -> void {
-        std::string s = data;
-        cudaError_t err = cuda_fns.cudaMemcpy(reinterpret_cast<void*>(dev_ptr), s.data(), s.size(), cudaMemcpyHostToDevice);
-        if (err != cudaSuccess) throw std::runtime_error("cudaMemcpy H2D failed");
-    });
 
     pybind11::class_<gds_device_buffer>(m, "gds_device_buffer")
         .def(pybind11::init<const uintptr_t, const uint64_t, bool>())

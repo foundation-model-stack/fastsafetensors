@@ -37,8 +37,6 @@ def MyExtension(name, sources, mod_name, platform_type, *args, **kwargs):
     # Windows-specific configuration for DirectStorage + D3D12/CUDA interop
     if platform.system() == "Windows":
         sources.append("fastsafetensors/cpp/dstorage_reader.cpp")
-        sources.append("fastsafetensors/cpp/mman.cpp")
-        sources.append("fastsafetensors/cpp/dlfcn.cpp")
         kwargs["libraries"] = []
         #c++20 required for designated initializers at ext.hpp
         kwargs["extra_compile_args"] = ["/std:c++20"]
