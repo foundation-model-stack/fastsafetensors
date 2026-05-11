@@ -87,9 +87,11 @@ static inline int munmap(void* addr, size_t /*length*/) {
 
 #define ALIGN 4096
 
+#ifdef _MSC_VER
 void init_dstorage_bindings(pybind11::module_&);
+#endif
 
-bool debug_log = false;  // non-static: referenced by dstorage_compat.cpp on Windows
+bool debug_log = false;  // non-static: fix Windows build
 static bool enable_gil_release = false;
 
 static cpp_metrics_t mc = {.bounce_buffer_bytes = 0};
