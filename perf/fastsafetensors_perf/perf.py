@@ -402,12 +402,7 @@ def drop_cache(
     for filename in targets.keys():
         fd = os.open(
             filename,
-            os.O_RDONLY
-            | (
-                os.O_BINARY
-                if sys.platform == "win32" and hasattr(os, "O_BINARY")
-                else 0
-            ),
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
         )
         s = os.fstat(fd)
         if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
@@ -417,8 +412,7 @@ def drop_cache(
         total += s.st_size
     fd = os.open(
         sten_collection_json,
-        os.O_RDONLY
-        | (os.O_BINARY if sys.platform == "win32" and hasattr(os, "O_BINARY") else 0),
+        os.O_RDONLY | getattr(os, "O_BINARY", 0),
     )
     s = os.fstat(fd)
     if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):

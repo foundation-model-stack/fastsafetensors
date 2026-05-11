@@ -22,6 +22,9 @@ _inited_ds = False
 
 def load_dstorage_dlls() -> None:
     """Download and install DirectStorage DLLs if not already present."""
+    if sys.platform != "win32":
+        return  # DirectStorage is Windows-only
+
     import ctypes
     import io
     import shutil
