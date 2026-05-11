@@ -50,6 +50,7 @@ def get_device_numa_node(device: Optional[int]) -> Optional[int]:
     with open(syspath) as f:
         return int(f.read().strip())
 
+
 def resolve_cudart_lib_name() -> str:
     """Resolve the CUDA runtime library name for the current platform.
 
@@ -83,6 +84,7 @@ def resolve_cudart_lib_name() -> str:
             return ""
         try:
             import subprocess
+
             output = subprocess.check_output(
                 [nvcc, "-V"], universal_newlines=True, stderr=subprocess.STDOUT
             )
@@ -121,13 +123,12 @@ def resolve_cudart_lib_name() -> str:
         except OSError:
             versions = []
         for ver_dir in versions:
-            result = _find_cudart_in_dir(
-                os.path.join(nvidia_base, ver_dir, "bin")
-            )
+            result = _find_cudart_in_dir(os.path.join(nvidia_base, ver_dir, "bin"))
             if result:
                 return result
 
     return ""  # fall back to compiled-in default
+
 
 # keep this for compatibility
 class SingleGroup:

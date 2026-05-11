@@ -1,10 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 import os
 import sys
-from typing import Dict
+from typing import Any, Dict
 
 from .. import cpp as fstcpp
-from ..common import SafeTensorsMetadata, init_logger, is_gpu_found, resolve_cudart_lib_name
+from ..common import (
+    SafeTensorsMetadata,
+    init_logger,
+    is_gpu_found,
+    resolve_cudart_lib_name,
+)
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface
@@ -14,21 +19,22 @@ logger = init_logger(__name__)
 
 _inited_ds = False
 
+
 def load_dstorage_dlls() -> None:
     """Download and install DirectStorage DLLs if not already present."""
     import ctypes
     import io
-    from pathlib import Path
     import shutil
     import zipfile
-    from urllib.request import urlopen, Request
+    from pathlib import Path
     from urllib.error import URLError
+    from urllib.request import Request, urlopen
 
     cache_dir = Path.home() / ".cache" / "fastsafetensors"
     cache_dir.mkdir(parents=True, exist_ok=True)
     dstorage_dll = cache_dir / "dstorage.dll"
     dlls = ["dstoragecore.dll", "dstorage.dll"]
-    arch = "x64" if sys.maxsize > 2 ** 32 else "x86"
+    arch = "x64" if sys.maxsize > 2**32 else "x86"
 
     if not dstorage_dll.exists():
         logger.info("Downloading fastsafetensors DirectStorage DLL's")
@@ -55,7 +61,9 @@ def load_dstorage_dlls() -> None:
                 if src.is_file():
                     shutil.copy2(src, dst)
                 else:
-                    raise FileNotFoundError(f"Expected {dll_name} at {src} but not found in NuGet package")
+                    raise FileNotFoundError(
+                        f"Expected {dll_name} at {src} but not found in NuGet package"
+                    )
         except (URLError, OSError, zipfile.BadZipFile, FileNotFoundError) as e:
             logger.warning(f"Failed to download/install DirectStorage DLLs: {e}")
         finally:
@@ -75,6 +83,7 @@ def init_dstorage(device_id: int = 0) -> None:
     global _inited_ds
     if not _inited_ds:
         from .nogds import load_library_func
+
         load_dstorage_dlls()
         load_library_func()
         if not is_gpu_found():
@@ -92,16 +101,18 @@ class DStorageFileCopier(CopierInterface):
     """Copier that reads files via DirectStorage with double-buffered staging
     into a standard CUDA (gds_device_buffer) destination."""
 
-    def __init__(self,
-                 metadata: SafeTensorsMetadata,
-                 device: Device,
-                 stream_reader: fstcpp.dstorage_stream_reader,
-                 framework: FrameworkOpBase):
+    def __init__(
+        self,
+        metadata: SafeTensorsMetadata,
+        device: Device,
+        stream_reader: fstcpp.dstorage_stream_reader,
+        framework: FrameworkOpBase,
+    ):
         self.framework = framework
         self.metadata = metadata
         self.device = device
         self.stream_reader = stream_reader
-        self.fh: fstcpp.dstorage_file_handle = None
+        self.fh: Any = None  # fstcpp.dstorage_file_handle
 
     def submit_io(self, use_buf_register: bool, max_copy_block_size: int):
         total_bytes = self.metadata.size_bytes - self.metadata.header_length
@@ -145,7 +156,9 @@ def new_dstorage_copier(device: Device, **kwargs) -> CopierConstructFunc:
     if not stream_reader.is_ready():
         raise RuntimeError("dstorage_stream_reader failed to initialize")
 
-    def construct(metadata: SafeTensorsMetadata, device: Device, framework: FrameworkOpBase) -> CopierInterface:
+    def construct(
+        metadata: SafeTensorsMetadata, device: Device, framework: FrameworkOpBase
+    ) -> CopierInterface:
         return DStorageFileCopier(metadata, device, stream_reader, framework)
 
     return construct

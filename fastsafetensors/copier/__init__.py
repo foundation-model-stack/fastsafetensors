@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .base import CopierInterface
+from .dstorage import DStorageFileCopier
 from .gds import GdsFileCopier
 from .nogds import NoGdsFileCopier
-from .dstorage import DStorageFileCopier
 from .registry import (
     CopierConstructFunc,
     CopierType,

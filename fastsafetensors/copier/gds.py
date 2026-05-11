@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import warnings
 import platform
+import warnings
 from typing import Dict, Optional
 
 from .. import cpp as fstcpp

@@ -38,7 +38,7 @@ def MyExtension(name, sources, mod_name, platform_type, *args, **kwargs):
     if platform.system() == "Windows":
         sources.append("fastsafetensors/cpp/dstorage_reader.cpp")
         kwargs["libraries"] = []
-        #c++20 required for designated initializers at ext.hpp
+        # c++20 required for designated initializers at ext.hpp
         kwargs["extra_compile_args"] = ["/std:c++20"]
         # Note: dstorage.dll is loaded at runtime via LoadLibrary, not linked.
         kwargs["libraries"].extend(["ole32", "d3d12", "dxgi", "dxguid", "uuid"])

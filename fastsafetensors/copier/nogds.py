@@ -72,7 +72,9 @@ class NoGdsFileCopier(CopierInterface):
             gbuf, self.device, self.metadata.header_length, dtype=dtype
         )
 
+
 _loaded_library = False
+
 
 def load_library_func():
     global _loaded_library

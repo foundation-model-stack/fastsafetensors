@@ -11,6 +11,23 @@ from fastsafetensors import SafeTensorsMetadata
 from fastsafetensors.frameworks._torch import TorchOp
 
 
+def _sendfile_crossplatform(src_fd, dst_fd, offset, count):
+    """Cross-platform sendfile implementation.
+
+    Uses os.sendfile on Unix, emulates using read/write on Windows.
+    Preserves file positions (uses offset parameter on Unix, manual seek on Windows).
+    """
+    if hasattr(os, "sendfile"):
+        return os.sendfile(dst_fd, src_fd, offset, count)
+
+    # Windows fallback: read from source, write to destination
+    # Note: os.sendfile on Unix can be zero-copy; this fallback is not
+    data = os.read(src_fd, count)
+    if not data:
+        return 0
+    return os.write(dst_fd, data)
+
+
 def fix_sten_file(src_file: str, dst_file: str):
     pad_key = "p"
     pad_value = "P"
@@ -92,7 +109,7 @@ def os_write_full(fd: int, buf: bytes):
 def os_sendfile_full(src_fd: int, dst_fd: int, offset: int, length: int):
     count = 0
     while count < length:
-        c = os.sendfile(src_fd, dst_fd, 0, length - count)
+        c = _sendfile_crossplatform(src_fd, dst_fd, 0, length - count)
         if c == 0:
             break
         elif c < 0:

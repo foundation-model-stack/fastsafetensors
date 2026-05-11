@@ -477,7 +477,7 @@
 // MessageText:
 //
 // A gpu memory destination request was enqueued into a queue that
-// was created without a D3D device or the destination type is 
+// was created without a D3D device or the destination type is
 // unknown.
 //
 #define E_DSTORAGE_INVALID_DESTINATION_TYPE ((HRESULT)0x89240040L)
