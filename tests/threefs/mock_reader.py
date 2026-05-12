@@ -3,6 +3,26 @@
 
 import ctypes
 import os
+import sys
+
+
+def _pread_crossplatform(fd, count, offset):
+    """Cross-platform pread implementation.
+
+    Uses os.pread on Unix, emulates it on Windows using seek+read+seek.
+    Not thread-safe on Windows (same limitation as os.pread itself).
+    """
+    if hasattr(os, "pread"):
+        return os.pread(fd, count, offset)
+
+    # Windows fallback: save position, seek, read, restore
+    current_pos = os.lseek(fd, 0, os.SEEK_CUR)
+    try:
+        os.lseek(fd, offset, os.SEEK_SET)
+        data = os.read(fd, count)
+        return data
+    finally:
+        os.lseek(fd, current_pos, os.SEEK_SET)
 
 
 class MockFileReader:
@@ -20,9 +40,12 @@ class MockFileReader:
         self, path, dev_ptr, file_offset, total_length, chunk_size=0, **kwargs
     ) -> int:
         if path not in self._fd_map:
-            self._fd_map[path] = os.open(path, os.O_RDONLY)
+            flags = os.O_RDONLY
+            if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            self._fd_map[path] = os.open(path, flags)
         fd = self._fd_map[path]
-        data = os.pread(fd, total_length, file_offset)
+        data = _pread_crossplatform(fd, total_length, file_offset)
         if dev_ptr != 0:
             staging_buf = bytearray(data)
             staging_ptr = ctypes.addressof(

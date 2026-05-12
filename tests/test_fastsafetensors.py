@@ -77,7 +77,10 @@ def run_nogds_file_read(
     input_file: str,
     framework: FrameworkOpBase,
 ) -> Tuple[SafeTensorsMetadata, fstcpp.gds_device_buffer]:
-    fd = os.open(input_file, os.O_RDONLY, 0o644)
+    flags = os.O_RDONLY
+    if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(input_file, flags, 0o644)
     meta = SafeTensorsMetadata.from_file(input_file, framework)
     size = meta.size_bytes - meta.header_length
     device, dev_is_gpu = get_and_check_device(framework)
@@ -294,7 +297,10 @@ def test_memmove(fstcpp_log, framework) -> None:
 
 def test_nogds_file_reader(fstcpp_log, input_files, framework) -> None:
     print("test_nogds_file_reader")
-    fd = os.open(input_files[0], os.O_RDONLY, 0o644)
+    flags = os.O_RDONLY
+    if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(input_files[0], flags, 0o644)
     s = os.fstat(fd)
     assert fd > 0
     device, dev_is_gpu = get_and_check_device(framework)

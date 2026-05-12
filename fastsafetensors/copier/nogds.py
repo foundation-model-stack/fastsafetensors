@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import sys
 from typing import Dict, List
 
 from .. import cpp as fstcpp
-from ..common import SafeTensorsMetadata, is_gpu_found
+from ..common import SafeTensorsMetadata, is_gpu_found, resolve_cudart_lib_name
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface
@@ -22,7 +23,12 @@ class NoGdsFileCopier(CopierInterface):
         self.framework = framework
         self.metadata = metadata
         self.reader = reader
-        self.fd = os.open(metadata.src, os.O_RDONLY, 0o644)
+        flags = os.O_RDONLY
+        # On Windows, O_RDONLY defaults to text mode which translates \r\n
+        # and stops at 0x1A (Ctrl+Z), corrupting binary tensor data.
+        if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        self.fd = os.open(metadata.src, flags, 0o644)
         if self.fd < 0:
             raise Exception(
                 f"NoGdsFileCopier.__init__: failed to open, file={metadata.src}"
@@ -73,7 +79,8 @@ _loaded_library = False
 def load_library_func():
     global _loaded_library
     if not _loaded_library:
-        fstcpp.load_library_functions()
+        cudart_lib = resolve_cudart_lib_name()
+        fstcpp.load_library_functions(cudart_lib)
         _loaded_library = True
 
 
@@ -88,7 +95,7 @@ def new_nogds_file_copier(
     device_is_not_cpu = device.type != DeviceType.CPU
     if device_is_not_cpu and not is_gpu_found():
         raise Exception(
-            "[FAIL] GPU runtime library not found (expected libcudart.so or libamdhip64.so)"
+            "[FAIL] GPU runtime library not found (expected libcudart.so, libamdhip64.so, or cudart64_XX.dll)"
         )
 
     device_id = device.index if device.index is not None else 0

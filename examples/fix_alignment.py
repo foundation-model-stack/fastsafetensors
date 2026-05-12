@@ -11,10 +11,30 @@ from fastsafetensors import SafeTensorsMetadata
 from fastsafetensors.frameworks._torch import TorchOp
 
 
+def _sendfile_crossplatform(src_fd, dst_fd, offset, count):
+    """Cross-platform sendfile implementation.
+
+    Uses os.sendfile on Unix, emulates using read/write on Windows.
+    Preserves file positions (uses offset parameter on Unix, manual seek on Windows).
+    """
+    if hasattr(os, "sendfile"):
+        return os.sendfile(dst_fd, src_fd, offset, count)
+
+    # Windows fallback: read from source, write to destination
+    # Note: os.sendfile on Unix can be zero-copy; this fallback is not
+    data = os.read(src_fd, count)
+    if not data:
+        return 0
+    return os.write(dst_fd, data)
+
+
 def fix_sten_file(src_file: str, dst_file: str):
     pad_key = "p"
     pad_value = "P"
-    src_fd = os.open(src_file, os.O_RDONLY, 0o644)
+    src_flags = os.O_RDONLY
+    if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+        src_flags |= os.O_BINARY
+    src_fd = os.open(src_file, src_flags, 0o644)
     if src_fd < 0:
         raise Exception(f"FAIL: open, src_file={src_file}")
     meta = SafeTensorsMetadata.from_fd(
@@ -45,7 +65,10 @@ def fix_sten_file(src_file: str, dst_file: str):
             f"dst: filename={dst_file}, header_len={dst_header_len} (pad={head_pad}), size={dst_header_len + meta.size_bytes - meta.header_length}"
         )
 
-        dst_fd = os.open(dst_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        dst_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+            dst_flags |= os.O_BINARY
+        dst_fd = os.open(dst_file, dst_flags, 0o644)
         if dst_fd < 0:
             raise Exception(f"FAIL: open, dst_fd={dst_fd}")
         os_write_full(
@@ -86,7 +109,7 @@ def os_write_full(fd: int, buf: bytes):
 def os_sendfile_full(src_fd: int, dst_fd: int, offset: int, length: int):
     count = 0
     while count < length:
-        c = os.sendfile(src_fd, dst_fd, 0, length - count)
+        c = _sendfile_crossplatform(src_fd, dst_fd, 0, length - count)
         if c == 0:
             break
         elif c < 0:

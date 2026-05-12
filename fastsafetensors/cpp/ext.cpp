@@ -1,11 +1,84 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#ifdef _MSC_VER
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include <fcntl.h>
 #include <cstring>
+#ifdef _MSC_VER
+#include <io.h>
+#include <malloc.h>
+#include <share.h>
+#include <stdio.h>
+#include <cstdint>
+// Windows-compatible posix_memalign
+static inline int posix_memalign(void **memptr, size_t alignment, size_t size) {
+    *memptr = _aligned_malloc(size, alignment);
+    return (*memptr) ? 0 : errno;
+}
+// Windows-compatible pread
+static inline int64_t pread(int fd, void *buf, size_t count, int64_t offset) {
+    int64_t cur = _lseeki64(fd, 0, 1 /*SEEK_CUR*/);
+    if (cur < 0) return -1;
+    if (_lseeki64(fd, offset, 0 /*SEEK_SET*/) < 0) return -1;
+    int rd = _read(fd, buf, (unsigned int)count);
+    _lseeki64(fd, cur, 0 /*SEEK_SET*/);
+    return rd;
+}
+// --- Windows equivalents for dlfcn.h ---
+#include <windows.h>
+#define RTLD_LAZY    0
+#define RTLD_GLOBAL  0
+#ifndef RTLD_NODELETE
+#define RTLD_NODELETE 0
+#endif
+
+static inline void* dlopen(const char* filename, int) {
+    if (!filename) return nullptr;
+    return reinterpret_cast<void*>(LoadLibraryA(filename));
+}
+static inline void* dlsym(void* handle, const char* symbol) {
+    return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(handle), symbol));
+}
+static inline int dlclose(void* handle) {
+    return FreeLibrary(reinterpret_cast<HMODULE>(handle)) ? 0 : -1;
+}
+
+// --- Windows equivalents for mmap/munmap ---
+#define PROT_READ   1
+#define MAP_PRIVATE 2
+#define MAP_FAILED  ((void*)-1)
+
+static inline void* mmap(void* /*addr*/, size_t length, int /*prot*/, int /*flags*/, int fd, int64_t offset) {
+    HANDLE hFile = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+    if (hFile == INVALID_HANDLE_VALUE) return MAP_FAILED;
+    DWORD offsetHigh = static_cast<DWORD>(offset >> 32);
+    DWORD offsetLow  = static_cast<DWORD>(offset & 0xFFFFFFFF);
+    HANDLE hMapping = CreateFileMappingA(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (!hMapping) return MAP_FAILED;
+    void* ptr = MapViewOfFile(hMapping, FILE_MAP_READ, offsetHigh, offsetLow, length);
+    CloseHandle(hMapping);  // view keeps the mapping alive
+    return ptr ? ptr : MAP_FAILED;
+}
+static inline int munmap(void* addr, size_t /*length*/) {
+    return UnmapViewOfFile(addr) ? 0 : -1;
+}
+
+// Map POSIX names to MSVC equivalents
+#define open  _open
+#define close _close
+#define O_RDONLY _O_RDONLY
+#ifndef O_DIRECT
+#define O_DIRECT 0
+#endif
+#else
 #include <unistd.h>
 #include <sys/mman.h>
 #include <chrono>
 #include <dlfcn.h>
+#endif
+#include <chrono>
 #include <cstdlib>
 #include <algorithm>
 
@@ -14,7 +87,11 @@
 
 #define ALIGN 4096
 
-static bool debug_log = false;
+#ifdef _MSC_VER
+void init_dstorage_bindings(pybind11::module_&);
+#endif
+
+bool debug_log = false;  // non-static: fix Windows build
 static bool enable_gil_release = false;
 
 static cpp_metrics_t mc = {.bounce_buffer_bytes = 0};
@@ -53,7 +130,11 @@ static cudaError_t cpu_cudaHostAlloc(void ** p, size_t length, unsigned int) {
     return cudaSuccess;
 }
 static cudaError_t cpu_cudaFreeHost(void * p) {
+#ifdef _MSC_VER
+    _aligned_free(p);
+#else
     free(p);
+#endif
     return cudaSuccess;
 }
 static cudaError_t cpu_cudaDeviceGetPCIBusId(char * in, int s, int) {
@@ -82,10 +163,14 @@ ext_funcs_t cpu_fns = ext_funcs_t {
     .cudaDeviceGetPCIBusId = cpu_cudaDeviceGetPCIBusId,
     .numa_run_on_node = cpu_numa_run_on_node,
     .cudaSetDevice = cpu_cudaSetDevice,
+    .cudaImportExternalMemory = nullptr,
+    .cudaExternalMemoryGetMappedBuffer = nullptr,
+    .cudaDestroyExternalMemory = nullptr,
 };
 ext_funcs_t cuda_fns;
 
 static bool cuda_found = false;
+static bool is_hip_runtime = false;  // Track if we loaded HIP (not auto-hipified)
 static bool cufile_found = false;
 
 static int cufile_ver = 0;
@@ -94,27 +179,37 @@ template <typename T> void mydlsym(T** h, void* lib, std::string const& name) {
     *h = reinterpret_cast<T*>(dlsym(lib, name.c_str()));
 }
 
-static void load_library_functions() {
+static void load_library_functions(const std::string& cudart_override = "") {
     cudaError_t (*cudaGetDeviceCount)(int*);
+#ifdef _MSC_VER
+    const char* cufileLib = nullptr; // cuFile not available on Windows
+    const char* numaLib = nullptr;  // NUMA not available on Windows
+#else
     const char* cufileLib = "libcufile.so.0";
-    const char* cudartLib = GPU_RUNTIME_LIB;
     const char* numaLib = "libnuma.so.1";
+#endif
+    // Use the runtime-provided library name if given, otherwise fall back
+    // to the compile-time default from cuda_compat.h (GPU_RUNTIME_LIB).
+    std::string cudart_name = cudart_override.empty() ? GPU_RUNTIME_LIB : cudart_override;
+    const char* cudartLib = cudart_name.c_str();
     bool init_log = getenv(ENV_ENABLE_INIT_LOG);
     int mode = RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE;
 
-    void* handle_numa = dlopen(numaLib, mode);
-    if (handle_numa) {
-        mydlsym(&cpu_fns.numa_run_on_node, handle_numa, "numa_run_on_node");
-        if (cpu_fns.numa_run_on_node) {
-            cuda_fns.numa_run_on_node = cpu_fns.numa_run_on_node;
-            if (init_log) {
-                fprintf(stderr, "[DEBUG] loaded: %s\n", numaLib);
+    if (numaLib) {
+        void* handle_numa = dlopen(numaLib, mode);
+        if (handle_numa) {
+            mydlsym(&cpu_fns.numa_run_on_node, handle_numa, "numa_run_on_node");
+            if (cpu_fns.numa_run_on_node) {
+                cuda_fns.numa_run_on_node = cpu_fns.numa_run_on_node;
+                if (init_log) {
+                    fprintf(stderr, "[DEBUG] loaded: %s\n", numaLib);
+                }
             }
+            dlclose(handle_numa);
         }
-        dlclose(handle_numa);
     }
     if (!cpu_fns.numa_run_on_node) {
-        if (init_log) {
+        if (init_log && numaLib) {
             fprintf(stderr, "[DEBUG] %s is not installed. fallback\n", numaLib);
         }
         cpu_fns.numa_run_on_node = cpu_numa_run_on_node;
@@ -130,6 +225,10 @@ static void load_library_functions() {
                 count = 0; // why cudaGetDeviceCount returns non-zero for errors?
             }
             cuda_found = count > 0;
+            // Detect if we loaded HIP runtime (ROCm) vs CUDA runtime
+            if (cuda_found && std::string(cudartLib).find("hip") != std::string::npos) {
+                is_hip_runtime = true;
+            }
             if (init_log) {
                 fprintf(stderr, "[DEBUG] device count=%d, cuda_found=%d\n", count, cuda_found);
             }
@@ -151,11 +250,16 @@ static void load_library_functions() {
             mydlsym(&cuda_fns.cudaDriverGetVersion, handle_cudart, GPU_SYM_DRIVER_GET_VERSION);
             mydlsym(&cuda_fns.cudaDeviceGetAttribute, handle_cudart, GPU_SYM_DEVICE_GET_ATTRIBUTE);
             mydlsym(&cuda_fns.cudaSetDevice, handle_cudart, GPU_SYM_SET_DEVICE);
+            mydlsym(&cuda_fns.cudaImportExternalMemory, handle_cudart, "cudaImportExternalMemory");
+            mydlsym(&cuda_fns.cudaExternalMemoryGetMappedBuffer, handle_cudart, "cudaExternalMemoryGetMappedBuffer");
+            mydlsym(&cuda_fns.cudaDestroyExternalMemory, handle_cudart, "cudaDestroyExternalMemory");
             bool success = cuda_fns.cudaMemcpy && cuda_fns.cudaDeviceSynchronize;
             success = success && cuda_fns.cudaHostAlloc && cuda_fns.cudaFreeHost;
             success = success && cuda_fns.cudaDeviceGetPCIBusId && cuda_fns.cudaDeviceMalloc;
             success = success && cuda_fns.cudaDeviceFree && cuda_fns.cudaDriverGetVersion;
             success = success && cuda_fns.cudaDeviceGetAttribute && cuda_fns.cudaSetDevice;
+            success = success && cuda_fns.cudaImportExternalMemory && cuda_fns.cudaExternalMemoryGetMappedBuffer;
+            success = success && cuda_fns.cudaDestroyExternalMemory;
             if (!success) {
                 cuda_found = false;
                 if (init_log) {
@@ -176,10 +280,13 @@ static void load_library_functions() {
         cuda_fns.cudaFreeHost = cpu_cudaFreeHost;
         cuda_fns.cudaDeviceGetPCIBusId = cpu_cudaDeviceGetPCIBusId;
         cuda_fns.cudaSetDevice = cpu_cudaSetDevice;
+        cuda_fns.cudaImportExternalMemory = nullptr;
+        cuda_fns.cudaExternalMemoryGetMappedBuffer = nullptr;
+        cuda_fns.cudaDestroyExternalMemory = nullptr;
     }
 
     cufile_found = false;
-    if (cuda_found) {
+    if (cuda_found && cufileLib) {
         void* handle_cufile = dlopen(cufileLib, mode);
         if (handle_cufile) {
             CUfileError_t (*cuFileGetVersion)(int *);
@@ -248,6 +355,14 @@ bool is_cuda_found()
 bool cuda_not_available()
 {
     return false;  // On ROCm, CUDA is never available
+}
+
+// Separate function for checking HIP runtime detection (not hipified)
+// On CUDA: checks if HIP runtime was detected
+// On ROCm: not used (is_cuda_found gets hipified to is_hip_found)
+bool check_hip_runtime()
+{
+    return is_hip_runtime;
 }
 
 bool is_cufile_found()
@@ -403,7 +518,11 @@ uintptr_t cpu_malloc(uint64_t length) {
 
 void cpu_free(uintptr_t addr) {
     void *p = reinterpret_cast<void *>(addr);
+#ifdef _MSC_VER
+    _aligned_free(p);
+#else
     free(p);
+#endif
 }
 
 uintptr_t gpu_malloc(uint64_t length) {
@@ -822,6 +941,9 @@ static int memcpy_h2d_async(uintptr_t dst, uintptr_t src, size_t size) {
 
 PYBIND11_MODULE(__MOD_NAME__, m)
 {
+#ifdef _MSC_VER
+    init_dstorage_bindings(m);
+#endif
     // Initialize GIL release setting from environment variable on module load
     init_gil_release_from_env();
     // Export both is_cuda_found and is_hip_found on all platforms.
@@ -846,7 +968,8 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("cpu_free", &cpu_free);
     m.def("gpu_malloc", &gpu_malloc);
     m.def("gpu_free", &gpu_free);
-    m.def("load_library_functions", &load_library_functions);
+    m.def("load_library_functions", &load_library_functions,
+          pybind11::arg("cudart_lib_name") = "");
     m.def("memcpy_h2d_async", &memcpy_h2d_async);
     m.def("get_cpp_metrics", &get_cpp_metrics);
     m.def("set_gil_release", &set_gil_release);

@@ -8,6 +8,12 @@
 #include <condition_variable>
 #include <thread>
 #include <map>
+#include <string>
+
+#ifdef _MSC_VER
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#endif
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -37,9 +43,39 @@ typedef struct CUfileError { CUfileOpError err; } CUfileError_t;
 // We load all GPU functions dynamically at runtime via dlopen()
 typedef enum cudaError { cudaSuccess = 0, cudaErrorMemoryAllocation = 2 } cudaError_t;
 enum cudaDeviceAttr {cudaDevAttrGPUDirectRDMASupported = 116};
-enum cudaMemcpyKind { cudaMemcpyHostToDevice=1, cudaMemcpyDefault = 4 };
+enum cudaMemcpyKind { cudaMemcpyHostToDevice=1, cudaMemcpyDefault = 4, cudaMemcpyDeviceToHost=2, cudaMemcpyDeviceToDevice=3 };
 typedef void * cudaStream_t;
 
+enum cudaExternalMemoryHandleType {
+    cudaExternalMemoryHandleTypeOpaqueFd           = 1,
+    cudaExternalMemoryHandleTypeOpaqueWin32        = 2,
+    cudaExternalMemoryHandleTypeOpaqueWin32Kmt     = 3,
+    cudaExternalMemoryHandleTypeD3D12Heap          = 4,
+    cudaExternalMemoryHandleTypeD3D12Resource      = 5,
+    cudaExternalMemoryHandleTypeD3D11Resource      = 6,
+    cudaExternalMemoryHandleTypeD3D11ResourceKmt   = 7
+};
+
+struct cudaExternalMemoryHandleDesc {
+    cudaExternalMemoryHandleType type;
+    union {
+        struct {
+            void *handle;
+            const void *name;
+        } win32;
+    } handle;
+    unsigned long long size;
+    unsigned int flags;
+};
+
+struct cudaExternalMemoryBufferDesc {
+    unsigned long long offset;
+    unsigned long long size;
+    unsigned int flags;
+};
+
+typedef void * cudaExternalMemory_t;
+static const unsigned int cudaExternalMemoryDedicated = 0x1;
 
 typedef enum CUfileFeatureFlags {
     CU_FILE_DYN_ROUTING_SUPPORTED =0,
@@ -212,6 +248,9 @@ typedef struct ext_funcs {
     cudaError_t (*cudaDriverGetVersion)(int *);
     cudaError_t (*cudaDeviceGetAttribute)(int *, enum cudaDeviceAttr, int);
     cudaError_t (*cudaSetDevice)(int);
+    cudaError_t (*cudaImportExternalMemory)(cudaExternalMemory_t*, const struct cudaExternalMemoryHandleDesc*);
+    cudaError_t (*cudaExternalMemoryGetMappedBuffer)(void**, cudaExternalMemory_t, const struct cudaExternalMemoryBufferDesc*);
+    cudaError_t (*cudaDestroyExternalMemory)(cudaExternalMemory_t);
 } ext_funcs_t;
 
 typedef struct cpp_metrics {

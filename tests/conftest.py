@@ -7,7 +7,7 @@ import pytest
 
 from fastsafetensors import SingleGroup
 from fastsafetensors import cpp as fstcpp
-from fastsafetensors.common import is_gpu_found
+from fastsafetensors.common import is_gpu_found, resolve_cudart_lib_name
 from fastsafetensors.cpp import load_library_functions
 from fastsafetensors.frameworks import FrameworkOpBase, get_framework_op
 from fastsafetensors.st_types import Device
@@ -23,7 +23,7 @@ TMP_DIR = os.path.join(DATA_DIR, "tmp")
 os.makedirs(TF_DIR, 0o777, True)
 os.makedirs(TMP_DIR, 0o777, True)
 
-load_library_functions()
+load_library_functions(resolve_cudart_lib_name())
 FRAMEWORK = get_framework_op(os.getenv("TEST_FASTSAFETENSORS_FRAMEWORK", "please set"))
 
 # Print platform information at test startup

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+import platform
 from typing import Any, Dict, List, Optional, OrderedDict, Tuple, Union
 
 from . import cpp as fstcpp
@@ -199,7 +200,10 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
         fstcpp.set_debug_log(debug_log)
 
         if not nogds:
-            copier_type = "gds"
+            if platform.system() == "Windows":
+                copier_type = "dstorage"
+            else:
+                copier_type = "gds"
         elif self.device.type != DeviceType.CPU and is_unified_memory_system():
             # When GDS is unavailable, prefer the unified copier on systems
             # with shared CPU/GPU memory (e.g., DGX Spark) over the
