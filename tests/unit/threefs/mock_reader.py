@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Mock file reader for CI tests. No 3FS/CUDA/external dependencies required."""
+
+import ctypes
+import os
+import sys
+
+
+def _pread_crossplatform(fd, count, offset):
+    """Cross-platform pread implementation.
+
+    Uses os.pread on Unix, emulates it on Windows using seek+read+seek.
+    Not thread-safe on Windows (same limitation as os.pread itself).
+    """
+    if hasattr(os, "pread"):
+        return os.pread(fd, count, offset)
+
+    # Windows fallback: save position, seek, read, restore
+    current_pos = os.lseek(fd, 0, os.SEEK_CUR)
+    try:
+        os.lseek(fd, offset, os.SEEK_SET)
+        data = os.read(fd, count)
+        return data
+    finally:
+        os.lseek(fd, current_pos, os.SEEK_SET)
+
+
+class MockFileReader:
+    """Local filesystem-backed mock reader for CI tests.
+
+    Uses os.pread for file I/O and ctypes.memmove for host memory copy.
+    dev_ptr is expected to point to host memory (cpu_malloc) in CI environments.
+    """
+
+    def __init__(self, mount_point: str = "", **kwargs) -> None:
+        self._fd_map: dict[str, int] = {}
+        self._mount_point = mount_point
+
+    def read_chunked(
+        self, path, dev_ptr, file_offset, total_length, chunk_size=0, **kwargs
+    ) -> int:
+        if path not in self._fd_map:
+            flags = os.O_RDONLY
+            if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            self._fd_map[path] = os.open(path, flags)
+        fd = self._fd_map[path]
+        data = _pread_crossplatform(fd, total_length, file_offset)
+        if dev_ptr != 0:
+            staging_buf = bytearray(data)
+            staging_ptr = ctypes.addressof(
+                (ctypes.c_char * len(staging_buf)).from_buffer(staging_buf)
+            )
+            ctypes.memmove(dev_ptr, staging_ptr, len(data))
+        return len(data)
+
+    def read_headers_batch(self, paths, num_threads=8):
+        return {}
+
+    def close(self) -> None:
+        for fd in self._fd_map.values():
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._fd_map.clear()
+
+
+def extract_mount_point(path: str) -> str:
+    """Fallback: return the directory containing the file."""
+    return os.path.dirname(os.path.abspath(path))
