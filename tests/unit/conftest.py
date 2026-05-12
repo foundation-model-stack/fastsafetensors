@@ -62,12 +62,19 @@ def input_files() -> List[str]:
 
 @pytest.fixture(scope="session", autouse=True)
 def pg():
+    rank = int(os.environ.get("RANK", "0"))
+    if is_gpu_found():
+        dev_str = f"cuda:{rank}" if FRAMEWORK.get_name() == "pytorch" else f"gpu:{rank}"
+    else:
+        dev_str = "cpu"
+    FRAMEWORK.set_device(Device.from_str(dev_str))
     world_size = int(os.getenv("WORLD_SIZE", "1"))
+    backend = "nccl" if is_gpu_found() else "gloo"
     if world_size > 1:
         if FRAMEWORK.get_name() == "pytorch":
             import torch.distributed as dist
 
-            dist.init_process_group(backend="gloo")
+            dist.init_process_group(backend=backend)
             dist.barrier()
             return dist.group.WORLD
         elif FRAMEWORK.get_name() == "paddle":
@@ -77,14 +84,15 @@ def pg():
             import paddle.distributed as dist
 
             dist.init_parallel_env()
-            return dist.new_group(ranks=list(range(world_size)), backend="gloo")
+            return dist.new_group(ranks=list(range(world_size)), backend=backend)
     return SingleGroup()
 
 
 @pytest.fixture(scope="session", autouse=True)
 def dev_init() -> None:
+    rank = int(os.environ.get("RANK", "0"))
     if is_gpu_found():
-        dev_str = "cuda:0" if FRAMEWORK.get_name() == "pytorch" else "gpu:0"
+        dev_str = f"cuda:{rank}" if FRAMEWORK.get_name() == "pytorch" else f"gpu:{rank}"
     else:
         dev_str = "cpu"
     FRAMEWORK.set_device(Device.from_str(dev_str))

@@ -14,13 +14,13 @@ def test_shuffle(fstcpp_log, input_files, pg, framework):
 
         rank = pg.rank()
         world_size = pg.size()
-        device = "cuda:0" if is_gpu_found() else "cpu"
+        device = f"cuda:{rank}" if is_gpu_found() else "cpu"
     elif framework.get_name() == "paddle":
         from safetensors.paddle import load_file
 
         rank = pg.process_group.rank()
         world_size = pg.process_group.size()
-        device = "gpu:0" if is_gpu_found() else "cpu"
+        device = f"gpu:{rank}" if is_gpu_found() else "cpu"
     else:
         raise Exception(f"Unknown framework: {framework.get_name()}")
     loader = SafeTensorsFileLoader(
@@ -120,5 +120,5 @@ if __name__ == "__main__":
     import os
     import sys
 
-    os.environ["PADDLE_DISTRI_BACKEND"] = "gloo"
+    os.environ["PADDLE_DISTRI_BACKEND"] = "nccl" if is_gpu_found() else "gloo"
     sys.exit(pytest.main(sys.argv[1:]))
