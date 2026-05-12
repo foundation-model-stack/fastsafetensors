@@ -96,10 +96,11 @@ jobs:
           TEST_FASTSAFETENSORS_FRAMEWORK: pytorch
         run: |
           LOGDIR="${RUNNER_TEMP}/pytest-log"
-          LIBDIR=$(python -c "import os, fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))")
           mkdir -p "${LOGDIR}"
-          COVERAGE_FILE=.coverage_0 pytest -s --cov="${LIBDIR}" tests/test_fastsafetensors.py -k "not test_init_gds and not test_close_gds and not test_GdsFileCopier and not test_SafeTensorsFileLoader and not test_SafeTensorsFileLoader_copier_selection" > "${LOGDIR}/0.log" 2>&1
-          COVERAGE_FILE=.coverage_3fs pytest -s --cov="${LIBDIR}" tests/threefs > "${LOGDIR}/threefs.log" 2>&1
+          cd tests
+          LIBDIR=$(python -c "import os, tempfile; os.chdir(tempfile.gettempdir()); import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))")
+          COVERAGE_FILE=.coverage_0 pytest -s --cov="${LIBDIR}" test_fastsafetensors.py -k "not test_init_gds and not test_close_gds and not test_GdsFileCopier and not test_SafeTensorsFileLoader and not test_SafeTensorsFileLoader_copier_selection" > "${LOGDIR}/0.log" 2>&1
+          COVERAGE_FILE=.coverage_3fs pytest -s --cov="${LIBDIR}" threefs > "${LOGDIR}/threefs.log" 2>&1
           coverage combine .coverage_*
           coverage html -d "${LOGDIR}/htmlcov"
       - name: Upload Pytest log
