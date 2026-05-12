@@ -53,7 +53,7 @@ jobs:
           pip install .
       - name: Run tests
         run: |
-          cd tests
+          cd tests/unit
           LIBDIR=`python3 -c "import os; os.chdir('/tmp'); import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))"`
           mkdir -p /tmp/pytest-log
           export TEST_FASTSAFETENSORS_FRAMEWORK=pytorch
@@ -97,7 +97,7 @@ jobs:
         run: |
           LOGDIR="${RUNNER_TEMP}/pytest-log"
           mkdir -p "${LOGDIR}"
-          cd tests
+          cd tests/unit
           LIBDIR=$(python -c "import os, tempfile; os.chdir(tempfile.gettempdir()); import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))")
           COVERAGE_FILE=.coverage_0 pytest -s --cov="${LIBDIR}" test_fastsafetensors.py -k "not test_init_gds and not test_close_gds and not test_GdsFileCopier and not test_SafeTensorsFileLoader and not test_SafeTensorsFileLoader_copier_selection" > "${LOGDIR}/0.log" 2>&1
           COVERAGE_FILE=.coverage_3fs pytest -s --cov="${LIBDIR}" threefs > "${LOGDIR}/threefs.log" 2>&1
