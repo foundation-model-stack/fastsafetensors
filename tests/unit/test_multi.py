@@ -194,6 +194,101 @@ def test_float4_shuffle_last_dim(fstcpp_log, tmp_dir, pg, framework):
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
 
+def test_float4_float8_e8m0_collectives(fstcpp_log, tmp_dir, pg, framework):
+    if framework.get_name() != "pytorch":
+        pytest.skip("F4 and F8_E8M0 are only available in PyTorch")
+        return
+
+    import torch
+    import torch.distributed as dist
+    from safetensors.torch import load_file, save_file
+
+    if not hasattr(torch, "float4_e2m1fn_x2"):
+        pytest.skip("torch.float4_e2m1fn_x2 requires PyTorch 2.10+")
+        return
+    if not hasattr(torch, "float8_e8m0fnu"):
+        pytest.skip("torch.float8_e8m0fnu requires PyTorch 2.5+")
+        return
+
+    rank = pg.rank()
+    world_size = pg.size()
+    device = f"cuda:{rank}" if is_gpu_found() else "cpu"
+    filename = os.path.join(tmp_dir, "multi_collectives_f4_f8e8m0.safetensors")
+
+    if rank == 0:
+        f4_u8 = torch.arange(128, dtype=torch.uint8).reshape(8, 16)
+        f8_u8 = torch.arange(128, 192, dtype=torch.uint8).reshape(8, 8)
+        save_file(
+            {
+                "f4": f4_u8.view(torch.float4_e2m1fn_x2),
+                "f8_e8m0": f8_u8.view(torch.float8_e8m0fnu),
+            },
+            filename,
+            {"fst": "sample"},
+        )
+    if world_size > 1:
+        dist.barrier(group=pg)
+
+    refs = load_file(filename, device=device)
+
+    loader = SafeTensorsFileLoader(
+        pg=pg, device=device, nogds=True, framework=framework.get_name(), debug_log=True
+    )
+    loader.add_filenames({0: [filename]})
+    bufs = loader.copy_files_to_device()
+    assert framework.is_equal(bufs.get_tensor_wrapped("f4"), refs["f4"])
+    assert framework.is_equal(bufs.get_tensor_wrapped("f8_e8m0"), refs["f8_e8m0"])
+    bufs.close()
+    loader.reset()
+
+    loader.add_filenames({0: [filename]})
+    bufs = loader.copy_files_to_device()
+    tensors = bufs.as_dict({"f4": 1, "f8_e8m0": 1})
+    f4_logical_shape = loader.get_shape("f4")
+    f4_block_size = (f4_logical_shape[1] + world_size - 1) // world_size
+    f4_logical_slice = (
+        slice(None, None, None),
+        slice(rank * f4_block_size, (rank + 1) * f4_block_size, 1),
+    )
+    f4_native_slice = framework.get_native_slices(
+        DType.F4, f4_logical_shape, f4_logical_slice
+    )
+    f8_block_size = (refs["f8_e8m0"].shape[1] + world_size - 1) // world_size
+    f8_slice = (
+        slice(None, None, None),
+        slice(rank * f8_block_size, (rank + 1) * f8_block_size, 1),
+    )
+    assert framework.is_equal(tensors["f4"], refs["f4"][f4_native_slice])
+    assert framework.is_equal(tensors["f8_e8m0"], refs["f8_e8m0"][f8_slice])
+    bufs.close()
+    loader.reset()
+
+    loader.add_filenames({0: [filename]})
+    bufs = loader.copy_files_to_device()
+    if world_size > 1:
+        pushed_f4 = bufs.push_tensor("f4", 1)
+        pushed_f8 = bufs.push_tensor("f8_e8m0", 1)
+        if rank == 1:
+            assert pushed_f4 is not None
+            assert pushed_f8 is not None
+            assert bool(
+                torch.equal(pushed_f4.view(torch.uint8), refs["f4"].view(torch.uint8))
+            )
+            assert bool(
+                torch.equal(
+                    pushed_f8.view(torch.uint8), refs["f8_e8m0"].view(torch.uint8)
+                )
+            )
+        else:
+            assert pushed_f4 is None
+            assert pushed_f8 is None
+    bufs.close()
+    loader.close()
+
+    assert framework.get_mem_used() == 0
+    assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
+
+
 if __name__ == "__main__":
     import os
     import sys
