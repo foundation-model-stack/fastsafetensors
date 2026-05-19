@@ -166,7 +166,12 @@ class LazyTensorFactory:
                     )
                 t = self.tensors[tensor_name]
                 scatter_list = [
-                    t[rank_slices[rank]].contiguous() for rank in range(0, pg.size())
+                    t[
+                        self.framework.get_native_slices(
+                            frame.dtype, frame.shape, rank_slices[rank]
+                        )
+                    ].contiguous()
+                    for rank in range(0, pg.size())
                 ]  # scatter requires contiguous tensor
             logger.debug(
                 "shuffle: scatter, tensor_name=%s, shape=%s->%s, self.rank=%d, pg.rank()=%d, rank_slices=%s, len(scatter_list)=%s",
@@ -195,8 +200,11 @@ class LazyTensorFactory:
             frame = self.metadata.tensors[tensor_name]
             total_size = frame.shape[dim]
             block_size = (total_size + pg.size() - 1) // pg.size()
+            shard_start = pg.rank() * block_size
+            shard_stop = min((pg.rank() + 1) * block_size, total_size)
+            shard_size = max(shard_stop - shard_start, 0)
             if len(new_shape) == 0:
-                new_shape = frame.shape
+                new_shape = list(frame.shape)
                 new_shape[dim] = 0
             else:
                 for dim2 in range(0, len(frame.shape)):
@@ -204,7 +212,7 @@ class LazyTensorFactory:
                         raise Exception(
                             f"dim {dim2} mismatch: tensor {tensor_name} has {frame.shape} vs. {new_shape} (dim={dim})"
                         )
-            new_shape[dim] += block_size
+            new_shape[dim] += shard_size
             if self.rank == pg.rank():
                 if tensor_name not in self.tensors:
                     raise Exception(
@@ -221,7 +229,13 @@ class LazyTensorFactory:
                                 slice(rank * block_size, (rank + 1) * block_size, 1),
                             )
                             break
-                    rank_tensors[rank].append(t[rank_slices])
+                    rank_tensors[rank].append(
+                        t[
+                            self.framework.get_native_slices(
+                                frame.dtype, frame.shape, rank_slices
+                            )
+                        ]
+                    )
         if pg.size() == 1:
             return self.framework.concat_tensors(rank_tensors[self.rank], dim=dim)
         scatter_list: List[TensorBase] = []

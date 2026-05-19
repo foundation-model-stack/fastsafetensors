@@ -7,7 +7,7 @@ except ImportError as e:
     raise ImportError("could not import torch. Please install it.") from e
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..common import SingleGroup
 from ..cpp import cpu_free, cpu_malloc, gds_device_buffer
@@ -29,12 +29,18 @@ dtype_convert: Dict[DType, Any] = {
 need_workaround_dtypes: Dict[DType, DType] = {
     DType.F8_E5M2: DType.I8,
     DType.F8_E4M3: DType.I8,
+    DType.F8_E8M0: DType.U8,
+    DType.F4: DType.U8,
 }
 
 if hasattr(torch, "float8_e5m2"):
     dtype_convert[DType.F8_E5M2] = torch.float8_e5m2
 if hasattr(torch, "float8_e4m3fn"):
     dtype_convert[DType.F8_E4M3] = torch.float8_e4m3fn
+if hasattr(torch, "float8_e8m0fnu"):
+    dtype_convert[DType.F8_E8M0] = torch.float8_e8m0fnu
+if hasattr(torch, "float4_e2m1fn_x2"):
+    dtype_convert[DType.F4] = torch.float4_e2m1fn_x2
 if hasattr(torch, "uint16"):
     dtype_convert[DType.U16] = torch.uint16
 if hasattr(torch, "uint32"):
@@ -87,6 +93,9 @@ class TorchTensor(TensorBase):
     def __getitem__(self, _val) -> "TorchTensor":
         return TorchTensor(self.device, self.dtype, self.real_tensor[_val])
 
+    def reshape(self, shape: List[int]) -> "TorchTensor":
+        return TorchTensor(self.device, self.dtype, self.real_tensor.reshape(shape))
+
 
 def _needs_fp8_cast() -> bool:
     """Check if FP8 NCCL ops need a bf16 workaround (pre-sm90 GPUs)."""
@@ -97,7 +106,17 @@ def _needs_fp8_cast() -> bool:
 
 
 def _is_fp8(dtype: DType) -> bool:
-    return dtype in (DType.F8_E5M2, DType.F8_E4M3)
+    return dtype in (DType.F8_E5M2, DType.F8_E4M3, DType.F8_E8M0)
+
+
+def _needs_uint8_view(dtype: DType) -> bool:
+    """NCCL has no native collective for F8_E8M0 or F4. Reinterpret as uint8.
+
+    Same byte width, bitwise-transparent for collective ops (broadcast/scatter/
+    send/recv). Bypasses NCCL's dtype dispatch without an alloc or value
+    conversion.
+    """
+    return dtype in (DType.F8_E8M0, DType.F4)
 
 
 @dataclass
@@ -112,7 +131,11 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
 
     def broadcast(self, dst: TorchTensor, rank: int) -> None:
         if self.real_pg:
-            if _is_fp8(dst.dtype) and _needs_fp8_cast():
+            if _needs_uint8_view(dst.dtype):
+                dist.broadcast(
+                    dst.real_tensor.view(torch.uint8), rank, group=self.real_pg
+                )
+            elif _is_fp8(dst.dtype) and _needs_fp8_cast():
                 buf = dst.real_tensor.to(torch.bfloat16)
                 dist.broadcast(buf, rank, group=self.real_pg)
                 dst.real_tensor.copy_(buf.to(dst.real_tensor.dtype))
@@ -129,7 +152,15 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
         src: int,
     ) -> None:
         if self.real_pg:
-            if _is_fp8(dst.dtype) and _needs_fp8_cast():
+            if _needs_uint8_view(dst.dtype):
+                sl = [t.real_tensor.view(torch.uint8) for t in scatter_list]
+                dist.scatter(
+                    dst.real_tensor.view(torch.uint8),
+                    scatter_list=sl,
+                    src=src,
+                    group=self.real_pg,
+                )
+            elif _is_fp8(dst.dtype) and _needs_fp8_cast():
                 sl = [t.real_tensor.to(torch.bfloat16) for t in scatter_list]
                 buf = dst.real_tensor.to(torch.bfloat16)
                 dist.scatter(buf, scatter_list=sl, src=src, group=self.real_pg)
@@ -150,7 +181,14 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
         tag: int,
     ):
         if self.real_pg:
-            if _is_fp8(t.dtype) and _needs_fp8_cast():
+            if _needs_uint8_view(t.dtype):
+                dist.send(
+                    t.real_tensor.view(torch.uint8),
+                    dst_rank,
+                    group=self.real_pg,
+                    tag=tag,
+                )
+            elif _is_fp8(t.dtype) and _needs_fp8_cast():
                 buf = t.real_tensor.to(torch.bfloat16)
                 dist.send(buf, dst_rank, group=self.real_pg, tag=tag)
                 del buf
@@ -166,7 +204,14 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
         tag: int,
     ):
         if self.real_pg:
-            if _is_fp8(t.dtype) and _needs_fp8_cast():
+            if _needs_uint8_view(t.dtype):
+                dist.recv(
+                    t.real_tensor.view(torch.uint8),
+                    src_rank,
+                    group=self.real_pg,
+                    tag=tag,
+                )
+            elif _is_fp8(t.dtype) and _needs_fp8_cast():
                 buf = t.real_tensor.to(torch.bfloat16)
                 dist.recv(buf, src_rank, group=self.real_pg, tag=tag)
                 t.real_tensor.copy_(buf.to(t.real_tensor.dtype))
@@ -211,17 +256,28 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
     def get_empty_tensor(
         self, shape: List[int], dtype: DType, device: Device
     ) -> TorchTensor:
+        native_shape = self.get_native_shape(dtype, shape)
         dst = torch.empty(
-            size=shape, dtype=dtype_convert[dtype], device=device.as_str()
+            size=native_shape, dtype=dtype_convert[dtype], device=device.as_str()
         )
         return TorchTensor(device, dtype, dst)
 
     def concat_tensors(self, tensors: List[TorchTensor], dim: int) -> TorchTensor:
+        dtype = tensors[0].dtype
+        if _needs_uint8_view(dtype):
+            ts = [tensor.real_tensor.view(torch.uint8) for tensor in tensors]
+            t = torch.cat(ts, dim=dim).view(dtype_convert[dtype])
+            return TorchTensor(tensors[0].device, dtype, t)
         ts = [tensor.real_tensor for tensor in tensors]
-        return TorchTensor(tensors[0].device, tensors[0].dtype, torch.cat(ts, dim=dim))
+        return TorchTensor(tensors[0].device, dtype, torch.cat(ts, dim=dim))
 
-    def get_dtype_size(self, dtype: DType) -> int:
-        return dtype_convert[dtype].itemsize
+    def get_dtype_size(self, dtype: DType) -> float:
+        if dtype == DType.F4:
+            # float4_e2m1fn_x2 packs two 4-bit values into one byte.
+            # safetensors stores shape in FP4-element count, so the byte
+            # size per logical element is 0.5.
+            return 0.5
+        return float(dtype_convert[dtype].itemsize)
 
     def from_dlpack(self, dl_tensor: Any, device: Device, dtype: DType) -> TorchTensor:
         t = torch.from_dlpack(dl_tensor)
@@ -252,6 +308,82 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
         if dtype in need_workaround_dtypes:
             return need_workaround_dtypes[dtype]
         return dtype
+
+    def get_storage_shape(
+        self, dtype: DType, shape: List[int], strides: List[int]
+    ) -> "tuple[List[int], List[int]]":
+        size = self.get_dtype_size(dtype)
+        if size < 1.0:
+            # Packed sub-byte dtype: collapse to flat byte count so the
+            # workaround-dtype DLPack tensor doesn't overread the buffer.
+            import math
+
+            ratio = int(round(1.0 / size))  # e.g. 2 for F4 (2 FP4 per byte)
+            if not shape or shape[-1] % ratio > 0:
+                raise ValueError(
+                    f"Malformed input: {shape=}, {ratio=}, "
+                    "last dimension must be divisible by the packing ratio."
+                )
+            nbytes = int(math.prod(shape) * size)
+            return [nbytes], [1]
+        return shape, strides
+
+    def get_native_shape(self, dtype: DType, st_shape: List[int]) -> List[int]:
+        size = self.get_dtype_size(dtype)
+        if size < 1.0:
+            # safetensors counts logical sub-byte elements; PyTorch counts
+            # packed storage units (bytes). Compress the last dimension.
+            import math
+
+            ratio = int(round(1.0 / size))  # e.g. 2 for F4 (2 FP4 per byte)
+            if not st_shape or st_shape[-1] % ratio > 0:
+                raise ValueError(
+                    f"Malformed input: {st_shape=}, {ratio=}, "
+                    "last dimension must be divisible by the packing ratio."
+                )
+            if len(st_shape) > 1:
+                return list(st_shape[:-1]) + [st_shape[-1] // ratio]
+            return [int(math.prod(st_shape) * size)]
+        return st_shape
+
+    def get_native_slices(
+        self, dtype: DType, st_shape: List[int], slices: Tuple
+    ) -> Tuple:
+        size = self.get_dtype_size(dtype)
+        if size >= 1.0 or not st_shape or len(slices) < len(st_shape):
+            return slices
+
+        ratio = int(round(1.0 / size))  # e.g. 2 for F4 (2 FP4 per byte)
+        last_dim = len(st_shape) - 1
+        native_slices = list(slices)
+        last = native_slices[last_dim]
+        if isinstance(last, slice):
+            step = 1 if last.step is None else last.step
+            if step != 1:
+                raise ValueError(
+                    f"Malformed input: {slices=}, {ratio=}, "
+                    "packed sub-byte slices only support step=1."
+                )
+            start = 0 if last.start is None else last.start
+            stop = st_shape[last_dim] if last.stop is None else last.stop
+            start = min(max(start, 0), st_shape[last_dim])
+            stop = min(max(stop, 0), st_shape[last_dim])
+            if start % ratio > 0 or stop % ratio > 0:
+                raise ValueError(
+                    f"Malformed input: {slices=}, {ratio=}, "
+                    "packed sub-byte slice bounds must align to storage units."
+                )
+            native_start = start // ratio
+            native_stop = stop // ratio
+            native_slices[last_dim] = slice(native_start, native_stop, step)
+        elif isinstance(last, int):
+            if last % ratio > 0:
+                raise ValueError(
+                    f"Malformed input: {slices=}, {ratio=}, "
+                    "packed sub-byte indices must align to storage units."
+                )
+            native_slices[last_dim] = last // ratio
+        return tuple(native_slices)
 
     def get_process_group(self, pg: Optional[Any]) -> TorchProcessGroup:
         if pg is not None:
