@@ -58,4 +58,6 @@ class DType(Enum):
     BF16 = "BF16"
     F8_E5M2 = "F8_E5M2"
     F8_E4M3 = "F8_E4M3"
+    F8_E8M0 = "F8_E8M0"
+    F4 = "F4"
     AUTO = "AUTO"
