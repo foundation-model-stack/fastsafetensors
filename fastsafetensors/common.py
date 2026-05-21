@@ -58,7 +58,7 @@ def resolve_cudart_lib_name() -> str:
         Library name string, or "" to use the compiled-in default.
     """
     if sys.platform != "win32":
-        return ""  # Non Windows platforms uses version-agnostic, return empty (default to cuda_compat.h GPU_RUNTIME_LIB)
+        return ""  # Non-Windows: use auto-detection (CUDA first, then ROCm)
 
     # Allow explicit override via environment variable
     override = os.environ.get("FASTSAFETENSORS_CUDART_LIB", "")

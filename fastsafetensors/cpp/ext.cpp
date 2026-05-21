@@ -82,7 +82,7 @@ static inline int munmap(void* addr, size_t /*length*/) {
 #include <cstdlib>
 #include <algorithm>
 
-#include "cuda_compat.h"
+#include "gpu_compat.h"
 #include "ext.hpp"
 
 #define ALIGN 4096
@@ -169,8 +169,8 @@ ext_funcs_t cpu_fns = ext_funcs_t {
 };
 ext_funcs_t cuda_fns;
 
-static bool cuda_found = false;
-static bool is_hip_runtime = false;  // Track if we loaded HIP (not auto-hipified)
+static bool gpu_found = false;
+static bool is_hip_runtime = false;
 static bool cufile_found = false;
 
 static int cufile_ver = 0;
@@ -179,8 +179,76 @@ template <typename T> void mydlsym(T** h, void* lib, std::string const& name) {
     *h = reinterpret_cast<T*>(dlsym(lib, name.c_str()));
 }
 
+// Try to load one GPU runtime library (CUDA or HIP). Returns true and sets
+// gpu_found/is_hip_runtime on success; leaves them unchanged on failure.
+static bool load_gpu_lib(const std::string& lib_name, bool is_hip, bool init_log, int mode) {
+    cudaError_t (*get_device_count)(int*) = nullptr;
+    const char* sym_count = is_hip ? HIP_SYM_GET_DEVICE_COUNT : CUDA_SYM_GET_DEVICE_COUNT;
+
+    void* handle = dlopen(lib_name.c_str(), mode);
+    if (!handle) {
+        if (init_log) fprintf(stderr, "[DEBUG] %s is not installed. fallback\n", lib_name.c_str());
+        return false;
+    }
+
+    mydlsym(&get_device_count, handle, sym_count);
+    if (!get_device_count) {
+        if (init_log) fprintf(stderr, "[DEBUG] No %s in %s, fallback!\n", sym_count, lib_name.c_str());
+        dlclose(handle);
+        return false;
+    }
+
+    int count = 0;
+    if (get_device_count(&count) != cudaSuccess) count = 0;
+    if (init_log) fprintf(stderr, "[DEBUG] %s: device count=%d\n", lib_name.c_str(), count);
+    if (count == 0) {
+        dlclose(handle);
+        return false;
+    }
+
+    mydlsym(&cuda_fns.cudaMemcpy,             handle, is_hip ? HIP_SYM_MEMCPY                : CUDA_SYM_MEMCPY);
+    mydlsym(&cuda_fns.cudaMemcpyAsync,        handle, is_hip ? HIP_SYM_MEMCPY_ASYNC          : CUDA_SYM_MEMCPY_ASYNC);
+    mydlsym(&cuda_fns.cudaDeviceSynchronize,  handle, is_hip ? HIP_SYM_DEVICE_SYNCHRONIZE    : CUDA_SYM_DEVICE_SYNCHRONIZE);
+    mydlsym(&cuda_fns.cudaHostAlloc,          handle, is_hip ? HIP_SYM_HOST_ALLOC            : CUDA_SYM_HOST_ALLOC);
+    mydlsym(&cuda_fns.cudaFreeHost,           handle, is_hip ? HIP_SYM_FREE_HOST             : CUDA_SYM_FREE_HOST);
+    mydlsym(&cuda_fns.cudaDeviceGetPCIBusId,  handle, is_hip ? HIP_SYM_DEVICE_GET_PCI_BUS_ID : CUDA_SYM_DEVICE_GET_PCI_BUS_ID);
+    mydlsym(&cuda_fns.cudaDeviceMalloc,       handle, is_hip ? HIP_SYM_DEVICE_MALLOC         : CUDA_SYM_DEVICE_MALLOC);
+    mydlsym(&cuda_fns.cudaDeviceFree,         handle, is_hip ? HIP_SYM_DEVICE_FREE           : CUDA_SYM_DEVICE_FREE);
+    mydlsym(&cuda_fns.cudaDriverGetVersion,   handle, is_hip ? HIP_SYM_DRIVER_GET_VERSION    : CUDA_SYM_DRIVER_GET_VERSION);
+    mydlsym(&cuda_fns.cudaDeviceGetAttribute, handle, is_hip ? HIP_SYM_DEVICE_GET_ATTRIBUTE  : CUDA_SYM_DEVICE_GET_ATTRIBUTE);
+    mydlsym(&cuda_fns.cudaSetDevice,          handle, is_hip ? HIP_SYM_SET_DEVICE            : CUDA_SYM_SET_DEVICE);
+
+    // External memory interop is CUDA-only (used by Windows DirectStorage path)
+    if (!is_hip) {
+        mydlsym(&cuda_fns.cudaImportExternalMemory, handle, "cudaImportExternalMemory");
+        mydlsym(&cuda_fns.cudaExternalMemoryGetMappedBuffer, handle, "cudaExternalMemoryGetMappedBuffer");
+        mydlsym(&cuda_fns.cudaDestroyExternalMemory, handle, "cudaDestroyExternalMemory");
+    } else {
+        cuda_fns.cudaImportExternalMemory = nullptr;
+        cuda_fns.cudaExternalMemoryGetMappedBuffer = nullptr;
+        cuda_fns.cudaDestroyExternalMemory = nullptr;
+    }
+
+    bool success = cuda_fns.cudaMemcpy && cuda_fns.cudaDeviceSynchronize;
+    success = success && cuda_fns.cudaHostAlloc && cuda_fns.cudaFreeHost;
+    success = success && cuda_fns.cudaDeviceGetPCIBusId && cuda_fns.cudaDeviceMalloc;
+    success = success && cuda_fns.cudaDeviceFree && cuda_fns.cudaDriverGetVersion;
+    success = success && cuda_fns.cudaDeviceGetAttribute && cuda_fns.cudaSetDevice;
+
+    dlclose(handle);
+
+    if (!success) {
+        if (init_log) fprintf(stderr, "[DEBUG] %s missing required GPU functions. fallback\n", lib_name.c_str());
+        return false;
+    }
+
+    if (init_log) fprintf(stderr, "[DEBUG] loaded: %s (hip=%d)\n", lib_name.c_str(), (int)is_hip);
+    gpu_found = true;
+    is_hip_runtime = is_hip;
+    return true;
+}
+
 static void load_library_functions(const std::string& cudart_override = "") {
-    cudaError_t (*cudaGetDeviceCount)(int*);
 #ifdef _MSC_VER
     const char* cufileLib = nullptr; // cuFile not available on Windows
     const char* numaLib = nullptr;  // NUMA not available on Windows
@@ -188,10 +256,6 @@ static void load_library_functions(const std::string& cudart_override = "") {
     const char* cufileLib = "libcufile.so.0";
     const char* numaLib = "libnuma.so.1";
 #endif
-    // Use the runtime-provided library name if given, otherwise fall back
-    // to the compile-time default from cuda_compat.h (GPU_RUNTIME_LIB).
-    std::string cudart_name = cudart_override.empty() ? GPU_RUNTIME_LIB : cudart_override;
-    const char* cudartLib = cudart_name.c_str();
     bool init_log = getenv(ENV_ENABLE_INIT_LOG);
     int mode = RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE;
 
@@ -216,64 +280,18 @@ static void load_library_functions(const std::string& cudart_override = "") {
         cuda_fns.numa_run_on_node = cpu_numa_run_on_node;
     }
 
-    void* handle_cudart = dlopen(cudartLib, mode);
-    if (handle_cudart) {
-        mydlsym(&cudaGetDeviceCount, handle_cudart, GPU_SYM_GET_DEVICE_COUNT);
-        if (cudaGetDeviceCount) {
-            int count;
-            if (cudaGetDeviceCount(&count) != cudaSuccess) {
-                count = 0; // why cudaGetDeviceCount returns non-zero for errors?
-            }
-            cuda_found = count > 0;
-            // Detect if we loaded HIP runtime (ROCm) vs CUDA runtime
-            if (cuda_found && std::string(cudartLib).find("hip") != std::string::npos) {
-                is_hip_runtime = true;
-            }
-            if (init_log) {
-                fprintf(stderr, "[DEBUG] device count=%d, cuda_found=%d\n", count, cuda_found);
-            }
-        } else {
-            cuda_found = false;
-            if (init_log) {
-                fprintf(stderr, "[DEBUG] No %s, fallback!\n", GPU_SYM_GET_DEVICE_COUNT);
-            }
+    if (!cudart_override.empty()) {
+        // Caller specified exact library — detect platform from name
+        bool is_hip = cudart_override.find("hip") != std::string::npos;
+        load_gpu_lib(cudart_override, is_hip, init_log, mode);
+    } else {
+        // Universal detection: try CUDA first, then ROCm
+        if (!load_gpu_lib(CUDA_RUNTIME_LIB, false, init_log, mode)) {
+            load_gpu_lib(HIP_RUNTIME_LIB, true, init_log, mode);
         }
-        if (cuda_found) {
-            mydlsym(&cuda_fns.cudaMemcpy, handle_cudart, GPU_SYM_MEMCPY);
-            mydlsym(&cuda_fns.cudaMemcpyAsync, handle_cudart, GPU_SYM_MEMCPY_ASYNC);
-            mydlsym(&cuda_fns.cudaDeviceSynchronize, handle_cudart, GPU_SYM_DEVICE_SYNCHRONIZE);
-            mydlsym(&cuda_fns.cudaHostAlloc, handle_cudart, GPU_SYM_HOST_ALLOC);
-            mydlsym(&cuda_fns.cudaFreeHost, handle_cudart, GPU_SYM_FREE_HOST);
-            mydlsym(&cuda_fns.cudaDeviceGetPCIBusId, handle_cudart, GPU_SYM_DEVICE_GET_PCI_BUS_ID);
-            mydlsym(&cuda_fns.cudaDeviceMalloc, handle_cudart, GPU_SYM_DEVICE_MALLOC);
-            mydlsym(&cuda_fns.cudaDeviceFree, handle_cudart, GPU_SYM_DEVICE_FREE);
-            mydlsym(&cuda_fns.cudaDriverGetVersion, handle_cudart, GPU_SYM_DRIVER_GET_VERSION);
-            mydlsym(&cuda_fns.cudaDeviceGetAttribute, handle_cudart, GPU_SYM_DEVICE_GET_ATTRIBUTE);
-            mydlsym(&cuda_fns.cudaSetDevice, handle_cudart, GPU_SYM_SET_DEVICE);
-            mydlsym(&cuda_fns.cudaImportExternalMemory, handle_cudart, "cudaImportExternalMemory");
-            mydlsym(&cuda_fns.cudaExternalMemoryGetMappedBuffer, handle_cudart, "cudaExternalMemoryGetMappedBuffer");
-            mydlsym(&cuda_fns.cudaDestroyExternalMemory, handle_cudart, "cudaDestroyExternalMemory");
-            bool success = cuda_fns.cudaMemcpy && cuda_fns.cudaDeviceSynchronize;
-            success = success && cuda_fns.cudaHostAlloc && cuda_fns.cudaFreeHost;
-            success = success && cuda_fns.cudaDeviceGetPCIBusId && cuda_fns.cudaDeviceMalloc;
-            success = success && cuda_fns.cudaDeviceFree && cuda_fns.cudaDriverGetVersion;
-            success = success && cuda_fns.cudaDeviceGetAttribute && cuda_fns.cudaSetDevice;
-            success = success && cuda_fns.cudaImportExternalMemory && cuda_fns.cudaExternalMemoryGetMappedBuffer;
-            success = success && cuda_fns.cudaDestroyExternalMemory;
-            if (!success) {
-                cuda_found = false;
-                if (init_log) {
-                    fprintf(stderr, "[DEBUG] %s does not contain required CUDA functions. fallback\n", cudartLib);
-                }
-            } else if (init_log) {
-                fprintf(stderr, "[DEBUG] loaded: %s\n", cudartLib);
-            }
-        }
-        dlclose(handle_cudart);
-    } else if (init_log) {
-        fprintf(stderr, "[DEBUG] %s is not installed. fallback\n", cudartLib);
     }
-    if (!cuda_found) {
+
+    if (!gpu_found) {
         cuda_fns.cudaMemcpy = cpu_cudaMemcpy;
         cuda_fns.cudaDeviceSynchronize = cpu_cudaDeviceSynchronize;
         cuda_fns.cudaHostAlloc = cpu_cudaHostAlloc;
@@ -286,7 +304,7 @@ static void load_library_functions(const std::string& cudart_override = "") {
     }
 
     cufile_found = false;
-    if (cuda_found && cufileLib) {
+    if (gpu_found && cufileLib) {
         void* handle_cufile = dlopen(cufileLib, mode);
         if (handle_cufile) {
             CUfileError_t (*cuFileGetVersion)(int *);
@@ -343,26 +361,14 @@ static void load_library_functions(const std::string& cudart_override = "") {
     }
 }
 
-// Note: is_cuda_found gets auto-hipified to is_hip_found on ROCm builds
-// So this function will be is_hip_found() after hipification on ROCm
 bool is_cuda_found()
 {
-    return cuda_found;
+    return gpu_found && !is_hip_runtime;
 }
 
-// Separate function that always returns false on ROCm (CUDA not available on ROCm)
-// This will be used for the "is_cuda_found" Python export on ROCm builds
-bool cuda_not_available()
+bool is_hip_found()
 {
-    return false;  // On ROCm, CUDA is never available
-}
-
-// Separate function for checking HIP runtime detection (not hipified)
-// On CUDA: checks if HIP runtime was detected
-// On ROCm: not used (is_cuda_found gets hipified to is_hip_found)
-bool check_hip_runtime()
-{
-    return is_hip_runtime;
+    return gpu_found && is_hip_runtime;
 }
 
 bool is_cufile_found()
@@ -410,7 +416,8 @@ void init_gil_release_from_env() {
 
 int is_gds_supported(int deviceId)
 {
-#ifndef USE_ROCM
+    if (is_hip_runtime) return 0;  // ROCm does not have GDS
+
     int gdr_support = 1;
     int driverVersion = 0;
     cudaError_t err;
@@ -429,9 +436,6 @@ int is_gds_supported(int deviceId)
         }
     }
     return gdr_support;
-#endif
-    // ROCm does not have GDS
-    return 0;
 }
 
 int init_gds()
@@ -946,14 +950,8 @@ PYBIND11_MODULE(__MOD_NAME__, m)
 #endif
     // Initialize GIL release setting from environment variable on module load
     init_gil_release_from_env();
-    // Export both is_cuda_found and is_hip_found on all platforms.
-#ifdef USE_ROCM
-    m.def("is_cuda_found", &cuda_not_available);
-    m.def("is_hip_found", &is_cuda_found);
-#else
     m.def("is_cuda_found", &is_cuda_found);
-    m.def("is_hip_found", &cuda_not_available);
-#endif
+    m.def("is_hip_found", &is_hip_found);
     m.def("is_cufile_found", &is_cufile_found);
     m.def("cufile_version", &cufile_version);
     m.def("set_debug_log", &set_debug_log);
