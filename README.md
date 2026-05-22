@@ -1,127 +1,40 @@
-fastsafetensors is an efficient safetensors model loader.
-This library is tested with Python 3.10-3.13 and PyTorch 2.1-2.7.
+fastsafetensors
+================
 
-Disclaimer: This repository contains a research prototype. It should be used with caution.
+fastsafetensors is an efficient safetensors loader. If you develop your own code that loads large safetensors files, you can try fastsafetensors APIs (see [docs](./docs/overview.md)). For example, vLLM and SGLang have `--load-format fastsafetensors` command-line argument to speed up their initialization.
 
-# Features
+This library supports Linux/CUDA, ROCm without GDS, Windows, [3FS](https://github.com/deepseek-ai/3fs), and unified-memory systems such as DGX Spark. Our CI tests Python 3.10-3.14 with PyTorch 2.11.0.
 
-We introduced three major features to optimize model loading performance:
-1. Batched, lazy tensor instantiation.
-2. GPU offloading for sharding, type conversions, and device pointer alignment.
-3. GPU Direct Storage enablement for file loading from storage to GPU memory.
+# Performance Highlights
 
-A major design difference from the original safetensors file loader is that fastsafetensors does *NOT* use `mmap`.
-The original loader loads tensors on demand from memory-mapped files,
-but unfortunately, it cannot fully utilize high-throughput I/O such as NVMe SSDs.
-Therefore, we asynchronously transfer files in parallel to saturate storage throughput.
-The loader then lazily instantiates tensors in GPU device memory with DLPack.
+Performance highlights from the [CLOUD 2025 paper](https://arxiv.org/abs/2505.23072) and benchmark docs:
+- Standalone model loading was **4.8x-7.5x faster** than the default `safetensors` deserializer on Llama, Falcon, and Bloom models, and reached **26.4 GB/s** NVMe read throughput for Llama-70B on four GPUs with GDS.
+- In the paper's vLLM integration experiment, startup time dropped from **12.39s to 4.74s** for Llama-2-13B on 4x L40S GPUs, and from **16.04s to 6.88s** on 1x A100.
+- On AMD ROCm without GDS, the documented `nogds` path reached **6.02 GB/s** for GPT-2 Medium versus **1.28 GB/s** with `mmap` (**4.7x** throughput), and **2.62 GB/s** for GPT-2 versus **1.01 GB/s** with `mmap` (**2.6x** throughput). See the [report](./docs/amd-perf.md) for more details.
 
-Another design change is to offload sharding and other tensor manipulations to GPUs.
-The original loader provides slicing for sharding in user programs before copying to device memory. However, it incurs high CPU usage for host memory accesses.
-Therefore, we introduce special APIs to run sharding with `torch.distributed` collective operations such as `broadcast` and `scatter`.
-The offloading is also applied to other tensor manipulations such as type conversions.
-
-The above two designs can be naturally extended to utilize device-to-device data transfers with GPU Direct Storage.
-The technology helps minimize copy overheads from NVMe SSDs to GPU memory by bypassing host CPU and memory.
-
-## Basic API usage
-
-`SafeTensorsFileLoader` is a low-level entrypoint. To use it, pass either `SingleGroup()` for simple inference or `ProcessGroup()` (from `torch.distributed`) for tensor-parallel inference. The loader supports both CPU and CUDA devices, with optional GPU Direct Storage (GDS) support. You can specify the device and GDS settings using the `device` and `nogds` arguments, respectively. Note that if GDS is not available, the loader will fail to open files when `nogds=False`. For more information on enabling GDS, please refer to the NVIDIA documentation.
-
-After creating a `SafeTensorsFileLoader` instance, first map target files and a rank using the `.add_filenames()` method. Then, call `.copy_file_to_device()` to trigger the actual file copies on aggregated GPU memory fragments and directly instantiate a group of tensors. Once the files are loaded, you can retrieve a tensor using the `.get_tensor()` method. Additionally, you can obtain sharded tensors by `.get_sharded()`, which internally runs collective operations in `torch.distributed`.
-
-Important: To release the GPU memory allocated for tensors, you must explicitly call the `.close()` method. This is because fastsafetensors allows multiple tensors to share a limited number of GPU memory fragments. As a result, it is the user's responsibility to ensure that all tensors are properly released before calling `.close()`, which will then safely release the underlying GPU memory.
-
-`fastsafe_open` is an easier entrypoint. You can force GDS off and run in fallback mode if `nogds=True`. However, users must be aware of the above tricky memory management model, which should be fixed in future releases.
-
-```python
-with fastsafe_open(filenames=[filename], nogds=True, device="cpu", debug_log=True) as f:
-    for key in f.get_keys():
-        t = f.get_tensor(key).clone().detach() # clone if t is used outside
-```
-
-## Configuration
-
-`AutoLoader` supports file-based configuration for loader type, pipeline mode, copy settings, and more.
-See [Configuration Guide](./docs/configuration.md) for defaults, examples, and all available options.
-
-## Development
-
-### Pre-commit Hooks
-
-Our CI workflow checks code formatting and linting with Python 3.13. Therefore, we recommend testing your code with Python 3.13 and running the following pre-commit hooks before contributing your code.
-
-To set up:
-
-1. Install development dependencies:
-```bash
-pip install -e ".[dev]"
-```
-
-2. Install pre-commit hooks:
-```bash
-pre-commit install
-```
-
-Now, every time you commit, the following checks will run automatically:
-- **black**: Code formatting
-- **isort**: Import sorting
-- **flake8**: Basic linting (syntax errors, undefined names)
-- **mypy**: Type checking
-- **trailing-whitespace**: Remove trailing whitespace
-- **end-of-file-fixer**: Ensure files end with a newline
-- **check-yaml**: Validate YAML files
-- **check-toml**: Validate TOML files
-- **check-merge-conflict**: Detect merge conflict markers
-- **debug-statements**: Detect debug statements
-
-To manually run pre-commit on all files:
-```bash
-pre-commit run --all-files
-```
-
-To skip pre-commit hooks (not recommended):
-```bash
-git commit --no-verify
-```
-
-## Code of Conduct
-
-Please refer to [Foundation Model Stack Community Code of Conduct](https://github.com/foundation-model-stack/foundation-model-stack/blob/main/code-of-conduct.md).
-
-## Publication
-
-Takeshi Yoshimura, Tatsuhiro Chiba, Manish Sethi, Daniel Waddington, Swaminathan Sundararaman. (2025) Speeding up Model Loading with fastsafetensors [arXiv:2505.23072](https://arxiv.org/abs/2505.23072) and IEEE CLOUD 2025.
-
-## For NVIDIA
-
-### Install from PyPI
-
-See https://pypi.org/project/fastsafetensors/
+# Quick Start
 
 ```bash
 pip install fastsafetensors
+pip install vllm # for quick demo
+vllm serve Qwen/Qwen3-0.6B --load-format fastsafetensors
+...
+Loading safetensors using Fastsafetensor loader:   0% Completed | 0/1 [00:00<?, ?it/s]
+Loading safetensors using Fastsafetensor loader: 100% Completed | 1/1 [00:00<00:00,  1.23it/s]
 ```
 
-### Install from source
+# Design Details
 
-```bash
-pip install .
-```
+See [Overview](./docs/overview.md) for features, basic API usage, and configuration.
 
-## For ROCm
+# Code of Conduct
 
-On ROCm, there is no GDS-equivalent support, so fastsafetensors only supports `nogds=True` mode.
-The performance gain example can be found at [amd-perf.md](./docs/amd-perf.md).
+Please refer to [Foundation Model Stack Community Code of Conduct](https://github.com/foundation-model-stack/foundation-model-stack/blob/main/code-of-conduct.md).
 
-### Install from GitHub Source
+# Development
 
-```bash
-pip install git+https://github.com/foundation-model-stack/fastsafetensors.git
-```
+See [Development](./docs/development.md).
 
-### Install from source
+# Publication
 
-```bash
-pip install .
-```
+Takeshi Yoshimura, Tatsuhiro Chiba, Manish Sethi, Daniel Waddington, Swaminathan Sundararaman. (2025) Speeding up Model Loading with fastsafetensors [arXiv:2505.23072](https://arxiv.org/abs/2505.23072) and IEEE CLOUD 2025.
