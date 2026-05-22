@@ -21,19 +21,18 @@ dependencies = [
 
 [project.optional-dependencies]
 progress = [
-    "tqdm>=4.66.0",
+    "tqdm>=4.66.3",
 ]
 test = [
-    "torch>=2.5.1",
-    "pytest>=8.1.1",
+    "torch>=2.10.0",
+    "pytest>=9.0.3",
     "pytest-cov>=5.0.0",
-    "transformers>=4.40.2",
-    "safetensors>=0.4.0",
-    "vllm>=0.8.2"
+    "transformers>=5.0.0",
+    "safetensors>=0.4.0"
 ]
 dev = [
     "pre-commit>=3.6.0",
-    "black==25.11.0",
+    "black==26.3.1",
     "isort==6.1.0",
     "flake8==7.3.0",
     "mypy==1.19.1"
@@ -49,7 +48,7 @@ Repository = "https://github.com/foundation-model-stack/fastsafetensors"
 filterwarnings = ["ignore:Can't initialize NVML"]
 
 [build-system]
-requires = ["setuptools==69.5.1", "pybind11"]
+requires = ["setuptools>=78.1.1", "pybind11"]
 build-backend = "setuptools.build_meta"
 
 [tool.isort]
