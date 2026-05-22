@@ -12,6 +12,8 @@
 #include <share.h>
 #include <stdio.h>
 #include <cstdint>
+#include <mutex>
+#include <unordered_set>
 // Windows-compatible posix_memalign
 static inline int posix_memalign(void **memptr, size_t alignment, size_t size) {
     *memptr = _aligned_malloc(size, alignment);
@@ -31,8 +33,11 @@ static inline int64_t pread(int fd, void *buf, size_t count, int64_t offset) {
 #define RTLD_LAZY    0
 #define RTLD_GLOBAL  0
 #ifndef RTLD_NODELETE
-#define RTLD_NODELETE 0
+#define RTLD_NODELETE 0x1000
 #endif
+
+static std::mutex g_nodelete_handles_mutex;
+static std::unordered_set<void*> g_nodelete_handles;
 
 static inline bool is_windows_path_like(const char* filename) {
     if (!filename || !filename[0]) return false;
@@ -41,18 +46,29 @@ static inline bool is_windows_path_like(const char* filename) {
            (std::strlen(filename) > 1 && filename[1] == ':');
 }
 
-static inline void* dlopen(const char* filename, int) {
+static inline void* dlopen(const char* filename, int mode) {
     if (!filename) return nullptr;
     DWORD flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
     if (is_windows_path_like(filename)) {
         flags |= LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR;
     }
-    return reinterpret_cast<void*>(LoadLibraryExA(filename, nullptr, flags));
+    void* handle = reinterpret_cast<void*>(LoadLibraryExA(filename, nullptr, flags));
+    if (handle && (mode & RTLD_NODELETE)) {
+        std::lock_guard<std::mutex> lock(g_nodelete_handles_mutex);
+        g_nodelete_handles.insert(handle);
+    }
+    return handle;
 }
 static inline void* dlsym(void* handle, const char* symbol) {
     return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(handle), symbol));
 }
 static inline int dlclose(void* handle) {
+    {
+        std::lock_guard<std::mutex> lock(g_nodelete_handles_mutex);
+        if (g_nodelete_handles.find(handle) != g_nodelete_handles.end()) {
+            return 0;
+        }
+    }
     return FreeLibrary(reinterpret_cast<HMODULE>(handle)) ? 0 : -1;
 }
 
