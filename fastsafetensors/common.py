@@ -51,34 +51,63 @@ def get_device_numa_node(device: Optional[int]) -> Optional[int]:
         return int(f.read().strip())
 
 
+def _normalize_windows_dll_path(path: str, source: str) -> str:
+    """Return a normalized absolute DLL path on Windows.
+
+    We intentionally reject relative paths and bare DLL names here so callers do
+    not fall back to the Windows DLL search order, which is susceptible to DLL
+    planting / search-order hijacking.
+    """
+    expanded = os.path.expandvars(os.path.expanduser(path))
+    if not os.path.isabs(expanded):
+        raise ValueError(f"{source} must be an absolute path on Windows: {path!r}")
+    normalized = os.path.abspath(expanded)
+    if not os.path.isfile(normalized):
+        raise FileNotFoundError(
+            f"{source} points to a missing DLL on Windows: {normalized}"
+        )
+    return normalized
+
+
 def resolve_cudart_lib_name() -> str:
     """Resolve the CUDA runtime library name for the current platform.
 
     Returns:
-        Library name string, or "" to use the compiled-in default.
+        On Windows, an absolute DLL path string. On other platforms, "" to use
+        the compiled-in default.
     """
     if sys.platform != "win32":
         return ""  # Non-Windows: use auto-detection (CUDA first, then ROCm)
 
     # Allow explicit override via environment variable
-    override = os.environ.get("FASTSAFETENSORS_CUDART_LIB", "")
+    override = os.environ.get("FASTSAFETENSORS_CUDART_LIB", "").strip()
     if override:
-        return override
+        return _normalize_windows_dll_path(override, "FASTSAFETENSORS_CUDART_LIB")
 
     import glob
 
     def _find_cudart_in_dir(d: str) -> str:
-        """Scan a directory for cudart64_*.dll files, return the best match."""
+        """Scan a trusted directory for cudart64_*.dll files."""
+        if not d:
+            return ""
+        expanded = os.path.expandvars(os.path.expanduser(d))
+        if not os.path.isabs(expanded):
+            return ""
+        d = os.path.abspath(expanded)
         if not os.path.isdir(d):
             return ""
         matches = glob.glob(os.path.join(d, "cudart64_*.dll"))
         if matches:
             matches.sort(reverse=True)
-            return os.path.basename(matches[0])
+            return os.path.abspath(matches[0])
         return ""
 
     def _detect_from_nvcc(cuda_home: str) -> str:
         """Try to detect the CUDA major version from nvcc -V output."""
+        expanded = os.path.expandvars(os.path.expanduser(cuda_home))
+        if not os.path.isabs(expanded):
+            return ""
+        cuda_home = os.path.abspath(expanded)
         nvcc = os.path.join(cuda_home, "bin", "nvcc.exe")
         if not os.path.isfile(nvcc):
             return ""
@@ -92,7 +121,10 @@ def resolve_cudart_lib_name() -> str:
             release_idx = tokens.index("release") + 1
             version_str = tokens[release_idx].rstrip(",")
             cuda_major = version_str.split(".")[0]
-            return f"cudart64_{cuda_major}.dll"
+            candidate = os.path.join(cuda_home, "bin", f"cudart64_{cuda_major}.dll")
+            if os.path.isfile(candidate):
+                return os.path.abspath(candidate)
+            return ""
         except Exception:
             return ""
 
@@ -103,13 +135,6 @@ def resolve_cudart_lib_name() -> str:
         if result:
             return result
         result = _find_cudart_in_dir(os.path.join(cuda_home, "bin"))
-        if result:
-            return result
-
-    # Scan directories on PATH for cudart64_*.dll
-    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
-    for d in path_dirs:
-        result = _find_cudart_in_dir(d)
         if result:
             return result
 

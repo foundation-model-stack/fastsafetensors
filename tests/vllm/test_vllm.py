@@ -3,7 +3,8 @@
 import os
 
 import pytest
-import vllm
+
+pytest.importorskip("vllm", reason="vllm integration tests require vllm")
 from vllm import LLM, SamplingParams
 
 sampling_params = SamplingParams(

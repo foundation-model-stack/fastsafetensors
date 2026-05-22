@@ -39,10 +39,50 @@ static PFN_DStorageGetFactory g_pfnGetFactory = nullptr;
 typedef HRESULT (__stdcall *PFN_DStorageSetConfiguration1)(DSTORAGE_CONFIGURATION1 const*);
 static PFN_DStorageSetConfiguration1 g_pfnSetConfig1 = nullptr;
 
-static bool LoadDirectStorage() {
-    HMODULE hMod = LoadLibraryA("dstoragecore.dll");
-    if (!hMod) return false;
-    hMod = LoadLibraryA("dstorage.dll");
+static std::wstring utf8_to_wstring(const std::string& input) {
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, input.c_str(), -1, nullptr, 0);
+    if (wlen <= 0) {
+        return std::wstring();
+    }
+    std::vector<WCHAR> output(static_cast<size_t>(wlen));
+    if (MultiByteToWideChar(CP_UTF8, 0, input.c_str(), -1, output.data(), wlen) <= 0) {
+        return std::wstring();
+    }
+    return std::wstring(output.data());
+}
+
+static std::wstring join_windows_path(const std::wstring& dir, const wchar_t* leaf) {
+    if (dir.empty()) {
+        return std::wstring(leaf);
+    }
+    if (dir.back() == L'\\' || dir.back() == L'/') {
+        return dir + leaf;
+    }
+    return dir + L"\\" + leaf;
+}
+
+static HMODULE load_library_secure(const std::wstring& path) {
+    if (path.empty()) return nullptr;
+    return LoadLibraryExW(
+        path.c_str(),
+        nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+    );
+}
+
+static bool LoadDirectStorage(const std::string& dll_dir_utf8) {
+    HMODULE hModCore = nullptr;
+    HMODULE hMod = nullptr;
+    if (!dll_dir_utf8.empty()) {
+        const std::wstring dll_dir = utf8_to_wstring(dll_dir_utf8);
+        hModCore = load_library_secure(join_windows_path(dll_dir, L"dstoragecore.dll"));
+        if (!hModCore) return false;
+        hMod = load_library_secure(join_windows_path(dll_dir, L"dstorage.dll"));
+    } else {
+        hModCore = LoadLibraryExW(L"dstoragecore.dll", nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        if (!hModCore) return false;
+        hMod = LoadLibraryExW(L"dstorage.dll", nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    }
     if (!hMod) return false;
     g_pfnGetFactory = (PFN_DStorageGetFactory)GetProcAddress(hMod, "DStorageGetFactory");
     g_pfnSetConfig1 = (PFN_DStorageSetConfiguration1)GetProcAddress(hMod, "DStorageSetConfiguration1");
@@ -54,12 +94,12 @@ class GlobalDStorageState {
     static inline int s_device_id = 0;
 
 public:
-    static bool Initialize(int device_id, uintptr_t provided_device, const std::string& cudart_dll) {
+    static bool Initialize(int device_id, uintptr_t provided_device, const std::string& dstorage_dll_dir) {
         if (s_initialized) return true;
         std::lock_guard<std::mutex> lock(s_mutex);
         if (s_initialized) return true;
 
-        if (!LoadDirectStorage()) {
+        if (!LoadDirectStorage(dstorage_dll_dir)) {
             last_error_ = "Failed to load dstorage.dll or dstoragecore.dll";
             return false;
         }
@@ -146,12 +186,13 @@ private:
 class dstorage_file_handle {
 public:
     bool open(const std::string& path_utf8) {
-        int wlen = MultiByteToWideChar(CP_UTF8, 0, path_utf8.c_str(), -1, nullptr, 0);
-        std::vector<WCHAR> wpath(wlen);
-        MultiByteToWideChar(CP_UTF8, 0, path_utf8.c_str(), -1, wpath.data(), wlen);
+        std::wstring wpath = utf8_to_wstring(path_utf8);
+        if (wpath.empty()) {
+            return false;
+        }
 
         HRESULT hr = GlobalDStorageState::GetFactory()->OpenFile(
-            wpath.data(), IID_IDStorageFile, (void**)&file_);
+            wpath.c_str(), IID_IDStorageFile, (void**)&file_);
         return SUCCEEDED(hr);
     }
 
@@ -383,11 +424,12 @@ private:
 };
 
 void init_dstorage_bindings(py::module_& m) {
-    m.def("init_dstorage", [](int device_id, uintptr_t d3d12_ptr, const std::string& cudart_dll) -> std::string {
-        if (GlobalDStorageState::Initialize(device_id, d3d12_ptr, cudart_dll))
+    m.def("init_dstorage", [](int device_id, uintptr_t d3d12_ptr, const std::string& cudart_dll, const std::string& dstorage_dll_dir) -> std::string {
+        (void)cudart_dll;
+        if (GlobalDStorageState::Initialize(device_id, d3d12_ptr, dstorage_dll_dir))
             return "ok";
         return GlobalDStorageState::LastError();
-    }, py::arg("device_id") = 0, py::arg("d3d12_device_ptr") = 0, py::arg("cudart_dll") = "cudart64_12.dll");
+    }, py::arg("device_id") = 0, py::arg("d3d12_device_ptr") = 0, py::arg("cudart_dll") = "", py::arg("dstorage_dll_dir") = "");
 
     py::class_<dstorage_file_handle>(m, "dstorage_file_handle")
         .def(py::init<>())
