@@ -3,7 +3,7 @@ fastsafetensors
 
 fastsafetensors is an efficient safetensors loader. If you develop your own code that loads large safetensors files, you can try fastsafetensors APIs (see [docs](./docs/overview.md)). For example, vLLM and SGLang have `--load-format fastsafetensors` command-line argument to speed up their initialization.
 
-This library supports Linux/CUDA, ROCm without GDS, Windows, [3FS](https://github.com/deepseek-ai/3fs), and unified-memory systems such as DGX Spark. Our CI tests Python 3.10-3.14 with PyTorch 2.11.0.
+This library supports Linux/CUDA, ROCm without GDS, Windows, [3FS](https://github.com/deepseek-ai/3fs), unified-memory systems such as DGX Spark, and so on. We welcome more platform/storage-specific optimizations like them by adding new [copier backends](fastsafetensors/copier/). Our CI tests Python 3.10-3.14 with PyTorch 2.11.0.
 
 # Performance Highlights
 
