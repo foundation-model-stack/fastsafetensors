@@ -85,5 +85,8 @@ class dstorage_stream_reader:
     def close(self) -> None: ...
 
 def init_dstorage(
-    device_id: int = 0, d3d12_device_ptr: int = 0, cudart_dll: str = "cudart64_12.dll"
+    device_id: int = 0,
+    d3d12_device_ptr: int = 0,
+    cudart_dll: str = "",
+    dstorage_dll_dir: str = "",
 ) -> str: ...

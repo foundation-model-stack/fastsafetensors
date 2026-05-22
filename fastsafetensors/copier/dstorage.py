@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
+
 import os
 import sys
+from pathlib import Path
 from typing import Any, Dict
 
 from .. import cpp as fstcpp
@@ -18,68 +21,88 @@ from .registry import CopierConstructFunc, register_copier_constructor
 logger = init_logger(__name__)
 
 _inited_ds = False
+_dstorage_dll_dir_handle = None
+_dstorage_dll_dir: Path | None = None
+_DSTORAGE_DLLS = ("dstoragecore.dll", "dstorage.dll")
+_DSTORAGE_DLL_DIR_ENV_VAR = "FASTSAFETENSORS_DSTORAGE_DLL_DIR"
+_LEGACY_DSTORAGE_DOWNLOAD_ENV_VAR = "FASTSAFETENSORS_DSTORAGE_NUPKG_URL"
+
+
+def _get_dstorage_cache_dir() -> Path:
+    return Path.home() / ".cache" / "fastsafetensors"
+
+
+def _validate_dstorage_dll_dir(path: Path, source: str) -> Path:
+    path = Path(os.path.expandvars(os.path.expanduser(str(path))))
+    if not path.is_absolute():
+        raise ValueError(f"{source} must be an absolute directory path: {path}")
+    if not path.is_dir():
+        raise FileNotFoundError(f"{source} does not exist: {path}")
+
+    missing = [name for name in _DSTORAGE_DLLS if not (path / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"{source} is missing required DirectStorage DLLs: {missing} in {path}"
+        )
+    return path
+
+
+def resolve_dstorage_dll_dir() -> Path:
+    """Resolve the directory that contains pre-installed DirectStorage DLLs."""
+    if sys.platform != "win32":
+        raise RuntimeError("DirectStorage is only supported on Windows")
+
+    legacy = os.environ.get(_LEGACY_DSTORAGE_DOWNLOAD_ENV_VAR, "").strip()
+    if legacy:
+        raise RuntimeError(
+            f"{_LEGACY_DSTORAGE_DOWNLOAD_ENV_VAR} is no longer supported for "
+            "security reasons. Install DirectStorage DLLs manually and point "
+            f"{_DSTORAGE_DLL_DIR_ENV_VAR} to an absolute directory instead."
+        )
+
+    override = os.environ.get(_DSTORAGE_DLL_DIR_ENV_VAR, "").strip()
+    if override:
+        return _validate_dstorage_dll_dir(Path(override), _DSTORAGE_DLL_DIR_ENV_VAR)
+
+    cache_dir = _get_dstorage_cache_dir()
+    if cache_dir.is_dir():
+        try:
+            return _validate_dstorage_dll_dir(cache_dir, str(cache_dir))
+        except FileNotFoundError:
+            pass
+
+    raise RuntimeError(
+        "DirectStorage DLLs were not found. Install dstoragecore.dll and "
+        "dstorage.dll into an absolute directory and set "
+        f"{_DSTORAGE_DLL_DIR_ENV_VAR}, or place them in {cache_dir}."
+    )
 
 
 def load_dstorage_dlls() -> None:
-    """Download and install DirectStorage DLLs if not already present."""
+    """Load DirectStorage DLLs from a pre-installed absolute directory."""
     if sys.platform != "win32":
         return  # DirectStorage is Windows-only
 
     import ctypes
-    import io
-    import shutil
-    import zipfile
-    from pathlib import Path
-    from urllib.error import URLError
-    from urllib.request import Request, urlopen
 
-    cache_dir = Path.home() / ".cache" / "fastsafetensors"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    dstorage_dll = cache_dir / "dstorage.dll"
-    dlls = ["dstoragecore.dll", "dstorage.dll"]
-    arch = "x64" if sys.maxsize > 2**32 else "x86"
+    global _dstorage_dll_dir_handle
+    global _dstorage_dll_dir
 
-    if not dstorage_dll.exists():
-        logger.info("Downloading fastsafetensors DirectStorage DLL's")
+    dll_dir = resolve_dstorage_dll_dir()
+    if _dstorage_dll_dir == dll_dir:
+        return
 
-        nupkg_url = os.environ.get("FASTSAFETENSORS_DSTORAGE_NUPKG_URL") or (
-            "https://globalcdn.nuget.org/packages/"
-            "microsoft.direct3d.directstorage.1.3.0.nupkg"
-            "?packageVersion=1.3.0"
-        )
-        extract_dir = cache_dir / "directstorage"
-        dll_src_dir = extract_dir / "native" / "bin" / arch
+    if hasattr(os, "add_dll_directory"):
+        _dstorage_dll_dir_handle = os.add_dll_directory(str(dll_dir))
 
+    for dll_name in _DSTORAGE_DLLS:
+        dll_path = dll_dir / dll_name
         try:
-            req = Request(nupkg_url, headers={"User-Agent": "fastsafetensors"})
-            with urlopen(req, timeout=60) as resp:
-                nupkg_data = resp.read()
+            ctypes.WinDLL(str(dll_path))
+        except OSError as e:
+            raise RuntimeError(f"Failed to preload DirectStorage DLL {dll_path}: {e}")
 
-            with zipfile.ZipFile(io.BytesIO(nupkg_data)) as zf:
-                zf.extractall(extract_dir)
-
-            for dll_name in dlls:
-                src = dll_src_dir / dll_name
-                dst = cache_dir / dll_name
-                if src.is_file():
-                    shutil.copy2(src, dst)
-                else:
-                    raise FileNotFoundError(
-                        f"Expected {dll_name} at {src} but not found in NuGet package"
-                    )
-        except (URLError, OSError, zipfile.BadZipFile, FileNotFoundError) as e:
-            logger.warning(f"Failed to download/install DirectStorage DLLs: {e}")
-        finally:
-            if extract_dir.is_dir():
-                shutil.rmtree(extract_dir, ignore_errors=True)
-
-    for dll_name in dlls:
-        dll_path = cache_dir / dll_name
-        if dll_path.is_file():
-            try:
-                ctypes.WinDLL(str(dll_path.absolute()))
-            except OSError as e:
-                logger.warning(f"Failed to preload {dll_path}: {e}")
+    _dstorage_dll_dir = dll_dir
 
 
 def init_dstorage(device_id: int = 0) -> None:
@@ -94,7 +117,9 @@ def init_dstorage(device_id: int = 0) -> None:
         cudart_dll = resolve_cudart_lib_name()
         if not cudart_dll:
             raise RuntimeError("Could not find CUDA runtime DLL")
-        status = fstcpp.init_dstorage(device_id, 0, cudart_dll)
+        if _dstorage_dll_dir is None:
+            raise RuntimeError("DirectStorage DLL directory was not initialized")
+        status = fstcpp.init_dstorage(device_id, 0, cudart_dll, str(_dstorage_dll_dir))
         if status != "ok":
             raise RuntimeError(f"init_dstorage failed: {status}")
         _inited_ds = True

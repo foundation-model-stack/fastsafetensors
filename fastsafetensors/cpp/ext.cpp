@@ -34,9 +34,20 @@ static inline int64_t pread(int fd, void *buf, size_t count, int64_t offset) {
 #define RTLD_NODELETE 0
 #endif
 
+static inline bool is_windows_path_like(const char* filename) {
+    if (!filename || !filename[0]) return false;
+    return std::strchr(filename, '\\') != nullptr ||
+           std::strchr(filename, '/') != nullptr ||
+           (std::strlen(filename) > 1 && filename[1] == ':');
+}
+
 static inline void* dlopen(const char* filename, int) {
     if (!filename) return nullptr;
-    return reinterpret_cast<void*>(LoadLibraryA(filename));
+    DWORD flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+    if (is_windows_path_like(filename)) {
+        flags |= LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR;
+    }
+    return reinterpret_cast<void*>(LoadLibraryExA(filename, nullptr, flags));
 }
 static inline void* dlsym(void* handle, const char* symbol) {
     return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(handle), symbol));
