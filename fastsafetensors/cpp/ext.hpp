@@ -18,7 +18,7 @@ typedef SSIZE_T ssize_t;
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include "cuda_compat.h"
+#include "gpu_compat.h"
 
 #define ENV_ENABLE_INIT_LOG "FASTSAFETENSORS_ENABLE_INIT_LOG"
 
