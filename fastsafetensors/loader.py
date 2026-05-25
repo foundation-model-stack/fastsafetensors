@@ -2,7 +2,17 @@
 
 import math
 import platform
-from typing import Any, Dict, List, Mapping, Optional, OrderedDict, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    OrderedDict,
+    Tuple,
+    Union,
+)
 
 from . import cpp as fstcpp
 from .common import (
@@ -64,6 +74,7 @@ class BaseSafeTensorsFileLoader:
         self.meta: Dict[str, Tuple[SafeTensorsMetadata, int]] = {}
         self.frames = OrderedDict[str, TensorFrame]()
         self.disable_cache = disable_cache
+        self._tensor_filter: Optional[Callable[[str], bool]] = None
         self.init_numa(set_numa)
         self.copier_constructor: CopierConstructFunc = create_copier_constructor(
             copier_type=copier_type,
@@ -92,6 +103,21 @@ class BaseSafeTensorsFileLoader:
 
     def get_shape(self, tensor_name: str) -> List[int]:
         return self.frames[tensor_name].shape
+
+    def set_tensor_filter(self, keep_tensor: Optional[Callable[[str], bool]]) -> None:
+        """Load only the tensors for which ``keep_tensor(name)`` is True.
+
+        When set, each owned file is read partially: bytes belonging to
+        filtered-out tensors are skipped and their device-buffer regions are
+        left uninitialized, so those tensors must not be requested afterwards.
+        Useful e.g. under expert parallelism to read only this rank's owned
+        experts -- see ``fastsafetensors.ep_slice.expert_parallel_filter``.
+        ``None`` (the default) loads every tensor.
+
+        Partial reads are implemented by the ``nogds`` and ``unified`` copiers;
+        other copiers ignore the filter and load the full file.
+        """
+        self._tensor_filter = keep_tensor
 
     def add_filenames(self, filenames: Dict[int, List[str]]):
         """
@@ -144,6 +170,10 @@ class BaseSafeTensorsFileLoader:
             self_rank = self.pg.rank() == rank
             if self_rank:
                 copier = self.copier_constructor(meta, self.device, self.framework)
+                if self._tensor_filter is not None and hasattr(
+                    copier, "set_byte_ranges"
+                ):
+                    copier.set_byte_ranges(meta.select_byte_ranges(self._tensor_filter))
             else:
                 copier = None
             factory = LazyTensorFactory(

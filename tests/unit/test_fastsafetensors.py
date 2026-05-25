@@ -402,7 +402,7 @@ def test_UnifiedMemCopier(fstcpp_log, input_files, framework, monkeypatch) -> No
         assert framework.is_equal(actual, exp)
     # Lifecycle: mmap + pinned references released in wait_io
     assert copier._file_tensor is None
-    assert copier._pinned is None
+    assert copier._pinned == []
     framework.free_tensor_memory(gbuf, device)
     assert framework.get_mem_used() == 0
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
@@ -427,7 +427,7 @@ def test_UnifiedMemCopier_cuda_error(
     # gbuf must be freed and mmap/pin refs released on error
     assert framework.get_mem_used() == 0
     assert copier._file_tensor is None
-    assert copier._pinned is None
+    assert copier._pinned == []
 
 
 @pytest.mark.parametrize(

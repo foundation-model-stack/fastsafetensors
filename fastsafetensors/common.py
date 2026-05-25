@@ -6,7 +6,7 @@ import os
 import sys
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from . import cpp as fstcpp
 from .dlpack import from_cuda_buffer
@@ -358,6 +358,38 @@ class SafeTensorsMetadata:
                 self.tensors[tensor_name].dtype = dtype
             ret[tensor_name] = t2
         return ret
+
+    def select_byte_ranges(
+        self, keep_tensor: Callable[[str], bool], merge_gap: int = 4096
+    ) -> List[Tuple[int, int]]:
+        """Compute the file byte-ranges covering only the kept tensors.
+
+        Returns a sorted list of ``[start, end)`` absolute file offsets spanning
+        exactly the tensors for which ``keep_tensor(name)`` is True. Kept tensors
+        separated by a gap of at most ``merge_gap`` bytes are coalesced into one
+        range to reduce the number of reads; the few non-kept bytes inside a
+        coalesced range are read but never instantiated as tensors.
+
+        Pass the result to a partial-read-capable copier (see
+        ``NoGdsFileCopier.set_byte_ranges``) to load only a subset of a shard --
+        e.g. only the experts an expert-parallel rank owns. Tensor data offsets
+        are unchanged, so unread regions of the device buffer simply stay
+        uninitialized and their tensors must not be requested.
+        """
+        ranges: List[Tuple[int, int]] = []
+        for name, frame in self.tensors.items():
+            if not keep_tensor(name):
+                continue
+            s, e = frame.data_offsets[0], frame.data_offsets[1]
+            ranges.append((self.header_length + s, self.header_length + e))
+        ranges.sort()
+        merged: List[List[int]] = []
+        for s, e in ranges:
+            if merged and s - merged[-1][1] <= merge_gap:
+                merged[-1][1] = max(merged[-1][1], e)
+            else:
+                merged.append([s, e])
+        return [(s, e) for s, e in merged]
 
     def __repr__(self) -> str:
         return str({"__metadata__": self.metadata, "tensors": self.tensors})
