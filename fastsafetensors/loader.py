@@ -99,23 +99,27 @@ class BaseSafeTensorsFileLoader:
         del self.copier_constructor
 
     def get_keys(self) -> List[str]:
-        return list(self.frames.keys())
+        if self._tensor_filter is None:
+            return list(self.frames.keys())
+        keep = self._tensor_filter
+        return [k for k in self.frames.keys() if keep(k)]
 
     def get_shape(self, tensor_name: str) -> List[int]:
+        if self._tensor_filter is not None and not self._tensor_filter(tensor_name):
+            raise ValueError(f"get_shape: key {tensor_name} is filtered out")
         return self.frames[tensor_name].shape
 
     def set_tensor_filter(self, keep_tensor: Optional[Callable[[str], bool]]) -> None:
         """Load only the tensors for which ``keep_tensor(name)`` is True.
 
-        When set, each owned file is read partially: bytes belonging to
-        filtered-out tensors are skipped and their device-buffer regions are
-        left uninitialized, so those tensors must not be requested afterwards.
-        Useful e.g. under expert parallelism to read only this rank's owned
-        experts -- see ``fastsafetensors.ep_slice.expert_parallel_filter``.
-        ``None`` (the default) loads every tensor.
-
-        Partial reads are implemented by the ``nogds`` and ``unified`` copiers;
-        other copiers ignore the filter and load the full file.
+        The ``nogds`` and ``unified`` copiers skip reading bytes for filtered
+        tensors; other copiers load the full file. The filter narrows the
+        public API on every backend: ``get_keys()`` omits filtered tensors,
+        ``FilesBufferOnDevice`` does not register them, and ``get_tensor``,
+        ``get_filename``, and ``get_shape`` raise ``ValueError`` for them.
+        ``ParallelLoader.iterate_weights()`` skips them. ``None`` (the
+        default) loads every tensor. See
+        ``fastsafetensors.ep_slice.expert_parallel_filter``.
         """
         self._tensor_filter = keep_tensor
 
@@ -194,7 +198,12 @@ class BaseSafeTensorsFileLoader:
             lidx += 1
         for factory in need_wait:
             factory.wait_io(dtype=dtype, noalign=False)
-        return FilesBufferOnDevice(factories, pg=self.pg, framework=self.framework)
+        return FilesBufferOnDevice(
+            factories,
+            pg=self.pg,
+            framework=self.framework,
+            keep_tensor=self._tensor_filter,
+        )
 
 
 class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):

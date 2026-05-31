@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .common import init_logger
 from .frameworks import FrameworkOpBase, ProcessGroupBase, TensorBase
@@ -28,6 +28,11 @@ class FilesBufferOnDevice:
         rank_loaders (Dict<rank, list(LazyTensorFacotry)>): Tensor factories per rank, which hold device pointers for buffers.
         pg (ProcessGroupBase): process group for calling distributed ops.
         auto_mem_delete (bool): automatically release device buffers when all the tensors are shuffled.
+        keep_tensor (Callable[[str], bool], optional): If set, only tensors for
+            which ``keep_tensor(name)`` is True are registered in ``key_to_rank_lidx``;
+            others raise ``ValueError`` from ``get_tensor`` / ``get_filename`` /
+            ``get_shape``. Subclasses that reimplement the registration loop must
+            honor this.
 
     Examples:
         See examples/run_single.py and examples/run_parallel.py.
@@ -39,6 +44,7 @@ class FilesBufferOnDevice:
         pg: ProcessGroupBase,
         framework: FrameworkOpBase,
         auto_mem_delete: bool = True,
+        keep_tensor: Optional[Callable[[str], bool]] = None,
     ):
         self.framework = framework
         self.rank_loaders: Dict[int, List[LazyTensorFactory]] = rank_loaders
@@ -48,6 +54,8 @@ class FilesBufferOnDevice:
             self.instantiated[rank] = {}
             for lidx, loader in enumerate(loaders):
                 for key in loader.metadata.tensors.keys():
+                    if keep_tensor is not None and not keep_tensor(key):
+                        continue
                     if key in self.key_to_rank_lidx:
                         raise Exception(
                             f"FilesBufferOnDevice: key {key} must be unique among files"
@@ -69,9 +77,7 @@ class FilesBufferOnDevice:
         self.rank_loaders = {}
 
     def get_filename(self, tensor_name: str) -> str:
-        if tensor_name not in self.key_to_rank_lidx:
-            return ""
-        rank, lidx = self.key_to_rank_lidx[tensor_name]
+        rank, lidx = self._get_rank_lidx(tensor_name)
         return self.rank_loaders[rank][lidx].metadata.src
 
     def get_shape(self, tensor_name: str) -> List[int]:

@@ -151,13 +151,13 @@ class FastWeights:
         torch.cuda.empty_cache()
 
     def _get_alias(self, tensor_name: str) -> str:
-        if self._fb.get_filename(tensor_name) is None:
-            if tensor_name in self.aliases:
-                for alias in self.aliases[tensor_name]:
-                    if self._fb.get_filename(alias) is not None:
-                        return alias
-            raise RuntimeError(f"weight {tensor_name} does not exist")
-        return tensor_name
+        if tensor_name in self._fb.key_to_rank_lidx:
+            return tensor_name
+        if tensor_name in self.aliases:
+            for alias in self.aliases[tensor_name]:
+                if alias in self._fb.key_to_rank_lidx:
+                    return alias
+        raise RuntimeError(f"weight {tensor_name} does not exist")
 
     def get_shape(self, tensor_name: str) -> torch.Size:
         return torch.Size(self._fb.get_shape(self._get_alias(tensor_name)))
