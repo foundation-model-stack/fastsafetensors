@@ -9,7 +9,7 @@ memory bandwidth.
 """
 
 import os
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 
@@ -40,12 +40,25 @@ class UnifiedMemCopier(CopierInterface):
         self.device = device
         self.framework = framework
         self._file_tensor: Optional[torch.Tensor] = None
-        self._pinned: Optional[torch.Tensor] = None
+        self._pinned: List[torch.Tensor] = []
+        self.byte_ranges: Optional[List[Tuple[int, int]]] = None
+
+    def set_byte_ranges(self, byte_ranges: Optional[List[Tuple[int, int]]]) -> None:
+        """Restrict reads to these ``[start, end)`` absolute file-offset runs.
+
+        Only the bytes in the given runs are mmap-faulted, pinned, and copied;
+        the rest of the device buffer is left uninitialized (so the corresponding
+        tensors must not be requested). Tensor offsets are unchanged. ``None``
+        reads the whole data section. Build runs with
+        ``SafeTensorsMetadata.select_byte_ranges``.
+        """
+        self.byte_ranges = byte_ranges
 
     def submit_io(
         self, use_buf_register: bool, max_copy_block_size: int
     ) -> fstcpp.gds_device_buffer:
-        data_length = self.metadata.size_bytes - self.metadata.header_length
+        header_length = self.metadata.header_length
+        data_length = self.metadata.size_bytes - header_length
 
         # Allocate CUDA buffer via framework's allocator (proper lifecycle)
         gbuf = self.framework.alloc_tensor_memory(data_length, self.device)
@@ -55,25 +68,32 @@ class UnifiedMemCopier(CopierInterface):
             self.metadata.src, size=self.metadata.size_bytes, dtype=torch.uint8
         )
         self._file_tensor = file_tensor
-        data_tensor = file_tensor[self.metadata.header_length :]
 
-        # pin_memory triggers kernel readahead + pins pages for DMA
-        pinned = data_tensor.pin_memory()
-        self._pinned = pinned
+        # Default to the whole data section, reproducing the full-file read.
+        # An empty list (vs None) reads nothing — same semantics as nogds.
+        runs = self.byte_ranges
+        if runs is None:
+            runs = [(header_length, self.metadata.size_bytes)]
 
-        # Async DMA from pinned CPU → framework-allocated CUDA buffer
-        ret = fstcpp.memcpy_h2d_async(  # type: ignore[attr-defined]
-            gbuf.get_base_address(),
-            pinned.data_ptr(),
-            data_length,
-        )
-        if ret != 0:
-            self.framework.free_tensor_memory(gbuf, self.device)
-            self._pinned = None
-            self._file_tensor = None
-            raise RuntimeError(
-                f"cudaMemcpyAsync failed with error {ret} " f"for {self.metadata.src}"
+        base_address = gbuf.get_base_address()
+        self._pinned = []
+        for start, end in runs:
+            # pin_memory faults in + pins only this run's pages, then DMA to the
+            # matching offset in gbuf (data section starts at header_length).
+            pinned = file_tensor[start:end].pin_memory()
+            self._pinned.append(pinned)
+            ret = fstcpp.memcpy_h2d_async(  # type: ignore[attr-defined]
+                base_address + (start - header_length),
+                pinned.data_ptr(),
+                end - start,
             )
+            if ret != 0:
+                self.framework.free_tensor_memory(gbuf, self.device)
+                self._pinned = []
+                self._file_tensor = None
+                raise RuntimeError(
+                    f"cudaMemcpyAsync failed with error {ret} for {self.metadata.src}"
+                )
 
         return gbuf
 
@@ -94,7 +114,7 @@ class UnifiedMemCopier(CopierInterface):
         )
 
         # Release mmap and pinned memory
-        self._pinned = None
+        self._pinned = []
         self._file_tensor = None
 
         return tensors

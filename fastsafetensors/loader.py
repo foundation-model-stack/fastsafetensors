@@ -2,7 +2,17 @@
 
 import math
 import platform
-from typing import Any, Dict, List, Mapping, Optional, OrderedDict, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    OrderedDict,
+    Tuple,
+    Union,
+)
 
 from . import cpp as fstcpp
 from .common import (
@@ -64,6 +74,7 @@ class BaseSafeTensorsFileLoader:
         self.meta: Dict[str, Tuple[SafeTensorsMetadata, int]] = {}
         self.frames = OrderedDict[str, TensorFrame]()
         self.disable_cache = disable_cache
+        self._tensor_filter: Optional[Callable[[str], bool]] = None
         self.init_numa(set_numa)
         self.copier_constructor: CopierConstructFunc = create_copier_constructor(
             copier_type=copier_type,
@@ -88,10 +99,29 @@ class BaseSafeTensorsFileLoader:
         del self.copier_constructor
 
     def get_keys(self) -> List[str]:
-        return list(self.frames.keys())
+        if self._tensor_filter is None:
+            return list(self.frames.keys())
+        keep = self._tensor_filter
+        return [k for k in self.frames.keys() if keep(k)]
 
     def get_shape(self, tensor_name: str) -> List[int]:
+        if self._tensor_filter is not None and not self._tensor_filter(tensor_name):
+            raise ValueError(f"get_shape: key {tensor_name} is filtered out")
         return self.frames[tensor_name].shape
+
+    def set_tensor_filter(self, keep_tensor: Optional[Callable[[str], bool]]) -> None:
+        """Load only the tensors for which ``keep_tensor(name)`` is True.
+
+        The ``nogds`` and ``unified`` copiers skip reading bytes for filtered
+        tensors; other copiers load the full file. The filter narrows the
+        public API on every backend: ``get_keys()`` omits filtered tensors,
+        ``FilesBufferOnDevice`` does not register them, and ``get_tensor``,
+        ``get_filename``, and ``get_shape`` raise ``ValueError`` for them.
+        ``ParallelLoader.iterate_weights()`` skips them. ``None`` (the
+        default) loads every tensor. See
+        ``fastsafetensors.ep_slice.expert_parallel_filter``.
+        """
+        self._tensor_filter = keep_tensor
 
     def add_filenames(self, filenames: Dict[int, List[str]]):
         """
@@ -144,6 +174,10 @@ class BaseSafeTensorsFileLoader:
             self_rank = self.pg.rank() == rank
             if self_rank:
                 copier = self.copier_constructor(meta, self.device, self.framework)
+                if self._tensor_filter is not None and hasattr(
+                    copier, "set_byte_ranges"
+                ):
+                    copier.set_byte_ranges(meta.select_byte_ranges(self._tensor_filter))
             else:
                 copier = None
             factory = LazyTensorFactory(
@@ -164,7 +198,12 @@ class BaseSafeTensorsFileLoader:
             lidx += 1
         for factory in need_wait:
             factory.wait_io(dtype=dtype, noalign=False)
-        return FilesBufferOnDevice(factories, pg=self.pg, framework=self.framework)
+        return FilesBufferOnDevice(
+            factories,
+            pg=self.pg,
+            framework=self.framework,
+            keep_tensor=self._tensor_filter,
+        )
 
 
 class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):

@@ -4,7 +4,7 @@ import os
 import queue
 import threading
 import time
-from typing import Any, Generator, List, Optional, Tuple, Union
+from typing import Any, Callable, Generator, List, Optional, Tuple, Union
 
 import torch
 
@@ -20,6 +20,7 @@ except ImportError:
 
 
 from . import cpp as fstcpp
+from .common import SingleGroup
 from .loader import BaseSafeTensorsFileLoader, SafeTensorsFileLoader
 
 
@@ -139,6 +140,7 @@ class PipelineParallel:
         #   >0 : buffered pipeline — up to (queue_size+1) batches in GPU mem
         queue_size: int = 0,
         use_tqdm_on_load: bool = True,
+        tensor_filter: Optional[Callable[[str], bool]] = None,
         **kwargs,
     ):
 
@@ -149,6 +151,13 @@ class PipelineParallel:
                 "batches must be processed in strict order across all ranks."
             )
         self.loader = loader
+        # Read only the tensors this rank keeps (e.g. its owned experts); see
+        # SafeTensorsFileLoader.set_tensor_filter. NOTE: get_tensor broadcasts
+        # across the loader's process group, so a per-rank filter is only
+        # correct when the loader uses a single-process group (no broadcast) --
+        # use ParallelLoader(all_local=True), which sets that up.
+        if tensor_filter is not None:
+            loader.set_tensor_filter(tensor_filter)
         self.hf_weights_files = hf_weights_files
         self.max_concurrent_producers = max_concurrent_producers
         self.queue_size = queue_size
@@ -436,6 +445,18 @@ class ParallelLoader(PipelineParallel):
         set_numa (bool): If True, set NUMA node for optimal memory allocation.
         debug_log (bool): Enable debug logs.
         framework (str): Framework to use for tensor operations, e.g., "pytorch".
+        tensor_filter (Optional[Callable[[str], bool]]): If set, read only the
+                         tensors for which the predicate is True (see
+                         SafeTensorsFileLoader.set_tensor_filter and
+                         fastsafetensors.ep_slice.expert_parallel_filter). Must
+                         be paired with all_local=True.
+        all_local (bool): If True, the loader uses a single-process group so
+                         every rank loads its files independently with no
+                         cross-rank broadcast. Required when tensor_filter drops
+                         tensors that other ranks would otherwise receive via
+                         broadcast (e.g. expert-parallel slicing). The EP
+                         rank/size for the filter come from the real
+                         distributed world, independent of the loader's group.
 
     Additional GPU memory consumption: (max_concurrent_producers + queue_size) * file_size
     To reduce GPU memory consumption, re-accessing tensors that have already been accessed is prohibited.
@@ -462,6 +483,8 @@ class ParallelLoader(PipelineParallel):
         set_numa: bool = True,
         debug_log: bool = False,
         framework="pytorch",
+        tensor_filter: Optional[Callable[[str], bool]] = None,
+        all_local: bool = False,
         **kwargs,
     ):
         """Initialize PipelineParallelLoader with a pre-configured SafeTensorsFileLoader.
@@ -480,8 +503,13 @@ class ParallelLoader(PipelineParallel):
             debug_log (bool): Enable debug logs.
             framework (str): Framework to use for tensor operations.
         """
+        # all_local: load with a single-process group so each rank reads its
+        # files independently (no cross-rank broadcast in get_tensor). This is
+        # what makes a per-rank tensor_filter correct -- otherwise get_tensor
+        # would broadcast tensors this rank never read.
+        loader_pg = SingleGroup() if all_local else pg
         loader = SafeTensorsFileLoader(
-            pg,
+            loader_pg,
             device,
             bbuf_size_kb=bbuf_size_kb,
             max_threads=max_threads,
@@ -493,11 +521,12 @@ class ParallelLoader(PipelineParallel):
             **kwargs,
         )
         super().__init__(
-            pg,
+            loader_pg,
             loader,
             hf_weights_files,
             max_concurrent_producers,
             queue_size,
             use_tqdm_on_load,
+            tensor_filter=tensor_filter,
             **kwargs,
         )

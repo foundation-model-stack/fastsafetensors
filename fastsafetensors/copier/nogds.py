@@ -2,7 +2,7 @@
 
 import os
 import sys
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata, is_gpu_found, resolve_cudart_lib_name
@@ -35,24 +35,42 @@ class NoGdsFileCopier(CopierInterface):
             )
         self.device = device
         self.reqs: List[int] = []
+        self.byte_ranges: Optional[List[Tuple[int, int]]] = None
+
+    def set_byte_ranges(self, byte_ranges: Optional[List[Tuple[int, int]]]) -> None:
+        """Restrict reads to these ``[start, end)`` absolute file-offset runs.
+
+        Bytes outside the given runs are not read; their regions of the device
+        buffer are left uninitialized, so the corresponding tensors must not be
+        requested. ``None`` (the default) reads the whole data section. Build
+        runs with ``SafeTensorsMetadata.select_byte_ranges``.
+        """
+        self.byte_ranges = byte_ranges
 
     def submit_io(
         self, use_buf_register: bool, max_copy_block_size: int
     ) -> fstcpp.gds_device_buffer:
-        total_length = self.metadata.size_bytes - self.metadata.header_length
+        header_length = self.metadata.header_length
+        total_length = self.metadata.size_bytes - header_length
         gbuf = self.framework.alloc_tensor_memory(total_length, self.device)
-        count = 0
-        while count < total_length:
-            l = total_length - count
-            if max_copy_block_size < l:
-                l = max_copy_block_size
-            req = self.reader.submit_read(
-                self.fd, gbuf, self.metadata.header_length + count, l, count
-            )
-            if req < 0:
-                raise Exception(f"submit_io: submit_nogds_read failed, err={req}")
-            self.reqs.append(req)
-            count += l
+        # Default to a single run spanning the whole data section, which
+        # reproduces the original full-file read.
+        runs = self.byte_ranges
+        if runs is None:
+            runs = [(header_length, self.metadata.size_bytes)]
+        for start, end in runs:
+            count = start
+            while count < end:
+                l = end - count
+                if max_copy_block_size < l:
+                    l = max_copy_block_size
+                req = self.reader.submit_read(
+                    self.fd, gbuf, count, l, count - header_length
+                )
+                if req < 0:
+                    raise Exception(f"submit_io: submit_nogds_read failed, err={req}")
+                self.reqs.append(req)
+                count += l
         return gbuf
 
     def wait_io(

@@ -12,6 +12,11 @@ from .common import (
     get_device_numa_node,
 )
 from .config import LoaderConfig, load_config
+from .ep_slice import (
+    expert_parallel_filter,
+    expert_parallel_filter_from_env,
+    owned_expert_range,
+)
 from .file_buffer import FilesBufferOnDevice
 from .loader import SafeTensorsFileLoader, fastsafe_open
 from .parallel_loader import ParallelLoader
