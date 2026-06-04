@@ -7,11 +7,25 @@ on:
 
 jobs:
   build-wheels:
-    name: Build wheel for ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    name: Build wheel for ${{ matrix.python-version }} ${{ matrix.platform.arch }}
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["cp310", "cp311", "cp312", "cp313", "cp314"]
+        platform:
+          - arch: x86_64
+            runner: ubuntu-latest
+            build: manylinux_x86_64
+            cibw_arch: x86_64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            build: manylinux_aarch64
+            cibw_arch: aarch64
+          - arch: win_amd64
+            runner: windows-latest
+            build: win_amd64
+            cibw_arch: AMD64
 
     steps:
     - name: Checkout code
@@ -28,15 +42,15 @@ jobs:
       run: |
         cibuildwheel --output-dir wheelhouse
       env:
-        CIBW_BUILD: "${{ matrix.python-version }}-manylinux_x86_64"
+        CIBW_BUILD: "${{ matrix.python-version }}-${{ matrix.platform.build }}"
         CIBW_SKIP: "*-musllinux_* *-win32 *-manylinux_i686"
-        CIBW_TEST_SKIP: "*"
-        CIBW_ARCHS: "x86_64"
+        CIBW_TEST_COMMAND: "python {project}/tests/smoke_import_cpp.py"
+        CIBW_ARCHS: "${{ matrix.platform.cibw_arch }}"
 
     - name: Upload wheel artifact
       uses: actions/upload-artifact@v4
       with:
-        name: wheels-${{ matrix.python-version }}
+        name: wheels-${{ matrix.python-version }}-${{ matrix.platform.arch }}
         path: wheelhouse/*.whl
 
   build-sdist:
