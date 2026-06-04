@@ -5,7 +5,7 @@ import os
 import pytest
 
 pytest.importorskip("vllm", reason="vllm integration tests require vllm")
-from vllm import LLM, SamplingParams
+from vllm import LLM, SamplingParams  # type: ignore[attr-defined]
 
 sampling_params = SamplingParams(
     temperature=0.0,
