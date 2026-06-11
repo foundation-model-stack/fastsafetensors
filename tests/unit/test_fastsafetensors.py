@@ -928,3 +928,29 @@ def test_as_dict_partial_request_close_frees_buffers(
     finally:
         loader.close()
     assert framework.get_mem_used() == 0
+
+
+def test_from_fd_short_reads(monkeypatch, tmp_dir, framework) -> None:
+    # Regression test: from_fd() used to assume a single os.read() returns
+    # all requested bytes; a short read truncated the header JSON.
+    device, _ = get_and_check_device(framework)
+    filename = os.path.join(tmp_dir, "short_read.safetensors")
+    a0 = framework.randn((4, 8), device=device, dtype=DType.F32)
+    save_safetensors_file({"a0": a0.get_raw()}, filename, {"fst": "a"}, framework)
+
+    real_read = os.read
+
+    def dribbling_read(fd: int, length: int) -> bytes:
+        return real_read(fd, min(length, 3))
+
+    monkeypatch.setattr(os, "read", dribbling_read)
+    flags = os.O_RDONLY
+    if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(filename, flags, 0o644)
+    try:
+        meta = SafeTensorsMetadata.from_fd(fd, filename, framework)
+    finally:
+        os.close(fd)
+    assert "a0" in meta.tensors
+    assert meta.tensors["a0"].shape == [4, 8]

@@ -155,6 +155,22 @@ def resolve_cudart_lib_name() -> str:
     return ""  # fall back to compiled-in default
 
 
+def _read_exact(fd: int, length: int, filename: str) -> bytes:
+    """Read exactly ``length`` bytes from ``fd``, retrying on short reads."""
+    chunks = []
+    remaining = length
+    while remaining > 0:
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            raise Exception(
+                f"{filename}: UnexpectedEOF, expected {length} more bytes "
+                f"but got {length - remaining}"
+            )
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
 # keep this for compatibility
 class SingleGroup:
     def size(self):
@@ -263,7 +279,7 @@ class SafeTensorsMetadata:
         buffer_len = status.st_size
         if buffer_len < 8:
             raise Exception(f"{filename}: HeaderTooSmall, buffer_len={buffer_len}")
-        arr = os.read(fd, 8)
+        arr = _read_exact(fd, 8, filename)
         n = int.from_bytes(arr, byteorder="little", signed=False)
         if n > 100000000:
             raise Exception(
@@ -273,7 +289,7 @@ class SafeTensorsMetadata:
             raise Exception(
                 f"{filename}: InvalidHeaderLength, n={n}, buffer_len={buffer_len}"
             )
-        string = os.read(fd, n).decode("utf-8")
+        string = _read_exact(fd, n, filename).decode("utf-8")
         # Assert the string starts with {
         # NOTE: Add when we move to 0.4.0
         # if string.startswith('{'):
@@ -295,9 +311,10 @@ class SafeTensorsMetadata:
         if sys.platform == "win32" and hasattr(os, "O_BINARY"):
             flags |= os.O_BINARY
         fd = os.open(filename, flags, 0o644)
-        ret = self.from_fd(fd, filename, framework=framework, keep_orig_dict=False)
-        os.close(fd)
-        return ret
+        try:
+            return self.from_fd(fd, filename, framework=framework, keep_orig_dict=False)
+        finally:
+            os.close(fd)
 
     def get_tensors(
         self,
