@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import os
 import sys
 from collections import OrderedDict
@@ -7,9 +8,16 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from fastsafetensors import SafeTensorsFileLoader, SafeTensorsMetadata, SingleGroup
+from fastsafetensors import (
+    SafeTensorsFileLoader,
+    SafeTensorsMetadata,
+    SingleGroup,
+    TensorFrame,
+)
 from fastsafetensors import cpp as fstcpp
-from fastsafetensors import fastsafe_open
+from fastsafetensors import (
+    fastsafe_open,
+)
 from fastsafetensors.common import get_device_numa_node, is_gpu_found
 from fastsafetensors.copier.gds import GdsFileCopier
 from fastsafetensors.copier.nogds import NoGdsFileCopier
@@ -786,4 +794,102 @@ def test_cpp_metrics(fstcpp_log, framework) -> None:
     assert framework.get_mem_used() == exp_length
 
     assert exp_length == 0
+    assert framework.get_mem_used() == 0
+
+
+def test_tensor_frame_getitem() -> None:
+    # Regression test: TensorFrame.__getitem__ must follow Python sequence
+    # semantics. It used to add an extra +1 when converting negative indices
+    # (frame[-1] addressed past the end of the dimension), undercount strided
+    # slices by using floor instead of ceiling division, and raise NameError
+    # for an empty tuple index.
+    n, m = 5, 6
+
+    def make_frame() -> TensorFrame:
+        return TensorFrame(DType.F32, [n, m], [0, n * m * 4], [m, 1], [0, 0], False)
+
+    ref = list(range(n))
+
+    # integer indices: resulting offset must be the Python-normalized index
+    for i in range(-n, n):
+        got = make_frame()[i]
+        assert got.shape == [1, m], f"frame[{i}]: shape={got.shape}"
+        assert got.offsets[0] == ref[i], f"frame[{i}]: offsets={got.offsets}"
+    for i in (n, -n - 1):
+        with pytest.raises(IndexError):
+            make_frame()[i]
+
+    # slices: row offsets must match list slicing for every bound/step combo
+    bounds = [None, -n - 2, -n, -2, -1, 0, 1, n - 2, n - 1, n, n + 2]
+    steps = [None, 1, 2, 3, -1, -2]
+    for start, stop, step in itertools.product(bounds, bounds, steps):
+        sl = slice(start, stop, step)
+        expected = ref[sl]
+        got = make_frame()[sl]
+        if len(expected) == 0:
+            assert got.shape == [], f"frame[{sl}]: shape={got.shape}"
+            continue
+        assert got.shape[1] == m, f"frame[{sl}]: shape={got.shape}"
+        row_step = got.strides[0] // m
+        actual = [got.offsets[0] + k * row_step for k in range(got.shape[0])]
+        assert actual == expected, f"frame[{sl}]: {actual} != {expected}"
+
+    with pytest.raises(ValueError):
+        make_frame()[::0]
+
+    # empty tuple index returns the frame as-is instead of raising NameError
+    got = make_frame()[()]
+    assert got.shape == [n, m]
+    assert got.offsets == [0, 0]
+    assert got.strides == [m, 1]
+
+    # multi-dimensional indexing
+    got = make_frame()[1:-1, ::2]
+    assert got.shape == [n - 2, m // 2]
+    assert got.offsets == [1, 0]
+    assert got.strides == [m, 2]
+
+
+def test_get_multi_cols_multi_file_auto_free(fstcpp_log, tmp_dir, framework) -> None:
+    # Regression test: when get_multi_cols() spans multiple files with
+    # auto_mem_delete enabled, the per-tensor accounting must look up each
+    # tensor's own file. It used to index rank_loaders with a leftover loop
+    # variable, comparing against the wrong file's tensor count and freeing
+    # the wrong device buffer.
+    device, _ = get_and_check_device(framework)
+    file_a = os.path.join(tmp_dir, "multicols_a.safetensors")
+    file_b = os.path.join(tmp_dir, "multicols_b.safetensors")
+    a0 = framework.randn((4, 8), device=device, dtype=DType.F32)
+    b0 = framework.randn((4, 8), device=device, dtype=DType.F32)
+    b1 = framework.randn((4, 8), device=device, dtype=DType.F32)
+    save_safetensors_file({"a0": a0.get_raw()}, file_a, {"fst": "a"}, framework)
+    save_safetensors_file(
+        {"b0": b0.get_raw(), "b1": b1.get_raw()}, file_b, {"fst": "b"}, framework
+    )
+
+    loader = SafeTensorsFileLoader(
+        SingleGroup(), device.as_str(), nogds=True, framework=framework.get_name()
+    )
+    try:
+        loader.add_filenames({0: [file_a, file_b]})
+        fb = loader.copy_files_to_device()
+        # force the multi-rank auto-free accounting on a single-process group
+        fb.auto_mem_delete = True
+
+        out = fb.get_multi_cols(["a0", "b0"], dim=0)
+        assert framework.is_equal(out[0:4], a0.get_raw())
+        assert framework.is_equal(out[4:8], b0.get_raw())
+
+        # file_a (lidx 0) is fully instantiated and must be freed; file_b
+        # (lidx 1) still holds b1 and must keep its device buffer
+        assert fb.rank_loaders[0][0].gbuf is None
+        assert fb.rank_loaders[0][1].gbuf is not None
+
+        out2 = fb.get_multi_cols(["b1"], dim=0)
+        assert framework.is_equal(out2[0:4], b1.get_raw())
+        assert fb.rank_loaders[0][1].gbuf is None
+
+        fb.close()
+    finally:
+        loader.close()
     assert framework.get_mem_used() == 0
