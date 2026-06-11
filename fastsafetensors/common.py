@@ -421,28 +421,15 @@ class TensorFrame:
                         f"[BUG] tried to access index {start} at dim={dim} for shape={self.shape}"
                     )
                 if start < 0:
-                    start = self.shape[dim] + start + 1
-                stop = start + 1
+                    start = self.shape[dim] + start
                 step = 1
                 length = 1
             elif isinstance(val[dim], slice):
-                start = val[dim].start
-                if start is None:
-                    start = 0
-                if start >= self.shape[dim] or start < -self.shape[dim]:
-                    start = self.shape[dim]
-                if start < 0:
-                    start = self.shape[dim] + start + 1
-                stop = val[dim].stop
-                if stop is None or stop >= self.shape[dim] or stop < -self.shape[dim]:
-                    stop = self.shape[dim]
-                if stop < 0:
-                    stop = self.shape[dim] + stop + 1
-                step = val[dim].step
-                if step is None:
-                    step = 1
-                if step == 0:
+                if val[dim].step == 0:
                     raise ValueError(f"[BUG] slice step cannot be zero")
+                # normalize None/negative/out-of-range bounds the same way
+                # Python sequences do
+                start, stop, step = val[dim].indices(self.shape[dim])
                 length = stop - start
                 if (
                     length == 0
@@ -458,8 +445,9 @@ class TensorFrame:
                 )
             offsets.append(self.offsets[dim] + start)
             strides.append(self.strides[dim] * step)
-            shape.append(length // (step if step > 0 else -step))
-        for rdim in range(dim + 1, len(self.shape)):
+            abs_step = step if step > 0 else -step
+            shape.append((length + abs_step - 1) // abs_step)
+        for rdim in range(len(val), len(self.shape)):
             offsets.append(self.offsets[rdim])
             strides.append(self.strides[rdim])
             shape.append(self.shape[rdim])
