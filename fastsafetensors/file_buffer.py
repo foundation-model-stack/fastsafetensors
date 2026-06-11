@@ -256,6 +256,4 @@ class FilesBufferOnDevice:
                             loader.metadata.src,
                         )
                     loader.free_dev_ptrs()
-        if self.auto_mem_delete:
-            self.rank_loaders = {}
         return tensors

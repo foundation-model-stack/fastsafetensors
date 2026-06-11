@@ -893,3 +893,38 @@ def test_get_multi_cols_multi_file_auto_free(fstcpp_log, tmp_dir, framework) -> 
     finally:
         loader.close()
     assert framework.get_mem_used() == 0
+
+
+def test_as_dict_partial_request_close_frees_buffers(
+    fstcpp_log, tmp_dir, framework
+) -> None:
+    # Regression test: as_dict() used to drop rank_loaders entirely when
+    # auto_mem_delete was enabled, so files whose tensors were not all
+    # requested kept their device buffers allocated forever (close() had
+    # nothing left to free).
+    device, _ = get_and_check_device(framework)
+    filename = os.path.join(tmp_dir, "asdict_partial.safetensors")
+    a0 = framework.randn((4, 8), device=device, dtype=DType.F32)
+    a1 = framework.randn((4, 8), device=device, dtype=DType.F32)
+    save_safetensors_file(
+        {"a0": a0.get_raw(), "a1": a1.get_raw()}, filename, {"fst": "a"}, framework
+    )
+
+    loader = SafeTensorsFileLoader(
+        SingleGroup(), device.as_str(), nogds=True, framework=framework.get_name()
+    )
+    try:
+        loader.add_filenames({0: [filename]})
+        fb = loader.copy_files_to_device()
+        # force the multi-rank auto-free accounting on a single-process group
+        fb.auto_mem_delete = True
+
+        # request only a0; a1 keeps the file's buffer alive until close()
+        tensors = fb.as_dict(OrderedDict([("a0", -1)]))
+        assert framework.is_equal(tensors["a0"], a0.get_raw())
+        assert fb.rank_loaders[0][0].gbuf is not None
+
+        fb.close()
+    finally:
+        loader.close()
+    assert framework.get_mem_used() == 0
