@@ -106,6 +106,8 @@ class GdsFileCopier(CopierInterface):
                 count,
                 self.metadata.size_bytes,
             )
+            if req < 0:
+                raise Exception(f"submit_io: submit_gds_read failed, err={req}")
             self.copy_reqs[req] = -1 if not use_buf_register else count
             count += req_len
         self.aligned_offset = aligned_offset
