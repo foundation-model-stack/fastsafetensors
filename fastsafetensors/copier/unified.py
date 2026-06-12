@@ -6,17 +6,19 @@ Uses mmap → pin_memory → cudaMemcpyAsync instead of the bounce buffer approa
 On unified memory with ATS, pin_memory on mmap'd pages triggers kernel readahead
 and page pinning in a single optimized path, then async DMA transfers at full
 memory bandwidth.
+
+All framework-specific operations (mmap + pinning, device synchronization,
+device-name detection) go through the FrameworkOpBase abstraction so this
+module never imports torch or paddle directly.
 """
 
 import os
 from typing import Dict, Optional
 
-import torch
-
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata
 from ..frameworks import FrameworkOpBase, TensorBase
-from ..st_types import Device, DeviceType, DType
+from ..st_types import Device, DType
 from .base import CopierInterface
 from .registry import CopierConstructFunc, register_copier_constructor
 
@@ -39,8 +41,7 @@ class UnifiedMemCopier(CopierInterface):
         self.metadata = metadata
         self.device = device
         self.framework = framework
-        self._file_tensor: Optional[torch.Tensor] = None
-        self._pinned: Optional[torch.Tensor] = None
+        self._pinned: Optional[TensorBase] = None
 
     def submit_io(
         self, use_buf_register: bool, max_copy_block_size: int
@@ -50,15 +51,10 @@ class UnifiedMemCopier(CopierInterface):
         # Allocate CUDA buffer via framework's allocator (proper lifecycle)
         gbuf = self.framework.alloc_tensor_memory(data_length, self.device)
 
-        # mmap the file (lazy, no I/O yet)
-        file_tensor = torch.from_file(
-            self.metadata.src, size=self.metadata.size_bytes, dtype=torch.uint8
+        # mmap the data section and pin its pages (kernel readahead + DMA-ready)
+        pinned = self.framework.mmap_file_pinned(
+            self.metadata.src, data_length, self.metadata.header_length
         )
-        self._file_tensor = file_tensor
-        data_tensor = file_tensor[self.metadata.header_length :]
-
-        # pin_memory triggers kernel readahead + pins pages for DMA
-        pinned = data_tensor.pin_memory()
         self._pinned = pinned
 
         # Async DMA from pinned CPU → framework-allocated CUDA buffer
@@ -70,7 +66,6 @@ class UnifiedMemCopier(CopierInterface):
         if ret != 0:
             self.framework.free_tensor_memory(gbuf, self.device)
             self._pinned = None
-            self._file_tensor = None
             raise RuntimeError(
                 f"cudaMemcpyAsync failed with error {ret} " f"for {self.metadata.src}"
             )
@@ -83,7 +78,7 @@ class UnifiedMemCopier(CopierInterface):
         dtype: DType = DType.AUTO,
         noalign: bool = False,
     ) -> Dict[str, TensorBase]:
-        torch.cuda.synchronize()
+        self.framework.synchronize(self.device)
 
         # Alignment note: unlike the GDS copier, we only copy the data section
         # (not the header) into gbuf, so gbuf starts at a CUDA-allocator-aligned
@@ -93,14 +88,13 @@ class UnifiedMemCopier(CopierInterface):
             gbuf, self.device, self.metadata.header_length, dtype=dtype
         )
 
-        # Release mmap and pinned memory
+        # Release the pinned mmap pages
         self._pinned = None
-        self._file_tensor = None
 
         return tensors
 
 
-def is_unified_memory_system() -> bool:
+def is_unified_memory_system(framework: Optional[FrameworkOpBase] = None) -> bool:
     """Detect if this system has unified CPU/GPU memory.
 
     Currently verified on DGX Spark (GB10). Other unified memory
@@ -108,22 +102,16 @@ def is_unified_memory_system() -> bool:
 
     Can be overridden via the FASTSAFETENSORS_UNIFIED_MEM environment
     variable: set to "1" to force enable, "0" to force disable.
+    Device-name detection requires *framework*; with framework=None only
+    the environment override can enable it.
     """
     override = os.environ.get("FASTSAFETENSORS_UNIFIED_MEM")
     if override is not None:
         return override == "1"
 
-    if not torch.cuda.is_available():
+    if framework is None:
         return False
-
-    try:
-        name = torch.cuda.get_device_name(0).lower()
-        if "gb10" in name:
-            return True
-    except Exception:
-        pass
-
-    return False
+    return "gb10" in framework.get_device_name(0).lower()
 
 
 @register_copier_constructor("unified")

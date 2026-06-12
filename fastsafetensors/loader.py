@@ -68,6 +68,7 @@ class BaseSafeTensorsFileLoader:
         self.copier_constructor: CopierConstructFunc = create_copier_constructor(
             copier_type=copier_type,
             device=device,
+            framework=self.framework,
             **kwargs,
         )
 
@@ -222,7 +223,9 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
                 copier_type = "dstorage"
             else:
                 copier_type = "gds"
-        elif self.device.type != DeviceType.CPU and is_unified_memory_system():
+        elif self.device.type != DeviceType.CPU and is_unified_memory_system(
+            self.framework
+        ):
             # When GDS is unavailable, prefer the unified copier on systems
             # with shared CPU/GPU memory (e.g., DGX Spark) over the
             # bounce-buffer nogds path.

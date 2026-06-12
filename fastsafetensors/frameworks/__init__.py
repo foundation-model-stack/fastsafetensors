@@ -52,6 +52,14 @@ class TensorBase:
         """
         raise NotImplementedError(f"{type(self).__name__} does not implement reshape()")
 
+    def data_ptr(self) -> int:
+        """Return the address of the first element.  Default implementation
+        raises NotImplementedError.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement data_ptr()"
+        )
+
 
 T = TypeVar("T", bound=TensorBase)
 
@@ -192,6 +200,31 @@ class FrameworkOpBase(ABC, Generic[T, K]):
         sub-byte dtypes can translate logical slices into storage-unit slices.
         """
         return slices
+
+    def synchronize(self, device: Device) -> None:
+        """Block until pending asynchronous device copies are complete.
+
+        Default: no-op.  Frameworks with asynchronous device transfers
+        (e.g. cudaMemcpyAsync) must override this.
+        """
+        return None
+
+    def get_device_name(self, index: int) -> str:
+        """Return the accelerator device name for *index*, or "" when no
+        device is available.  Used for platform detection (e.g. unified
+        memory systems); not required for plain CPU loading.
+        """
+        return ""
+
+    def mmap_file_pinned(self, filename: str, length: int, offset: int) -> TensorBase:
+        """Return a pinned CPU byte tensor holding the file content at
+        ``[offset, offset + length)``.  The returned tensor owns the pinned
+        pages; dropping the last reference releases them.  Frameworks that
+        support the unified-memory copier must override this.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement mmap_file_pinned()"
+        )
 
     @abstractmethod
     def get_process_group(self, pg: Optional[Any]) -> ProcessGroupBase:

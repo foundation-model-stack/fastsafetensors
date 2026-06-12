@@ -214,7 +214,7 @@ def new_gds_file_copier(
         # Prefer unified copier on systems with shared CPU/GPU memory
         from .unified import is_unified_memory_system, new_unified_copier
 
-        if device_is_not_cpu and is_unified_memory_system():
+        if device_is_not_cpu and is_unified_memory_system(kwargs.get("framework")):
             return new_unified_copier(device)
         return new_nogds_file_copier(device, bbuf_size_kb, max_threads)
 
