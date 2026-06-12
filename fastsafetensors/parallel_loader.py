@@ -18,6 +18,7 @@ except ImportError:
 
 
 from . import cpp as fstcpp
+from .common import SingleGroup
 from .frameworks import FrameworkOpBase
 from .loader import BaseSafeTensorsFileLoader, SafeTensorsFileLoader
 
@@ -146,6 +147,8 @@ class PipelineParallel:
                 "Concurrent producers > 1 are not yet supported because broadcast "
                 "batches must be processed in strict order across all ranks."
             )
+        if pg is None:
+            pg = SingleGroup()
         self.loader = loader
         self.hf_weights_files = hf_weights_files
         self.max_concurrent_producers = max_concurrent_producers
