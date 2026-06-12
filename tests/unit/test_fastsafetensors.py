@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import os
 import sys
 from collections import OrderedDict
@@ -7,9 +8,16 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from fastsafetensors import SafeTensorsFileLoader, SafeTensorsMetadata, SingleGroup
+from fastsafetensors import (
+    SafeTensorsFileLoader,
+    SafeTensorsMetadata,
+    SingleGroup,
+    TensorFrame,
+)
 from fastsafetensors import cpp as fstcpp
-from fastsafetensors import fastsafe_open
+from fastsafetensors import (
+    fastsafe_open,
+)
 from fastsafetensors.common import get_device_numa_node, is_gpu_found
 from fastsafetensors.copier.gds import GdsFileCopier
 from fastsafetensors.copier.nogds import NoGdsFileCopier
@@ -370,7 +378,9 @@ def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
 
 def _skip_if_not_pytorch(framework: FrameworkOpBase) -> None:
     if framework.get_name() != "pytorch":
-        pytest.skip("UnifiedMemCopier uses torch.from_file / pin_memory directly")
+        pytest.skip(
+            "UnifiedMemCopier requires a framework implementing mmap_file_pinned"
+        )
 
 
 def test_UnifiedMemCopier(fstcpp_log, input_files, framework, monkeypatch) -> None:
@@ -400,8 +410,7 @@ def test_UnifiedMemCopier(fstcpp_log, input_files, framework, monkeypatch) -> No
     for key, exp in load_safetensors_file(input_files[0], device, framework).items():
         actual = tensors[key]
         assert framework.is_equal(actual, exp)
-    # Lifecycle: mmap + pinned references released in wait_io
-    assert copier._file_tensor is None
+    # Lifecycle: pinned mmap reference released in wait_io
     assert copier._pinned is None
     framework.free_tensor_memory(gbuf, device)
     assert framework.get_mem_used() == 0
@@ -424,35 +433,33 @@ def test_UnifiedMemCopier_cuda_error(
     copier = UnifiedMemCopier(meta, device, framework)
     with pytest.raises(RuntimeError, match="99"):
         copier.submit_io(False, 10 * 1024 * 1024 * 1024)
-    # gbuf must be freed and mmap/pin refs released on error
+    # gbuf must be freed and the pinned mmap ref released on error
     assert framework.get_mem_used() == 0
-    assert copier._file_tensor is None
     assert copier._pinned is None
 
 
 @pytest.mark.parametrize(
-    "env,cuda_available,device_name,expected",
+    "env,device_name,expected",
     [
-        ("1", False, None, True),
-        ("0", True, "NVIDIA GB10 Tegra Blackwell", False),
-        (None, False, None, False),
-        (None, True, "NVIDIA A100-SXM4", False),
-        (None, True, "NVIDIA GB10 Tegra Blackwell", True),
+        ("1", "", True),
+        ("0", "NVIDIA GB10 Tegra Blackwell", False),
+        (None, "", False),  # no device available
+        (None, "NVIDIA A100-SXM4", False),
+        (None, "NVIDIA GB10 Tegra Blackwell", True),
     ],
 )
 def test_is_unified_memory_system(
-    monkeypatch, env, cuda_available, device_name, expected
+    monkeypatch, framework, env, device_name, expected
 ) -> None:
-    import torch
-
     if env is None:
         monkeypatch.delenv("FASTSAFETENSORS_UNIFIED_MEM", raising=False)
     else:
         monkeypatch.setenv("FASTSAFETENSORS_UNIFIED_MEM", env)
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda_available)
-    if device_name is not None:
-        monkeypatch.setattr(torch.cuda, "get_device_name", lambda idx: device_name)
-    assert is_unified_memory_system() is expected
+    monkeypatch.setattr(framework, "get_device_name", lambda idx: device_name)
+    assert is_unified_memory_system(framework) is expected
+    if env is None:
+        # without a framework, only the environment override can enable it
+        assert is_unified_memory_system(None) is False
 
 
 @pytest.mark.parametrize(
@@ -787,3 +794,205 @@ def test_cpp_metrics(fstcpp_log, framework) -> None:
 
     assert exp_length == 0
     assert framework.get_mem_used() == 0
+
+
+def test_tensor_frame_getitem() -> None:
+    # Regression test: TensorFrame.__getitem__ must follow Python sequence
+    # semantics. It used to add an extra +1 when converting negative indices
+    # (frame[-1] addressed past the end of the dimension), undercount strided
+    # slices by using floor instead of ceiling division, and raise NameError
+    # for an empty tuple index.
+    n, m = 5, 6
+
+    def make_frame() -> TensorFrame:
+        return TensorFrame(DType.F32, [n, m], [0, n * m * 4], [m, 1], [0, 0], False)
+
+    ref = list(range(n))
+
+    # integer indices: resulting offset must be the Python-normalized index
+    for i in range(-n, n):
+        got = make_frame()[i]
+        assert got.shape == [1, m], f"frame[{i}]: shape={got.shape}"
+        assert got.offsets[0] == ref[i], f"frame[{i}]: offsets={got.offsets}"
+    for i in (n, -n - 1):
+        with pytest.raises(IndexError):
+            make_frame()[i]
+
+    # slices: row offsets must match list slicing for every bound/step combo
+    bounds = [None, -n - 2, -n, -2, -1, 0, 1, n - 2, n - 1, n, n + 2]
+    steps = [None, 1, 2, 3, -1, -2]
+    for start, stop, step in itertools.product(bounds, bounds, steps):
+        sl = slice(start, stop, step)
+        expected = ref[sl]
+        got = make_frame()[sl]
+        if len(expected) == 0:
+            assert got.shape == [], f"frame[{sl}]: shape={got.shape}"
+            continue
+        assert got.shape[1] == m, f"frame[{sl}]: shape={got.shape}"
+        row_step = got.strides[0] // m
+        actual = [got.offsets[0] + k * row_step for k in range(got.shape[0])]
+        assert actual == expected, f"frame[{sl}]: {actual} != {expected}"
+
+    with pytest.raises(ValueError):
+        make_frame()[::0]
+
+    # empty tuple index returns the frame as-is instead of raising NameError
+    got = make_frame()[()]
+    assert got.shape == [n, m]
+    assert got.offsets == [0, 0]
+    assert got.strides == [m, 1]
+
+    # multi-dimensional indexing
+    got = make_frame()[1:-1, ::2]
+    assert got.shape == [n - 2, m // 2]
+    assert got.offsets == [1, 0]
+    assert got.strides == [m, 2]
+
+
+def test_get_multi_cols_multi_file_auto_free(fstcpp_log, tmp_dir, framework) -> None:
+    # Regression test: when get_multi_cols() spans multiple files with
+    # auto_mem_delete enabled, the per-tensor accounting must look up each
+    # tensor's own file. It used to index rank_loaders with a leftover loop
+    # variable, comparing against the wrong file's tensor count and freeing
+    # the wrong device buffer.
+    device, _ = get_and_check_device(framework)
+    file_a = os.path.join(tmp_dir, "multicols_a.safetensors")
+    file_b = os.path.join(tmp_dir, "multicols_b.safetensors")
+    a0 = framework.randn((4, 8), device=device, dtype=DType.F32)
+    b0 = framework.randn((4, 8), device=device, dtype=DType.F32)
+    b1 = framework.randn((4, 8), device=device, dtype=DType.F32)
+    save_safetensors_file({"a0": a0.get_raw()}, file_a, {"fst": "a"}, framework)
+    save_safetensors_file(
+        {"b0": b0.get_raw(), "b1": b1.get_raw()}, file_b, {"fst": "b"}, framework
+    )
+
+    loader = SafeTensorsFileLoader(
+        SingleGroup(), device.as_str(), nogds=True, framework=framework.get_name()
+    )
+    try:
+        loader.add_filenames({0: [file_a, file_b]})
+        fb = loader.copy_files_to_device()
+        # force the multi-rank auto-free accounting on a single-process group
+        fb.auto_mem_delete = True
+
+        out = fb.get_multi_cols(["a0", "b0"], dim=0)
+        assert framework.is_equal(out[0:4], a0.get_raw())
+        assert framework.is_equal(out[4:8], b0.get_raw())
+
+        # file_a (lidx 0) is fully instantiated and must be freed; file_b
+        # (lidx 1) still holds b1 and must keep its device buffer
+        assert fb.rank_loaders[0][0].gbuf is None
+        assert fb.rank_loaders[0][1].gbuf is not None
+
+        out2 = fb.get_multi_cols(["b1"], dim=0)
+        assert framework.is_equal(out2[0:4], b1.get_raw())
+        assert fb.rank_loaders[0][1].gbuf is None
+
+        fb.close()
+    finally:
+        loader.close()
+    assert framework.get_mem_used() == 0
+
+
+def test_as_dict_partial_request_close_frees_buffers(
+    fstcpp_log, tmp_dir, framework
+) -> None:
+    # Regression test: as_dict() used to drop rank_loaders entirely when
+    # auto_mem_delete was enabled, so files whose tensors were not all
+    # requested kept their device buffers allocated forever (close() had
+    # nothing left to free).
+    device, _ = get_and_check_device(framework)
+    filename = os.path.join(tmp_dir, "asdict_partial.safetensors")
+    a0 = framework.randn((4, 8), device=device, dtype=DType.F32)
+    a1 = framework.randn((4, 8), device=device, dtype=DType.F32)
+    save_safetensors_file(
+        {"a0": a0.get_raw(), "a1": a1.get_raw()}, filename, {"fst": "a"}, framework
+    )
+
+    loader = SafeTensorsFileLoader(
+        SingleGroup(), device.as_str(), nogds=True, framework=framework.get_name()
+    )
+    try:
+        loader.add_filenames({0: [filename]})
+        fb = loader.copy_files_to_device()
+        # force the multi-rank auto-free accounting on a single-process group
+        fb.auto_mem_delete = True
+
+        # request only a0; a1 keeps the file's buffer alive until close()
+        tensors = fb.as_dict(OrderedDict([("a0", -1)]))
+        assert framework.is_equal(tensors["a0"], a0.get_raw())
+        assert fb.rank_loaders[0][0].gbuf is not None
+
+        fb.close()
+    finally:
+        loader.close()
+    assert framework.get_mem_used() == 0
+
+
+def test_from_fd_short_reads(monkeypatch, tmp_dir, framework) -> None:
+    # Regression test: from_fd() used to assume a single os.read() returns
+    # all requested bytes; a short read truncated the header JSON.
+    device, _ = get_and_check_device(framework)
+    filename = os.path.join(tmp_dir, "short_read.safetensors")
+    a0 = framework.randn((4, 8), device=device, dtype=DType.F32)
+    save_safetensors_file({"a0": a0.get_raw()}, filename, {"fst": "a"}, framework)
+
+    real_read = os.read
+
+    def dribbling_read(fd: int, length: int) -> bytes:
+        return real_read(fd, min(length, 3))
+
+    monkeypatch.setattr(os, "read", dribbling_read)
+    flags = os.O_RDONLY
+    if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(filename, flags, 0o644)
+    try:
+        meta = SafeTensorsMetadata.from_fd(fd, filename, framework)
+    finally:
+        os.close(fd)
+    assert "a0" in meta.tensors
+    assert meta.tensors["a0"].shape == [4, 8]
+
+
+def test_no_module_level_torch_import_outside_frameworks() -> None:
+    # Policy: framework-specific imports live behind the frameworks
+    # abstraction. Only the torch backend (frameworks/_torch.py) may import
+    # torch at module level; copiers and core modules must go through
+    # FrameworkOpBase.
+    import ast
+
+    import fastsafetensors
+
+    pkg_dir = os.path.dirname(fastsafetensors.__file__)
+    allowed = {
+        os.path.join("frameworks", "_torch.py"),
+    }
+
+    def imports_torch(stmts) -> bool:
+        for node in stmts:
+            if isinstance(node, ast.Import):
+                if any(a.name.split(".")[0] == "torch" for a in node.names):
+                    return True
+            elif isinstance(node, ast.ImportFrom):
+                if node.module is not None and node.module.split(".")[0] == "torch":
+                    return True
+            elif isinstance(node, ast.Try):
+                if imports_torch(node.body):
+                    return True
+        return False
+
+    violations = []
+    for root, _, files in os.walk(pkg_dir):
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, pkg_dir)
+            if rel in allowed:
+                continue
+            with open(path) as f:
+                tree = ast.parse(f.read(), filename=path)
+            if imports_torch(tree.body):
+                violations.append(rel)
+    assert violations == [], f"module-level torch import found in: {violations}"

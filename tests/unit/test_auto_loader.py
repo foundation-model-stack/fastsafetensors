@@ -15,6 +15,7 @@ from fastsafetensors.loader import (
     BaseSafeTensorsFileLoader,
 )
 from fastsafetensors.loader import SafeTensorsFileLoader as RealSafeLoader
+from fastsafetensors.parallel_loader import PipelineParallel
 from fastsafetensors.threefs_loader import ThreeFSLoader as RealThreeFSLoader
 
 
@@ -235,6 +236,19 @@ class TestAutoLoaderPipelineCreation:
             assert call_kwargs["max_concurrent_producers"] == 1
             assert call_kwargs["queue_size"] == 3
             assert call_kwargs["use_tqdm_on_load"] is False
+
+
+class TestPipelineParallelSingleProcess:
+    """Test PipelineParallel single-process construction."""
+
+    def test_none_pg_is_treated_as_single_process(self):
+        loader = MagicMock()
+
+        pipeline = PipelineParallel(None, loader, ["a.safetensors", "b.safetensors"])
+
+        assert pipeline.weight_files_batches == [["a.safetensors"], ["b.safetensors"]]
+        assert pipeline.log_prefix == "PG0"
+        assert pipeline.need_clone is True
 
 
 class TestAutoLoaderConfigDiscovery:

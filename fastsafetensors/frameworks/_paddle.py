@@ -89,6 +89,9 @@ class PaddleTensor(TensorBase):
     def __getitem__(self, _val) -> "PaddleTensor":
         return PaddleTensor(self.device, self.dtype, self.real_tensor[_val])
 
+    def data_ptr(self) -> int:
+        return self.real_tensor.data_ptr()
+
 
 @dataclass
 class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
@@ -254,6 +257,22 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
         if dtype in need_workaround_dtypes:
             return need_workaround_dtypes[dtype]
         return dtype
+
+    def synchronize(self, device: Device) -> None:
+        if device.type != DeviceType.CPU and paddle.device.is_compiled_with_cuda():
+            paddle.device.cuda.synchronize()
+
+    def get_global_rank(self) -> int:
+        # paddle.distributed.get_rank() returns 0 when not in distributed mode
+        return pdist.get_rank()
+
+    def get_device_name(self, index: int) -> str:
+        if not paddle.device.is_compiled_with_cuda():
+            return ""
+        try:
+            return paddle.device.cuda.get_device_properties(index).name
+        except Exception:
+            return ""
 
     def get_process_group(self, pg: Optional[Any]) -> PaddleProcessGroup:
         if pg is not None:

@@ -6,8 +6,6 @@ import threading
 import time
 from typing import Any, Generator, List, Optional, Tuple, Union
 
-import torch
-
 try:
     from tqdm.auto import tqdm
 
@@ -20,10 +18,14 @@ except ImportError:
 
 
 from . import cpp as fstcpp
+from .common import SingleGroup
+from .frameworks import FrameworkOpBase
 from .loader import BaseSafeTensorsFileLoader, SafeTensorsFileLoader
 
 
-def enable_tqdm(use_tqdm_on_load: bool):
+def enable_tqdm(
+    use_tqdm_on_load: bool, framework: Optional[FrameworkOpBase] = None
+) -> bool:
     """Determine whether to enable tqdm progress bar based on distributed settings.
 
     Progress bar is enabled only on rank 0 when in distributed mode, or always
@@ -31,17 +33,14 @@ def enable_tqdm(use_tqdm_on_load: bool):
 
     Args:
         use_tqdm_on_load: User preference for enabling tqdm
+        framework: Framework op used to query the global distributed rank.
+            None is treated as single-process mode (rank 0).
 
     Returns:
         bool: True if tqdm should be enabled, False otherwise
     """
-    return (
-        _TQDM_AVAILABLE
-        and use_tqdm_on_load
-        and (
-            not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
-        )
-    )
+    rank = framework.get_global_rank() if framework is not None else 0
+    return _TQDM_AVAILABLE and use_tqdm_on_load and rank == 0
 
 
 _BAR_FORMAT = "{desc}: {percentage:3.0f}% Completed | {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]\n"
@@ -148,6 +147,8 @@ class PipelineParallel:
                 "Concurrent producers > 1 are not yet supported because broadcast "
                 "batches must be processed in strict order across all ranks."
             )
+        if pg is None:
+            pg = SingleGroup()
         self.loader = loader
         self.hf_weights_files = hf_weights_files
         self.max_concurrent_producers = max_concurrent_producers
@@ -367,7 +368,7 @@ class PipelineParallel:
             for _ in tqdm(
                 self.weight_files_batches,
                 desc="Loading fastsafetensors checkpoint shards",
-                disable=not enable_tqdm(self.use_tqdm_on_load),
+                disable=not enable_tqdm(self.use_tqdm_on_load, self.loader.framework),
                 bar_format=_BAR_FORMAT,
             ):
                 yield from self._consume_single_batch()
@@ -386,7 +387,7 @@ class PipelineParallel:
         if processed_batches < len(self.weight_files_batches):
             self._log_error(f"Unexpected Error: not all tensors has been exported")
 
-    def iterate_weights(self) -> Generator[Tuple[str, torch.Tensor], None, None]:
+    def iterate_weights(self) -> Generator[Tuple[str, Any], None, None]:
         """Main weight iterator: consumer logic.
 
         This method implements the consumer side of the producer-consumer pattern.
@@ -394,7 +395,8 @@ class PipelineParallel:
         one by one. It also handles cleanup and error reporting.
 
         Yields:
-            Tuple[str, torch.Tensor]: Key-value pairs of tensor names and tensors
+            Tuple[str, Any]: Key-value pairs of tensor names and framework
+            tensors (e.g. torch.Tensor for the pytorch framework)
         """
         self._log_message("Starting ParallelLoader iterate_weights")
 

@@ -222,7 +222,7 @@ class FilesBufferOnDevice:
         if self.auto_mem_delete:
             for tensor_name in tensor_names:
                 rank, lidx = self._get_rank_lidx(tensor_name)
-                loader = self.rank_loaders[rank][lidix]
+                loader = self.rank_loaders[rank][lidx]
                 self.instantiated[rank][lidx][tensor_name] = True
                 if len(self.instantiated[rank][lidx]) == len(loader.metadata.tensors):
                     if self.pg.rank() == rank:
@@ -256,6 +256,4 @@ class FilesBufferOnDevice:
                             loader.metadata.src,
                         )
                     loader.free_dev_ptrs()
-        if self.auto_mem_delete:
-            self.rank_loaders = {}
         return tensors

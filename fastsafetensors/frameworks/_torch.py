@@ -96,6 +96,9 @@ class TorchTensor(TensorBase):
     def reshape(self, shape: List[int]) -> "TorchTensor":
         return TorchTensor(self.device, self.dtype, self.real_tensor.reshape(shape))
 
+    def data_ptr(self) -> int:
+        return self.real_tensor.data_ptr()
+
 
 def _needs_fp8_cast() -> bool:
     """Check if FP8 NCCL ops need a bf16 workaround (pre-sm90 GPUs)."""
@@ -384,6 +387,30 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
                 )
             native_slices[last_dim] = last // ratio
         return tuple(native_slices)
+
+    def synchronize(self, device: Device) -> None:
+        if device.type != DeviceType.CPU and torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    def get_global_rank(self) -> int:
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_rank()
+        return 0
+
+    def get_device_name(self, index: int) -> str:
+        if not torch.cuda.is_available():
+            return ""
+        try:
+            return torch.cuda.get_device_name(index)
+        except Exception:
+            return ""
+
+    def mmap_file_pinned(self, filename: str, length: int, offset: int) -> TorchTensor:
+        # mmap the file lazily; pin_memory then faults in and pins the pages
+        # in a single optimized path, ready for async DMA.
+        file_tensor = torch.from_file(filename, size=offset + length, dtype=torch.uint8)
+        pinned = file_tensor[offset:].pin_memory()
+        return TorchTensor(Device(DeviceType.CPU), DType.U8, pinned)
 
     def get_process_group(self, pg: Optional[Any]) -> TorchProcessGroup:
         if pg is not None:

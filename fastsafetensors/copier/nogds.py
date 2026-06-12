@@ -61,13 +61,18 @@ class NoGdsFileCopier(CopierInterface):
         dtype: DType = DType.AUTO,
         noalign: bool = False,
     ) -> Dict[str, TensorBase]:
+        # Drain every request before closing the fd so no in-flight read can
+        # observe a closed descriptor, then report failures.
+        failed = []
         for req in self.reqs:
             count = self.reader.wait_read(req)
             if count < 0:
-                raise Exception(f"wait_io: wait_nogds_read failed, req={req}")
+                failed.append(req)
         if self.fd > 0:
             os.close(self.fd)
             self.fd = 0
+        if len(failed) > 0:
+            raise Exception(f"wait_io: wait_nogds_read failed, reqs={failed}")
         return self.metadata.get_tensors(
             gbuf, self.device, self.metadata.header_length, dtype=dtype
         )
