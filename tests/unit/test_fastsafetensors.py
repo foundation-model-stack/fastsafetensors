@@ -957,9 +957,9 @@ def test_from_fd_short_reads(monkeypatch, tmp_dir, framework) -> None:
 
 def test_no_module_level_torch_import_outside_frameworks() -> None:
     # Policy: framework-specific imports live behind the frameworks
-    # abstraction. Only the torch backend (frameworks/_torch.py) and the
-    # torch-specific pipeline loader may import torch at module level;
-    # copiers and core modules must go through FrameworkOpBase.
+    # abstraction. Only the torch backend (frameworks/_torch.py) may import
+    # torch at module level; copiers and core modules must go through
+    # FrameworkOpBase.
     import ast
 
     import fastsafetensors
@@ -967,7 +967,6 @@ def test_no_module_level_torch_import_outside_frameworks() -> None:
     pkg_dir = os.path.dirname(fastsafetensors.__file__)
     allowed = {
         os.path.join("frameworks", "_torch.py"),
-        "parallel_loader.py",
     }
 
     def imports_torch(stmts) -> bool:

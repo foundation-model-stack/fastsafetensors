@@ -209,6 +209,12 @@ class FrameworkOpBase(ABC, Generic[T, K]):
         """
         return None
 
+    def get_global_rank(self) -> int:
+        """Return this process's rank in the framework's global distributed
+        world, or 0 when distributed mode is not initialized.
+        """
+        return 0
+
     def get_device_name(self, index: int) -> str:
         """Return the accelerator device name for *index*, or "" when no
         device is available.  Used for platform detection (e.g. unified

@@ -262,6 +262,10 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
         if device.type != DeviceType.CPU and paddle.device.is_compiled_with_cuda():
             paddle.device.cuda.synchronize()
 
+    def get_global_rank(self) -> int:
+        # paddle.distributed.get_rank() returns 0 when not in distributed mode
+        return pdist.get_rank()
+
     def get_device_name(self, index: int) -> str:
         if not paddle.device.is_compiled_with_cuda():
             return ""

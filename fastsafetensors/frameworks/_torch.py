@@ -392,6 +392,11 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
         if device.type != DeviceType.CPU and torch.cuda.is_available():
             torch.cuda.synchronize()
 
+    def get_global_rank(self) -> int:
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_rank()
+        return 0
+
     def get_device_name(self, index: int) -> str:
         if not torch.cuda.is_available():
             return ""
