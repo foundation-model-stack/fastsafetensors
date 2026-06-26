@@ -187,22 +187,15 @@ def new_gds_file_copier(
         raise Exception(
             "[FAIL] GPU runtime library not found (expected libcudart.so, libamdhip64.so, or cudart64_XX.dll)"
         )
-    device_id = device.index if device.index is not None else 0
     nogds = False
-    if device_is_not_cpu:
-        gds_supported = fstcpp.is_gds_supported(device_id)
+    if device_is_not_cpu and not nogds:
+        gds_supported = fstcpp.is_gds_supported(
+            device.index if device.index is not None else 0
+        )
         if gds_supported < 0:
             raise Exception(f"is_gds_supported({device.index}) failed")
-        if fstcpp.is_hip_found():
-            if gds_supported != 1:
-                warnings.warn(
-                    "hipFile DMA is unavailable (needs libhipfile.so and "
-                    "ROCm >= 7.2); falling back to host-staged reads (nogds).",
-                    UserWarning,
-                )
-                nogds = True
-        elif not fstcpp.is_cufile_found():
-            # Windows does not have cuFile; do not warn about it there.
+        if not fstcpp.is_cufile_found():
+            # Windows does not have cuFile, do not warning about it
             if platform.system() != "Windows":
                 warnings.warn(
                     "libcufile.so does not exist but nogds is False. use nogds=True",
@@ -216,6 +209,7 @@ def new_gds_file_copier(
             )
             nogds = True
 
+    device_id = device.index if device.index is not None else 0
     if nogds:
         # Prefer unified copier on systems with shared CPU/GPU memory
         from .unified import is_unified_memory_system, new_unified_copier

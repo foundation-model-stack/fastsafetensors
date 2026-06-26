@@ -26,10 +26,6 @@ from fastsafetensors.dlpack import from_cuda_buffer
 from fastsafetensors.frameworks import FrameworkOpBase
 from fastsafetensors.st_types import Device, DeviceType, DType
 
-# Add tests directory to path to import platform_utils
-sys.path.insert(0, os.path.dirname(__file__))
-from platform_utils import get_and_check_device, skip_if_no_gds
-
 
 def load_safetensors_file(
     filename: str,
@@ -68,6 +64,17 @@ def save_safetensors_file(
     else:
         raise Exception(f"unkown framework: {framework.get_name()}")
     save_file(tensors, filename, metadata)
+
+
+def get_and_check_device(framework: FrameworkOpBase):
+    dev_is_gpu = is_gpu_found()
+    device = "cpu"
+    if dev_is_gpu:
+        if framework.get_name() == "pytorch":
+            device = "cuda:0"
+        elif framework.get_name() == "paddle":
+            device = "gpu:0"
+    return Device.from_str(device), dev_is_gpu
 
 
 def run_nogds_file_read(
@@ -349,7 +356,6 @@ def test_NoGdsFileCopier(fstcpp_log, input_files, framework) -> None:
 
 def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
     print("test_GdsFileCopier")
-    skip_if_no_gds(framework)
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)
     device, dev_is_gpu = get_and_check_device(framework)
     reader = fstcpp.gds_file_reader(4, dev_is_gpu, device.index or 0)
@@ -363,18 +369,6 @@ def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
     del reader
     assert framework.get_mem_used() == 0
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
-
-
-def test_gds_path_selects_gds_copier(fstcpp_log, input_files, framework) -> None:
-    print("test_gds_path_selects_gds_copier")
-    skip_if_no_gds(framework)
-    from fastsafetensors.copier.gds import GdsFileCopier, new_gds_file_copier
-
-    device, _ = get_and_check_device(framework)
-    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
-    ctor = new_gds_file_copier(device, framework=framework)
-    copier = ctor(meta, device, framework)
-    assert isinstance(copier, GdsFileCopier)
 
 
 def _skip_if_not_pytorch(framework: FrameworkOpBase) -> None:

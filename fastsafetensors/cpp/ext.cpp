@@ -455,27 +455,21 @@ void init_gil_release_from_env() {
 
 int is_gds_supported(int deviceId)
 {
+    int gdr_support = 1;
     int driverVersion = 0;
-    cudaError_t err;
 
-    if (is_hip_runtime) {
-        // HipFile requires ROCm >= 7.2.
-        if (!cufile_found) return -1;
-        constexpr int HIPFILE_MIN_HIP_VER = 70200000;
-        err = cuda_fns.cudaDriverGetVersion(&driverVersion);
-        if (err != cudaSuccess) {
-            std::fprintf(stderr, "is_gds_supported: hipDriverGetVersion failed, err=%d\n", err);
-            return -1;
-        }
-        return driverVersion >= HIPFILE_MIN_HIP_VER ? 1 : -1;
+    cudaError_t err = cuda_fns.cudaDriverGetVersion(&driverVersion);
+    if (err != cudaSuccess) {
+        std::fprintf(stderr, "is_gds_supported: %s failed, deviceId=%d, err=%d\n",
+            is_hip_runtime ? HIP_SYM_DRIVER_GET_VERSION : CUDA_SYM_DRIVER_GET_VERSION, deviceId, err);
+        return -1;
     }
 
-    int gdr_support = 1;
-
-    err = cuda_fns.cudaDriverGetVersion(&driverVersion);
-    if (err != cudaSuccess) {
-        std::fprintf(stderr, "is_gds_supported: cudaDriverGetVersion failed, deviceId=%d, err=%d\n", deviceId, err);
-        return -1;
+    if (is_hip_runtime) {
+        // hipFile requires ROCm >= 7.2.
+        constexpr int HIPFILE_MIN_HIP_VER = 70200000;
+        if (!cufile_found || driverVersion < HIPFILE_MIN_HIP_VER) return 0;
+        return gdr_support;
     }
 
     if (driverVersion > 11030) {

@@ -2,8 +2,6 @@
 
 """Utilities for platform detection and conditional test execution."""
 
-import pytest
-
 
 def is_rocm_platform():
     """Detect if running on ROCm/AMD platform.
@@ -21,32 +19,6 @@ def is_rocm_platform():
 def is_cuda_platform():
     """Detect if running on CUDA/NVIDIA platform."""
     return not is_rocm_platform()
-
-
-def get_and_check_device(framework):
-    from fastsafetensors.common import is_gpu_found
-    from fastsafetensors.st_types import Device
-
-    dev_is_gpu = is_gpu_found()
-    device = "cpu"
-    if dev_is_gpu:
-        if framework.get_name() == "pytorch":
-            device = "cuda:0"
-        elif framework.get_name() == "paddle":
-            device = "gpu:0"
-    return Device.from_str(device), dev_is_gpu
-
-
-def skip_if_no_gds(framework):
-    """Skip test when a GPU is present but direct GDS I/O is unavailable."""
-    from fastsafetensors import cpp as fstcpp
-
-    device, dev_is_gpu = get_and_check_device(framework)
-    if not dev_is_gpu:
-        return
-    device_id = device.index if device.index is not None else 0
-    if fstcpp.is_gds_supported(device_id) != 1:
-        pytest.skip("direct GDS I/O not available (needs cuFile or hipFile)")
 
 
 def get_platform_info():
