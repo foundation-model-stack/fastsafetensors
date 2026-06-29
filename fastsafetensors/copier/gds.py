@@ -165,8 +165,8 @@ class GdsFileCopier(CopierInterface):
 _inited_gds = False
 
 
-def init_gds():
-    load_library_func()
+def init_gds(framework: Optional[FrameworkOpBase] = None):
+    load_library_func(framework)
     global _inited_gds
     if not _inited_gds:
         if fstcpp.init_gds() != 0:
@@ -181,7 +181,7 @@ def new_gds_file_copier(
     max_threads: int = 16,
     **kwargs,
 ) -> CopierConstructFunc:
-    init_gds()
+    init_gds(kwargs.get("framework"))
     device_is_not_cpu = device.type != DeviceType.CPU
     if device_is_not_cpu and not is_gpu_found():
         raise Exception(
@@ -215,8 +215,10 @@ def new_gds_file_copier(
         from .unified import is_unified_memory_system, new_unified_copier
 
         if device_is_not_cpu and is_unified_memory_system(kwargs.get("framework")):
-            return new_unified_copier(device)
-        return new_nogds_file_copier(device, bbuf_size_kb, max_threads)
+            return new_unified_copier(device, framework=kwargs.get("framework"))
+        return new_nogds_file_copier(
+            device, bbuf_size_kb, max_threads, framework=kwargs.get("framework")
+        )
 
     reader = fstcpp.gds_file_reader(max_threads, device_is_not_cpu, device_id)
 

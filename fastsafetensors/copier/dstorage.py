@@ -11,7 +11,7 @@ from ..common import (
     SafeTensorsMetadata,
     init_logger,
     is_gpu_found,
-    resolve_cudart_lib_name,
+    resolve_runtime_lib_name,
 )
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
@@ -114,7 +114,8 @@ def init_dstorage(device_id: int = 0) -> None:
         load_library_func()
         if not is_gpu_found():
             raise RuntimeError("CUDA runtime not found")
-        cudart_dll = resolve_cudart_lib_name()
+        # Windows-only; resolve_runtime_lib_name() returns the cudart DLL path here
+        cudart_dll = resolve_runtime_lib_name()
         if not cudart_dll:
             raise RuntimeError("Could not find CUDA runtime DLL")
         if _dstorage_dll_dir is None:

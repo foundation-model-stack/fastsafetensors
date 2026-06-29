@@ -5,7 +5,11 @@ import sys
 from typing import Dict, List
 
 from .. import cpp as fstcpp
-from ..common import SafeTensorsMetadata, is_gpu_found, resolve_cudart_lib_name
+from ..common import (
+    SafeTensorsMetadata,
+    is_gpu_found,
+    resolve_runtime_lib_name,
+)
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface
@@ -81,12 +85,23 @@ class NoGdsFileCopier(CopierInterface):
 _loaded_library = False
 
 
-def load_library_func():
+def load_library_func(framework=None):
     global _loaded_library
-    if not _loaded_library:
-        cudart_lib = resolve_cudart_lib_name()
-        fstcpp.load_library_functions(cudart_lib)
-        _loaded_library = True
+    if _loaded_library:
+        return
+
+    lib = resolve_runtime_lib_name(framework)
+    fstcpp.load_library_functions(lib)
+    if lib and not is_gpu_found():
+        # The framework hinted a specific vendor's runtime but loading it found
+        # no GPU. A GPU-built framework only reports a vendor when it sees a
+        # device, so this is a real mismatch (wrong/missing runtime for that
+        # vendor).
+        raise Exception(
+            f"[FAIL] framework hinted GPU runtime '{lib}' but no GPU was found "
+            "after loading it (runtime/devices for that vendor not present)"
+        )
+    _loaded_library = True
 
 
 @register_copier_constructor("nogds")
@@ -96,7 +111,7 @@ def new_nogds_file_copier(
     max_threads: int = 16,
     **kwargs,
 ) -> CopierConstructFunc:
-    load_library_func()
+    load_library_func(kwargs.get("framework"))
     device_is_not_cpu = device.type != DeviceType.CPU
     if device_is_not_cpu and not is_gpu_found():
         raise Exception(

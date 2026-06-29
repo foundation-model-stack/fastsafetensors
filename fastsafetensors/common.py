@@ -69,16 +69,34 @@ def _normalize_windows_dll_path(path: str, source: str) -> str:
     return normalized
 
 
-def resolve_cudart_lib_name() -> str:
-    """Resolve the CUDA runtime library name for the current platform.
+def resolve_runtime_lib_name(framework=None) -> str:
+    """Resolve the GPU runtime library to dlopen for the current platform.
 
-    Returns:
-        On Windows, an absolute DLL path string. On other platforms, "" to use
-        the compiled-in default.
+    On Windows, returns an absolute cudart DLL path. On other platforms, maps the framework's declared GPU
+    vendor to a runtime library so the dlopen'd vendor stays in sync with the
+    framework's GPU build. Returns "" when there is no usable hint so the caller falls
+    back to auto-detection.
     """
-    if sys.platform != "win32":
-        return ""  # Non-Windows: use auto-detection (CUDA first, then ROCm)
+    if sys.platform == "win32":
+        return _resolve_windows_cudart_lib_name()
+    if framework is None:
+        return ""
+    try:
+        ver = framework.get_cuda_ver()
+    except Exception:
+        return ""
+    if not ver or "-" not in ver:
+        return ""
+    vendor = ver.split("-", 1)[0]
+    if vendor == "hip":
+        return "libamdhip64.so"
+    if vendor == "cuda":
+        return "libcudart.so"
+    return ""
 
+
+def _resolve_windows_cudart_lib_name() -> str:
+    """Resolve the absolute cudart DLL path on Windows, "" for the default."""
     # Allow explicit override via environment variable
     override = os.environ.get("FASTSAFETENSORS_CUDART_LIB", "").strip()
     if override:

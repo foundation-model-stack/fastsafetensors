@@ -122,7 +122,7 @@ def new_unified_copier(device: Device, **kwargs) -> CopierConstructFunc:
     """
     from .nogds import load_library_func
 
-    load_library_func()
+    load_library_func(kwargs.get("framework"))
 
     def construct_unified_copier(
         metadata: SafeTensorsMetadata,
