@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import platform
 import warnings
 from typing import Dict, List, Optional
@@ -232,14 +233,37 @@ def new_gds_file_copier(
     max_threads: int = 16,
     **kwargs,
 ) -> CopierConstructFunc:
-    init_gds(kwargs.get("framework"))
+    # On Linux, check for GDS device nodes before calling init_gds(), which
+    # invokes cuFileDriverOpen(). On hosts where the nvidia-fs kernel module
+    # is loaded but /dev/nvidia-fs* device nodes are missing (common in
+    # containers without device mapping), cuFileDriverOpen()'s error path
+    # closes the process's stdin (fd 0) — an NVIDIA libcufile bug. This
+    # corrupts subsequent subprocess calls (e.g., nvcc JIT compilation in
+    # DeepGEMM). Windows and macOS never have this device node, so the check
+    # is Linux-only to avoid spurious warnings and skipping init_gds on
+    # platforms where the cuFile codepath is never reached.
+    gds_device_available = True
+    if platform.system() == "Linux":
+        gds_device_available = os.path.exists("/dev/nvidia-fs0")
+        if not gds_device_available:
+            warnings.warn(
+                "GDS device node /dev/nvidia-fs0 not found; "
+                "falling back to nogds copier to avoid cuFileDriverOpen() "
+                "corrupting fd 0.",
+                UserWarning,
+            )
+
     device_is_not_cpu = device.type != DeviceType.CPU
     if device_is_not_cpu and not is_gpu_found():
         raise Exception(
             "[FAIL] GPU runtime library not found (expected libcudart.so, libamdhip64.so, or cudart64_XX.dll)"
         )
     nogds = False
-    if device_is_not_cpu and not nogds:
+    if not gds_device_available:
+        # Skip init_gds() entirely — calling it on a half-configured host
+        # triggers the close(0) bug regardless of device type (CPU or GPU).
+        nogds = True
+    elif device_is_not_cpu:
         gds_supported = fstcpp.is_gds_supported(
             device.index if device.index is not None else 0
         )
@@ -259,6 +283,9 @@ def new_gds_file_copier(
                 UserWarning,
             )
             nogds = True
+
+    if gds_device_available and not nogds:
+        init_gds(kwargs.get("framework"))
 
     device_id = device.index if device.index is not None else 0
     if nogds:
