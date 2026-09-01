@@ -142,6 +142,7 @@ class PipelineParallel:
         use_tqdm_on_load: bool = True,
         tensor_filter: Optional[Callable[[str], bool]] = None,
         max_batch_bytes: Optional[int] = None,
+        use_chunk_budget_as_allocation_size: bool = False,
         device_memory_budget: Optional[int] = None,
         accumulate_resident: bool = True,
         **kwargs,
@@ -177,6 +178,14 @@ class PipelineParallel:
         # bytes) so peak device buffer per rank is bounded regardless of shard
         # size. See _planner.plan_chunks / CopierInterface.set_chunk.
         self.max_batch_bytes = max_batch_bytes
+        if use_chunk_budget_as_allocation_size and (
+            max_batch_bytes is None and device_memory_budget is None
+        ):
+            raise ValueError(
+                "use_chunk_budget_as_allocation_size requires max_batch_bytes or "
+                "device_memory_budget"
+            )
+        self.use_chunk_budget_as_allocation_size = use_chunk_budget_as_allocation_size
         # When set (bytes), bound the load's TOTAL device footprint (resident
         # tensors + transient buffers) via a static fit plan: whole-file loads
         # while headroom is ample, per-file chunk budgets declining as the
@@ -291,28 +300,38 @@ class PipelineParallel:
         # lockstep. Header reads are deterministic, so all ranks build identical
         # batches. Each shard stays owned by one rank and is loaded in chunks
         # over successive batches -> peak buffer bounded by its budget per rank.
-        def _plan_file(f: str) -> List[Tuple[Set[str], List[Tuple[int, int]]]]:
+        def _plan_file(
+            f: str,
+        ) -> Tuple[List[Tuple[Set[str], List[Tuple[int, int]]]], int]:
             if per_file_budget is not None:
-                return plan_chunks(
-                    meta_by_path[f], per_file_budget[f], keep_tensor=keep
+                budget = per_file_budget[f]
+                return (
+                    plan_chunks(meta_by_path[f], budget, keep_tensor=keep),
+                    budget,
                 )
             assert self.max_batch_bytes is not None
-            return plan_chunks(
-                SafeTensorsMetadata.from_file(f, fw),
+            return (
+                plan_chunks(
+                    SafeTensorsMetadata.from_file(f, fw),
+                    self.max_batch_bytes,
+                    keep_tensor=keep,
+                ),
                 self.max_batch_bytes,
-                keep_tensor=keep,
             )
 
         chunk_batches: List[List[Any]] = []
         for group in file_batches:
-            planned = [(f, _plan_file(f)) for f in group]
-            maxn = max((len(chunks) for _, chunks in planned), default=0)
+            planned = [(f, *_plan_file(f)) for f in group]
+            maxn = max((len(chunks) for _, chunks, _ in planned), default=0)
             for j in range(maxn):
                 spec: List[Any] = []
-                for f, chunks in planned:
+                for f, chunks, budget in planned:
                     if j < len(chunks):
                         names, ranges = chunks[j]
-                        spec.append((f, names, ranges))
+                        allocation_size = (
+                            budget if self.use_chunk_budget_as_allocation_size else None
+                        )
+                        spec.append((f, names, ranges, allocation_size))
                     else:
                         spec.append(None)
                 chunk_batches.append(spec)
@@ -375,18 +394,20 @@ class PipelineParallel:
         Without sub-file chunking (neither max_batch_bytes nor
         device_memory_budget set) the spec is a list of files (one per rank).
         With it, the spec is a chunk-batch: per rank, either
-        (file, names, ranges) or None (that rank has no chunk this batch).
+        (file, names, ranges, allocation_size) or None.
         """
         if self.max_batch_bytes is None and self.device_memory_budget is None:
             return {i: [f] for i, f in enumerate(spec)}, None
         rank_file_map: Dict[int, List[str]] = {}
-        chunk_plan: Dict[str, Tuple[Set[str], List[Tuple[int, int]]]] = {}
+        chunk_plan: Dict[str, Tuple[Set[str], List[Tuple[int, int]], Optional[int]]] = (
+            {}
+        )
         for r, entry in enumerate(spec):
             if entry is None:
                 continue
-            f, names, ranges = entry
+            f, names, ranges, allocation_size = entry
             rank_file_map[r] = [f]
-            chunk_plan[f] = (names, ranges)
+            chunk_plan[f] = (names, ranges, allocation_size)
         return rank_file_map, chunk_plan
 
     def _load_single_batch(self, batch_id: int, file_list: List[Any]):
@@ -636,6 +657,8 @@ class ParallelLoader(PipelineParallel):
                          broadcast (e.g. expert-parallel slicing). The EP
                          rank/size for the filter come from the real
                          distributed world, independent of the loader's group.
+        use_chunk_budget_as_allocation_size (bool): Allocate chunks at their
+                         planner budget to improve caching-allocator reuse.
 
     Additional GPU memory consumption: (max_concurrent_producers + queue_size) * file_size
     To reduce GPU memory consumption, re-accessing tensors that have already been accessed is prohibited.
@@ -665,6 +688,7 @@ class ParallelLoader(PipelineParallel):
         tensor_filter: Optional[Callable[[str], bool]] = None,
         all_local: bool = False,
         max_batch_bytes: Optional[int] = None,
+        use_chunk_budget_as_allocation_size: bool = False,
         device_memory_budget: Optional[int] = None,
         accumulate_resident: bool = True,
         **kwargs,
@@ -711,6 +735,7 @@ class ParallelLoader(PipelineParallel):
             use_tqdm_on_load,
             tensor_filter=tensor_filter,
             max_batch_bytes=max_batch_bytes,
+            use_chunk_budget_as_allocation_size=(use_chunk_budget_as_allocation_size),
             device_memory_budget=device_memory_budget,
             accumulate_resident=accumulate_resident,
             **kwargs,

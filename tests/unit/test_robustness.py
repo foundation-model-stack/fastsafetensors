@@ -145,7 +145,8 @@ def test_chunk_plan_requires_set_chunk(input_files, framework):
     loader.add_filenames({0: [input_files[0]]})
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)
     (chunk,) = plan_chunks(meta, meta.size_bytes)  # single whole-span chunk
-    loader._set_chunk_plan({input_files[0]: chunk})
+    names, ranges = chunk
+    loader._set_chunk_plan({input_files[0]: (names, ranges, None)})
 
     class _NoChunkCopier(CopierInterface):  # e.g. gds/dstorage: no set_chunk override
         def __init__(self, metadata):
@@ -207,6 +208,65 @@ def test_early_close_terminates_producer(input_files, framework):
         leftover = _leftover()
     loader.close()  # before the assert: a failure must not leak into later tests
     assert not leftover, f"producer thread still alive: {leftover}"
+
+
+def test_chunk_budget_is_used_as_allocation_size(input_files, framework):
+    if framework.get_name() != "pytorch":
+        pytest.skip("pytorch-only")
+    from fastsafetensors.parallel_loader import PipelineParallel
+
+    budget = 256
+    pp = PipelineParallel(
+        None,
+        _make_loader(framework),
+        [input_files[0]],
+        queue_size=-1,
+        use_tqdm_on_load=False,
+        max_batch_bytes=budget,
+        use_chunk_budget_as_allocation_size=True,
+    )
+
+    entries = [entry for spec in pp.weight_files_batches for entry in spec if entry]
+    assert entries
+    assert all(entry[3] == budget for entry in entries)
+
+
+def test_chunk_budget_allocation_loads_all_weights(input_files, framework):
+    if framework.get_name() != "pytorch":
+        pytest.skip("pytorch-only")
+    from fastsafetensors import ParallelLoader, SafeTensorsMetadata
+
+    loader = ParallelLoader(
+        None,
+        [input_files[0]],
+        device="cpu",
+        nogds=True,
+        queue_size=-1,
+        use_tqdm_on_load=False,
+        max_batch_bytes=256,
+        use_chunk_budget_as_allocation_size=True,
+    )
+    try:
+        loaded = dict(loader.iterate_weights())
+    finally:
+        loader.close()
+
+    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+    assert set(loaded) == set(meta.tensors)
+
+
+def test_chunk_budget_allocation_requires_chunking(input_files, framework):
+    if framework.get_name() != "pytorch":
+        pytest.skip("pytorch-only")
+    from fastsafetensors.parallel_loader import PipelineParallel
+
+    with pytest.raises(ValueError, match="requires max_batch_bytes"):
+        PipelineParallel(
+            None,
+            _make_loader(framework),
+            [input_files[0]],
+            use_chunk_budget_as_allocation_size=True,
+        )
 
 
 # ---- runtime GDS -> nogds fallback ----

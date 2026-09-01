@@ -86,7 +86,9 @@ class BaseSafeTensorsFileLoader:
         # realpath -> (chunk tensor names, byte-ranges) for the next
         # copy_files_to_device; set by PipelineParallel when max_batch_bytes is
         # active so each file loads only a sub-file chunk. Empty = whole files.
-        self._chunk_plan: Dict[str, Tuple[Set[str], List[Tuple[int, int]]]] = {}
+        self._chunk_plan: Dict[
+            str, Tuple[Set[str], List[Tuple[int, int]], Optional[int]]
+        ] = {}
         self.init_numa(set_numa)
         self.copier_constructor: CopierConstructFunc = create_copier_constructor(
             copier_type=copier_type,
@@ -112,12 +114,11 @@ class BaseSafeTensorsFileLoader:
             gl_set_numa = True
 
     def _set_chunk_plan(
-        self, chunk_plan: Dict[str, Tuple[Set[str], List[Tuple[int, int]]]]
+        self,
+        chunk_plan: Dict[str, Tuple[Set[str], List[Tuple[int, int]], Optional[int]]],
     ) -> None:
         """Load only a sub-file chunk of each listed file on the next
-        copy_files_to_device: ``realpath -> (tensor names, byte-ranges)``. The
-        copier allocates just the chunk's span (see ``set_chunk``) and only the
-        named tensors are registered. Used by max_batch_bytes batching."""
+        copy_files_to_device, with an optional allocation size."""
         self._chunk_plan = chunk_plan
 
     def reset(self):
@@ -209,8 +210,8 @@ class BaseSafeTensorsFileLoader:
                 if chunk is not None:
                     # Copiers without partial-read support refuse the chunk
                     # plan here (CopierInterface.set_chunk raises).
-                    names, ranges = chunk
-                    copier.set_chunk(ranges, names)
+                    names, ranges, allocation_size = chunk
+                    copier.set_chunk(ranges, names, allocation_size)
                 elif self._tensor_filter is not None:
                     copier.set_byte_ranges(meta.select_byte_ranges(self._tensor_filter))
             else:
@@ -235,7 +236,9 @@ class BaseSafeTensorsFileLoader:
             factory.wait_io(dtype=dtype, noalign=False)
         if self._chunk_plan:
             # Only this sub-batch's chunk tensors should be registered/visible.
-            chunk_keys = set().union(*(names for names, _ in self._chunk_plan.values()))
+            chunk_keys = set().union(
+                *(names for names, _, _ in self._chunk_plan.values())
+            )
             keep_tensor: Optional[Callable[[str], bool]] = lambda n: n in chunk_keys
         else:
             keep_tensor = self._tensor_filter

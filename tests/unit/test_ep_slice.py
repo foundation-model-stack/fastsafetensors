@@ -328,3 +328,34 @@ def test_set_byte_ranges_rejects_bool_offsets(input_files, framework):
     copier = NoGdsFileCopier(meta, Device.from_str("cpu"), reader, framework)
     with pytest.raises(ValueError, match="offsets must be int"):
         copier.set_byte_ranges([(True, meta.size_bytes)])
+
+
+def test_nogds_chunk_uses_fixed_allocation(input_files, framework):
+    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+    name, frame = next(iter(meta.tensors.items()))
+    start = meta.header_length + frame.data_offsets[0]
+    end = meta.header_length + frame.data_offsets[1]
+    allocation_size = end - start + 4096
+    reader = fstcpp.nogds_file_reader(False, 16 * 1024, 1, False, 0)
+    device = Device.from_str("cpu")
+    copier = NoGdsFileCopier(meta, device, reader, framework)
+    copier.set_chunk([(start, end)], {name}, allocation_size)
+
+    gbuf = copier.submit_io(False, 10 * 1024 * 1024 * 1024)
+    tensors = copier.wait_io(gbuf)
+
+    assert gbuf.get_length() == allocation_size
+    assert set(tensors) == {name}
+    framework.free_tensor_memory(gbuf, device)
+
+
+def test_chunk_rejects_fixed_allocation_smaller_than_span(input_files, framework):
+    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+    name, frame = next(iter(meta.tensors.items()))
+    start = meta.header_length + frame.data_offsets[0]
+    end = meta.header_length + frame.data_offsets[1]
+    reader = fstcpp.nogds_file_reader(False, 16 * 1024, 1, False, 0)
+    copier = NoGdsFileCopier(meta, Device.from_str("cpu"), reader, framework)
+
+    with pytest.raises(ValueError, match="smaller than chunk span"):
+        copier.set_chunk([(start, end)], {name}, end - start - 1)

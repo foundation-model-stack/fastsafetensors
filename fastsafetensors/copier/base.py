@@ -59,6 +59,33 @@ def validated_byte_ranges(
     return checked
 
 
+def validated_chunk_allocation_size(
+    byte_ranges: List[Tuple[int, int]], allocation_size: Optional[int]
+) -> Optional[int]:
+    """Validate an optional allocation size for a compact chunk."""
+    if allocation_size is None:
+        return None
+    if isinstance(allocation_size, bool):
+        raise ValueError(f"allocation_size must be int, got {allocation_size!r}")
+    try:
+        allocation_size = operator.index(allocation_size)
+    except TypeError:
+        raise ValueError(
+            f"allocation_size must be int, got {allocation_size!r}"
+        ) from None
+    if allocation_size <= 0:
+        raise ValueError(f"allocation_size must be positive, got {allocation_size}")
+    if byte_ranges:
+        span = max(end for _, end in byte_ranges) - min(
+            start for start, _ in byte_ranges
+        )
+        if allocation_size < span:
+            raise ValueError(
+                f"allocation_size={allocation_size} is smaller than chunk span={span}"
+            )
+    return allocation_size
+
+
 class CopierInterface(ABC):
     metadata: SafeTensorsMetadata
 
@@ -75,10 +102,16 @@ class CopierInterface(ABC):
         """
         validated_byte_ranges(self.metadata, byte_ranges)
 
-    def set_chunk(self, byte_ranges: List[Tuple[int, int]], names: Set[str]) -> None:
+    def set_chunk(
+        self,
+        byte_ranges: List[Tuple[int, int]],
+        names: Set[str],
+        allocation_size: Optional[int] = None,
+    ) -> None:
         """Load only ``names``, allocating just those runs' span (sub-file
         chunking for ``ParallelLoader(max_batch_bytes=...)``).
 
+        ``allocation_size`` may pad the buffer without expanding the read.
         Unlike ``set_byte_ranges``, a chunk plan cannot be a no-op: silently
         loading the whole file per chunk-batch would break the memory bound
         and multiply full-file reads, so the default refuses. Partial-read
