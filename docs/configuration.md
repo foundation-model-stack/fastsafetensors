@@ -19,7 +19,10 @@ When no config file is found, `AutoLoader` uses these defaults:
   "loader": "base",
   "framework": "pytorch",
   "parallel": {
-    "use_pipeline": false
+    "use_pipeline": false,
+    "max_batch_bytes": null,
+    "use_chunk_budget_as_allocation_size": false,
+    "device_memory_budget": null
   },
   "debug": {
     "debug_log": false,
@@ -33,13 +36,54 @@ The base loader extension defaults to `copier_type: "gds"` (GPU Direct Storage).
 
 ## queue_size Semantics
 
-| `queue_size` | Mode | GPU Memory | Behavior |
+| `queue_size` | Mode | Live chunk buffers per rank | Behavior |
 |---|---|---|---|
-| `-1` | Fully serial | 1 batch | `copy_files → broadcast → copy_files → ...` |
-| `0` | Unbuffered pipeline | Up to 2 batches | 1 batch copying + 1 batch broadcasting concurrently |
-| `>0` | Buffered pipeline | Up to `queue_size+1` batches | Producer fills queue while consumer broadcasts |
+| `-1` | Fully serial | 1 | `copy_files → broadcast → copy_files → ...` |
+| `0` | Unbuffered pipeline | Up to 2 | 1 batch copying + 1 batch broadcasting concurrently |
+| `>0` | Buffered pipeline | Up to `queue_size+2` | Queued batches + producer + consumer |
 
 `use_pipeline: false` forces `queue_size=-1` (serial, minimal GPU memory).
+Without chunking, each buffer covers a whole shard. These counts exclude
+resident tensors, broadcast receive tensors, yield clones, and copier staging
+memory, which the memory planner accounts for separately where applicable.
+
+## Bounded Device Memory
+
+`max_batch_bytes` caps each sub-file chunk. It must be at least as large as
+the largest selected tensor because tensors are not split across chunks.
+
+`device_memory_budget` bounds resident tensors and transient chunk buffers
+across the load. Under distributed broadcast, every rank must use the same
+value to produce an identical plan.
+
+If the requested queue depth does not fit, the loader reduces it automatically,
+down to `queue_size=-1`. If even serial loading cannot fit, loading fails.
+
+The budget excludes allocator rounding, copier fixed pools, and memory used
+outside the loader. When deriving it from free device memory, leave a reserve
+for those costs; `max(5% of free memory, 1 GiB)` is a starting point, not a
+guarantee for every workload. Reserve any post-load conversion memory separately.
+
+`use_chunk_budget_as_allocation_size: true` allocates each chunk buffer at its
+planner budget instead of its exact byte span. The loader still reads only the
+selected byte ranges. Stable allocation sizes improve caching-allocator reuse
+and require either `max_batch_bytes` or `device_memory_budget`.
+
+```json
+{
+  "parallel": {
+    "use_pipeline": true,
+    "queue_size": 0,
+    "max_batch_bytes": 4294967296,
+    "use_chunk_budget_as_allocation_size": true,
+    "device_memory_budget": 12884901888
+  }
+}
+```
+
+Direct `ParallelLoader` users may also set `accumulate_resident=False` when
+yielded tensors are copied into destinations allocated before loading. Leave
+it at its default, `True`, when yielded tensors remain resident.
 
 ## Configuration Examples
 
@@ -122,7 +166,10 @@ Uses ThreeFSLoader with 3FS USRBIO backend.
     "use_pipeline": false,
     "max_concurrent_producers": 1,
     "queue_size": 0,
-    "use_tqdm_on_load": true
+    "use_tqdm_on_load": true,
+    "max_batch_bytes": null,
+    "use_chunk_budget_as_allocation_size": false,
+    "device_memory_budget": null
   },
   "debug": {
     "debug_log": false,

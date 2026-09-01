@@ -4,8 +4,6 @@
 
 This benchmark compares the performance of `safetensors` vs `fastsafetensors` when loading model weights on AMD GPUs.
 
-NOTES: `fastsafetensors` does not support GDS feature on ROCm as there are no GDS alternative on ROCm.
-
 ### Benchmark Methodology
 
 **Platform:** AMD ROCm 7.0.1

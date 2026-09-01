@@ -211,7 +211,10 @@ class BaseSafeTensorsFileLoader:
                     # Copiers without partial-read support refuse the chunk
                     # plan here (CopierInterface.set_chunk raises).
                     names, ranges, allocation_size = chunk
-                    copier.set_chunk(ranges, names, allocation_size)
+                    if allocation_size is None:
+                        copier.set_chunk(ranges, names)
+                    else:
+                        copier.set_chunk(ranges, names, allocation_size)
                 elif self._tensor_filter is not None:
                     copier.set_byte_ranges(meta.select_byte_ranges(self._tensor_filter))
             else:
