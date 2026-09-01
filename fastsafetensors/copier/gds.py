@@ -233,6 +233,10 @@ def new_gds_file_copier(
     max_threads: int = 16,
     **kwargs,
 ) -> CopierConstructFunc:
+    framework = kwargs.get("framework")
+    # Capability checks depend on symbols resolved by load_library_func().
+    load_library_func(framework)
+
     # On Linux, check for GDS device nodes before calling init_gds(), which
     # invokes cuFileDriverOpen(). On hosts where the nvidia-fs kernel module
     # is loaded but /dev/nvidia-fs* device nodes are missing (common in
@@ -285,17 +289,17 @@ def new_gds_file_copier(
             nogds = True
 
     if gds_device_available and not nogds:
-        init_gds(kwargs.get("framework"))
+        init_gds(framework)
 
     device_id = device.index if device.index is not None else 0
     if nogds:
         # Prefer unified copier on systems with shared CPU/GPU memory
         from .unified import is_unified_memory_system, new_unified_copier
 
-        if device_is_not_cpu and is_unified_memory_system(kwargs.get("framework")):
-            return new_unified_copier(device, framework=kwargs.get("framework"))
+        if device_is_not_cpu and is_unified_memory_system(framework):
+            return new_unified_copier(device, framework=framework)
         return new_nogds_file_copier(
-            device, bbuf_size_kb, max_threads, framework=kwargs.get("framework")
+            device, bbuf_size_kb, max_threads, framework=framework
         )
 
     reader = fstcpp.gds_file_reader(max_threads, device_is_not_cpu, device_id)
