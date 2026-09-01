@@ -6,6 +6,7 @@ partial-read tests reuse the gpt2 fixture and the nogds copier to prove that
 loading only a selected subset of tensors yields byte-identical data for the
 kept tensors while skipping the rest.
 """
+
 import pytest
 
 try:

@@ -219,6 +219,18 @@ def test_accumulate_resident_false_is_uniform():
     assert budgets == [6 * GiB] * 6
 
 
+def test_yield_clone_reduces_uniform_budget():
+    stats = [_st(f"f{i}", 8 * GiB, largest=1 * GiB) for i in range(6)]
+    budgets = plan_file_budgets(
+        stats,
+        12 * GiB,
+        depth=2,
+        accumulate_resident=False,
+        account_for_yield_clone=True,
+    )
+    assert budgets == [4 * GiB] * 6
+
+
 def test_infeasible_raises_with_details():
     # 10 files x 2 GiB resident vs 12 GiB budget: infeasible partway through
     stats = [_st(f"f{i}", 2 * GiB, largest=1 * GiB) for i in range(10)]
@@ -426,6 +438,46 @@ def test_parallel_loader_device_memory_budget_cpu(input_files, framework):
     assert set(got.keys()) == set(expected.keys())
     for k in expected:
         assert torch.equal(got[k], expected[k]), k
+
+
+@pytest.mark.parametrize(
+    ("accumulate_resident", "expected_account_for_clone"),
+    [(True, False), (False, True)],
+)
+def test_single_process_loader_budgets_yield_clone(
+    input_files,
+    framework,
+    monkeypatch,
+    accumulate_resident,
+    expected_account_for_clone,
+):
+    if framework.get_name() != "pytorch":
+        pytest.skip("pytorch-only integration test")
+
+    from fastsafetensors import ParallelLoader, _planner
+
+    captured = {}
+    real_plan_file_budgets = _planner.plan_file_budgets
+
+    def record_plan(*args, **kwargs):
+        captured.update(kwargs)
+        return real_plan_file_budgets(*args, **kwargs)
+
+    monkeypatch.setattr(_planner, "plan_file_budgets", record_plan)
+    pl = ParallelLoader(
+        pg=None,
+        hf_weights_files=[input_files[0]],
+        device="cpu",
+        nogds=True,
+        use_tqdm_on_load=False,
+        device_memory_budget=1 << 30,
+        accumulate_resident=accumulate_resident,
+    )
+    try:
+        assert pl.need_clone
+        assert captured["account_for_yield_clone"] is expected_account_for_clone
+    finally:
+        pl.close()
 
 
 def test_transient_multiplier_infeasible():

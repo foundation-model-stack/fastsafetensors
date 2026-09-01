@@ -30,11 +30,15 @@ group's kept bytes are charged up front, because broadcast leaves every rank
 holding every file of the group) and every live transient buffer belongs to
 file ``i`` or a later file ``j > i``. The per-file budget ``B`` declines
 monotonically with ``R``, so every live buffer span is ``<= B[i]``. With at
-most ``depth`` buffers alive on any one rank,
+most ``depth * transient_multiplier`` buffers plus one yield clone alive on
+any one rank,
 
-    peak <= R[G(i)+1] + depth * B[i] <= budget   (by choice of B[i]).
+    peak <= R[G(i)+1]
+            + (depth * transient_multiplier + yield_clone) * B[i]
+         <= budget   (by choice of B[i]).
 
 With ``group_size == 1``, ``G(i) == i`` and this reduces to ``R[i+1]``.
+``yield_clone`` is 1 when a non-resident yielded tensor is cloned, else 0.
 
 The budget itself is the caller's to choose -- only the caller knows what
 else will live on the device. A caller sizing it from free memory should
@@ -170,6 +174,7 @@ def plan_file_budgets(
     accumulate_resident: bool = True,
     transient_multiplier: int = 1,
     group_size: int = 1,
+    account_for_yield_clone: bool = False,
 ) -> List[int]:
     """Per-file chunk budgets satisfying the peak-memory bound.
 
@@ -177,7 +182,8 @@ def plan_file_budgets(
     tensor (resident grows by cumulative kept bytes). ``False`` models
     consumers whose destination memory is already allocated before the load
     (e.g. copying into preallocated model parameters): resident growth is 0
-    and the plan degenerates to a uniform budget of ``budget / depth``.
+    and the plan degenerates to a uniform budget determined by the transient
+    depth.
 
     ``transient_multiplier`` scales the per-buffer transient cost: how many
     times over the copier stages each in-flight chunk. Only the copier knows
@@ -194,6 +200,9 @@ def plan_file_budgets(
     resident together and each file in it is charged the group total rather
     than its own prefix -- otherwise the bound below under-counts by up to
     ``group_size - 1`` files whenever shard sizes are uneven.
+
+    ``account_for_yield_clone`` reserves one chunk budget for a non-resident
+    yielded tensor clone.
 
     Returns one budget per file; feed each to
     ``SafeTensorsMetadata.plan_chunks``. A budget >= the file's span yields a
@@ -212,7 +221,7 @@ def plan_file_budgets(
         )
     if group_size < 1:
         raise ValueError(f"group_size must be >= 1, got {group_size}")
-    eff_depth = depth * transient_multiplier
+    eff_depth = depth * transient_multiplier + int(account_for_yield_clone)
     # Cumulative kept bytes through the end of each file's batch group. With
     # group_size == 1 this is just R[i+1]; under broadcast the whole group is
     # in flight at once, so every file in it is charged the group's total.

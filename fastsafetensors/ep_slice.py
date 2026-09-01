@@ -22,6 +22,7 @@ lowest-numbered ranks. This is a common expert-to-rank convention; the caller is
 responsible for ensuring it matches the assignment its runtime expects. No
 external dependency is required.
 """
+
 import os
 import re
 from typing import Callable, Optional, Pattern, Tuple
