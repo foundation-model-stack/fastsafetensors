@@ -57,7 +57,10 @@ across the load. Under distributed broadcast, every rank must use the same
 value to produce an identical plan.
 
 If the requested queue depth does not fit, the loader reduces it automatically,
-down to `queue_size=-1`. If even serial loading cannot fit, loading fails.
+down to `queue_size=-1`. If even serial loading cannot fit, loading raises
+`BudgetInfeasibleError`, available as
+`from fastsafetensors import BudgetInfeasibleError`. It subclasses `ValueError`
+so callers can distinguish an infeasible plan from other invalid arguments.
 
 The budget excludes allocator rounding, copier fixed pools, and memory used
 outside the loader. When deriving it from free device memory, leave a reserve
@@ -67,7 +70,10 @@ guarantee for every workload. Reserve any post-load conversion memory separately
 `use_chunk_budget_as_allocation_size: true` allocates each chunk buffer at its
 planner budget instead of its exact byte span. The loader still reads only the
 selected byte ranges. Stable allocation sizes improve caching-allocator reuse
-and require either `max_batch_bytes` or `device_memory_budget`.
+and require either `max_batch_bytes` or `device_memory_budget`. Custom copiers
+must support `set_chunk(byte_ranges, names, allocation_size)` to use this option.
+Legacy two-argument `set_chunk` implementations are supported only when
+`use_chunk_budget_as_allocation_size` is disabled; enabling it raises `TypeError`.
 
 ```json
 {
@@ -84,6 +90,13 @@ and require either `max_batch_bytes` or `device_memory_budget`.
 Direct `ParallelLoader` users may also set `accumulate_resident=False` when
 yielded tensors are copied into destinations allocated before loading. Leave
 it at its default, `True`, when yielded tensors remain resident.
+For consumers that retain only some yielded tensors on the device, keep
+`accumulate_resident=True` and pass `resident_tensor(name) -> bool` to identify
+those tensors. This affects memory accounting, not which tensors are read or
+where they are moved. Each non-resident tensor must be relocated and its device
+storage released before requesting the next tensor. Under broadcast, the
+predicate must give identical results on every rank and depend only on the
+tensor name. Passing it with `accumulate_resident=False` raises `ValueError`.
 
 ## Configuration Examples
 

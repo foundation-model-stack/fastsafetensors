@@ -719,18 +719,29 @@ class ParallelLoader(PipelineParallel):
         use_chunk_budget_as_allocation_size (bool): Allocate chunks at their
                          planner budget to improve caching-allocator reuse.
                          Requires max_batch_bytes or device_memory_budget.
+                         Custom copiers must accept allocation_size as the
+                         third set_chunk argument; legacy signatures raise TypeError.
         device_memory_budget (Optional[int]): Budget for resident tensors and
                          transient load buffers, in bytes per rank. Broadcast
                          ranks must pass the same value. Reserve allocator
                          rounding, copier fixed pools, and external memory separately.
         accumulate_resident (bool): Whether yielded tensors remain resident
                          (default True). Set False when copying them into
-                         destinations allocated before loading.
+                         destinations allocated before loading. With True,
+                         resident_tensor selects which tensors count as resident.
+        resident_tensor (Optional[Callable[[str], bool]]): Identify yielded
+                         tensors retained on the device. None counts all tensors.
+                         Requires accumulate_resident=True. This only controls
+                         accounting; the consumer must relocate and release each
+                         non-resident tensor before requesting the next tensor.
+                         Under broadcast, it must be a pure function of the name
+                         with identical results on every rank.
 
     The pipeline holds up to 1 chunk buffer per rank for queue_size=-1, otherwise
     queue_size+2. Broadcast receive tensors, yield clones, and copier staging
-    memory require additional space. Loading fails if even serial loading
-    cannot fit the memory budget.
+    memory require additional space. If even serial loading cannot fit the
+    memory budget, raises BudgetInfeasibleError (a ValueError subclass exported
+    from fastsafetensors).
     To reduce GPU memory consumption, re-accessing tensors that have already been accessed is prohibited.
 
     Examples:
