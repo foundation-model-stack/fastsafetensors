@@ -26,8 +26,8 @@ Why per-file budgets are safe (the bound): let ``G(i)`` be the last file of
 file ``i``'s batch group -- the ``group_size`` files loaded concurrently, one
 per rank. While any chunk of file ``i`` is alive, resident bytes are at most
 ``R[G(i)+1]`` (only tensors of files ``<= G(i)`` have been materialized; the
-group's kept bytes are charged up front, because broadcast leaves every rank
-holding every file of the group) and every live transient buffer belongs to
+group's resident bytes are charged up front, because broadcast leaves every
+rank holding every file of the group) and every live transient buffer belongs to
 file ``i`` or a later file ``j > i``. The per-file budget ``B`` declines
 monotonically with ``R``, so every live buffer span is ``<= B[i]``. With at
 most ``depth * transient_multiplier`` buffers plus one yield clone alive on
@@ -129,9 +129,20 @@ class FileWeightStats:
     """Per-file byte accounting for the fit plan (kept tensors only)."""
 
     path: str
-    kept_bytes: int  # sum of kept tensor bytes: resident growth
+    kept_bytes: int  # sum of kept tensor bytes: what the load reads
     span_bytes: int  # last kept byte - first kept byte: single-chunk buffer size
     largest_tensor: int  # chunk floor: a tensor is the atomic load unit
+    # Subset of kept_bytes that stays on the device after the load. Equal to
+    # kept_bytes for a consumer that keeps everything, which is why the two
+    # were one number; they diverge for a consumer that relocates part of what
+    # it is handed (e.g. offloading embedding tables to host memory).
+    # None means "not measured": callers treat it as kept_bytes.
+    resident_bytes: Optional[int] = None
+
+    @property
+    def resident(self) -> int:
+        """resident_bytes, defaulting to kept_bytes when not measured."""
+        return self.kept_bytes if self.resident_bytes is None else self.resident_bytes
 
 
 def pipeline_depth(queue_size: int) -> int:
@@ -164,14 +175,14 @@ def _effective_depth(
 
 
 def _group_resident(stats: List[FileWeightStats], group_size: int) -> List[int]:
-    """Cumulative kept bytes through the end of each file's batch group: just
+    """Cumulative resident bytes through the end of each file's batch group: just
     ``R[i+1]`` when ``group_size == 1``, else the group total for every file in
     it, since broadcast puts the whole group in flight at once.
     """
     kept_through_group = []
     running = 0
     for st in stats:
-        running += st.kept_bytes
+        running += st.resident
         kept_through_group.append(running)
     return [
         kept_through_group[min((i // group_size + 1) * group_size, len(stats)) - 1]
@@ -182,25 +193,61 @@ def _group_resident(stats: List[FileWeightStats], group_size: int) -> List[int]:
 def collect_file_stats(
     metas: List[Tuple[str, SafeTensorsMetadata]],
     keep_tensor: Optional[Callable[[str], bool]] = None,
+    resident_tensor: Optional[Callable[[str], bool]] = None,
 ) -> List[FileWeightStats]:
-    """Byte accounting per file from already-parsed headers."""
+    """Byte accounting per file from already-parsed headers.
+
+    ``keep_tensor`` selects what is read; ``resident_tensor`` selects which of
+    those stay on the device once the load is done. Default (None) is that
+    everything read stays, which is what a consumer keeping every yielded
+    tensor does. A consumer that relocates a subset -- offloading embedding
+    tables to host memory, say -- passes a predicate so the plan charges only
+    the bytes that actually remain.
+
+    ``resident_tensor`` MUST be a pure function of the tensor name, identical
+    on every rank, for the same reason ``keep_tensor`` must: the fit plan is
+    recomputed independently per rank and the broadcast sequence desyncs if the
+    plans differ. Deciding residency from rank-local state -- observed free
+    memory, an offload budget consumed as the load proceeds -- breaks that
+    silently. Resolve such a policy to a name predicate before planning.
+
+    Residency does not move ``largest_tensor``: a tensor that is relocated
+    after the load is still read whole, so it still sets the chunk floor.
+    """
     stats = []
     for path, meta in metas:
-        kept = span_start = span_end = largest = 0
+        kept = span_start = span_end = largest = resident = 0
         first = True
         for name, frame in meta.tensors.items():
             if keep_tensor is not None and not keep_tensor(name):
                 continue
             s, e = frame.data_offsets[0], frame.data_offsets[1]
             kept += e - s
+            if resident_tensor is None or resident_tensor(name):
+                resident += e - s
             largest = max(largest, e - s)
             if first:
                 span_start, first = s, False
             span_end = max(span_end, e)
         stats.append(
-            FileWeightStats(path, kept, span_end - span_start if kept else 0, largest)
+            FileWeightStats(
+                path,
+                kept,
+                span_end - span_start if kept else 0,
+                largest,
+                resident,
+            )
         )
     return stats
+
+
+def has_non_resident(stats: List[FileWeightStats]) -> bool:
+    """True when any kept bytes do not stay resident.
+
+    Lets a caller decide whether a transient yielded-tensor clone needs its own
+    budget without re-deriving the predicate.
+    """
+    return any(st.resident < st.kept_bytes for st in stats)
 
 
 def plan_file_budgets(
@@ -215,12 +262,15 @@ def plan_file_budgets(
 ) -> List[int]:
     """Per-file chunk budgets satisfying the peak-memory bound.
 
-    ``accumulate_resident=True`` models consumers that keep every yielded
-    tensor (resident grows by cumulative kept bytes). ``False`` models
-    consumers whose destination memory is already allocated before the load
-    (e.g. copying into preallocated model parameters): resident growth is 0
-    and the plan degenerates to a uniform budget determined by the transient
-    depth.
+    ``accumulate_resident=True`` charges the residency recorded in ``stats``
+    (``FileWeightStats.resident``, which is every kept byte unless
+    ``collect_file_stats`` was given a ``resident_tensor`` predicate).
+    ``False`` models consumers whose destination memory is already allocated
+    before the load (e.g. copying into preallocated model parameters): resident
+    growth is 0 and the plan degenerates to a uniform budget determined by the
+    transient depth. The two booleans remain shorthand for the ends of the
+    range; a consumer that keeps only some of what it reads expresses that with
+    the predicate rather than by choosing the less-wrong bool.
 
     ``transient_multiplier`` scales the per-buffer transient cost: how many
     times over the copier stages each in-flight chunk. Only the copier knows

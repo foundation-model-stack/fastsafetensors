@@ -145,6 +145,7 @@ class PipelineParallel:
         use_chunk_budget_as_allocation_size: bool = False,
         device_memory_budget: Optional[int] = None,
         accumulate_resident: bool = True,
+        resident_tensor: Optional[Callable[[str], bool]] = None,
         **kwargs,
     ):
 
@@ -199,6 +200,20 @@ class PipelineParallel:
         # destinations (e.g. model params) so resident growth is 0 and the fit
         # plan degenerates to a uniform per-file budget.
         self.accumulate_resident = accumulate_resident
+        if resident_tensor is not None and not accumulate_resident:
+            raise ValueError(
+                "resident_tensor requires accumulate_resident=True: "
+                "accumulate_resident=False charges no residency at all, so the "
+                "predicate would be silently discarded"
+            )
+        # Which kept tensors stay on the device after the load. None: all of
+        # them. Must be a pure function of the tensor name and identical on
+        # every rank -- see collect_file_stats.
+        #
+        # The plan reserves one chunk budget for a live non-resident yield, so
+        # the consumer must relocate each such tensor before asking for the
+        # next. Holding several at once overruns that reservation.
+        self.resident_tensor = resident_tensor
 
         # Single-process yields borrow the file buffer and require a clone.
         self.need_clone = pg.size() == 1
@@ -268,6 +283,7 @@ class PipelineParallel:
             from ._planner import (
                 collect_file_stats,
                 fit_queue_size,
+                has_non_resident,
                 load_depth,
                 plan_file_budgets,
             )
@@ -275,8 +291,14 @@ class PipelineParallel:
             metas = [
                 (f, SafeTensorsMetadata.from_file(f, fw)) for f in self.hf_weights_files
             ]
-            stats = collect_file_stats(metas, keep)
-            account_for_yield_clone = self.need_clone and not self.accumulate_resident
+            stats = collect_file_stats(metas, keep, self.resident_tensor)
+            # A clone of a yielded tensor only needs its own budget when it is
+            # transient. With a residency predicate that is a property of the
+            # plan, not a caller-supplied bool: reserve iff some kept bytes do
+            # not stay resident.
+            account_for_yield_clone = self.need_clone and (
+                not self.accumulate_resident or has_non_resident(stats)
+            )
             # How much transient device memory a live chunk costs is the
             # copier's own business (e.g. the unified copier's mmap+pin
             # fallback pins the chunk's pages alongside the device buffer,
@@ -725,6 +747,7 @@ class ParallelLoader(PipelineParallel):
         use_chunk_budget_as_allocation_size: bool = False,
         device_memory_budget: Optional[int] = None,
         accumulate_resident: bool = True,
+        resident_tensor: Optional[Callable[[str], bool]] = None,
         **kwargs,
     ):
         """Initialize PipelineParallelLoader with a pre-configured SafeTensorsFileLoader.
@@ -772,5 +795,6 @@ class ParallelLoader(PipelineParallel):
             use_chunk_budget_as_allocation_size=(use_chunk_budget_as_allocation_size),
             device_memory_budget=device_memory_budget,
             accumulate_resident=accumulate_resident,
+            resident_tensor=resident_tensor,
             **kwargs,
         )

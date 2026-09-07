@@ -12,6 +12,7 @@ from fastsafetensors._planner import (
     FileWeightStats,
     collect_file_stats,
     fit_queue_size,
+    has_non_resident,
     load_depth,
     pipeline_depth,
     plan_file_budgets,
@@ -695,3 +696,128 @@ def test_transient_multiplier_infeasible():
 def test_transient_multiplier_validation():
     with pytest.raises(ValueError):
         plan_file_budgets([_st("f0", GiB)], GiB, depth=1, transient_multiplier=0)
+
+
+# ---- resident_tensor: bytes read vs bytes that stay ----
+
+
+def test_stats_default_all_kept_bytes_resident():
+    """No predicate: resident == kept, i.e. the pre-split behaviour."""
+    st = FileWeightStats("f0", 100, 100, 25)
+    assert st.resident_bytes is None
+    assert st.resident == 100
+    assert not has_non_resident([st])
+
+
+def test_collect_file_stats_resident_predicate(tmp_path):
+    """A consumer that offloads some tensors charges only what stays."""
+    metas = _metas_two_tensors(tmp_path)
+    keep_all = collect_file_stats(metas)
+    assert keep_all[0].resident == keep_all[0].kept_bytes
+    assert not has_non_resident(keep_all)
+
+    # 'big' is relocated to host after the load; only 'small' stays resident.
+    split = collect_file_stats(metas, resident_tensor=lambda n: n != "big")
+    assert split[0].kept_bytes == keep_all[0].kept_bytes  # still all read
+    assert split[0].resident < split[0].kept_bytes  # but not all kept
+    assert has_non_resident(split)
+
+
+def test_resident_predicate_makes_an_infeasible_plan_feasible():
+    """The case the bool cannot express: most of what is read is offloaded.
+
+    accumulate_resident=True charges the offloaded bytes and refuses a plan
+    that fits; False would under-charge the bytes that do stay. The predicate
+    charges exactly the resident half.
+    """
+    budget = 10 * GiB
+    files = [("f0", 8 * GiB, 1 * GiB), ("f1", 8 * GiB, 1 * GiB)]
+    all_resident = [FileWeightStats(p, k, k, lg) for p, k, lg in files]
+    # half of each file's bytes are relocated to host
+    partly = [FileWeightStats(p, k, k, lg, k // 2) for p, k, lg in files]
+
+    with pytest.raises(BudgetInfeasibleError):
+        plan_file_budgets(all_resident, budget, depth=load_depth(-1))
+
+    budgets = plan_file_budgets(partly, budget, depth=load_depth(-1))
+    assert len(budgets) == len(files)
+    assert all(b >= st.largest_tensor for b, st in zip(budgets, partly))
+
+
+def test_accumulate_resident_false_still_charges_nothing():
+    """False keeps its old meaning even when stats carry a residency model."""
+    # each file reads 8 GiB but only 4 GiB of it stays resident
+    stats = [FileWeightStats(f"f{i}", 8 * GiB, 8 * GiB, GiB, 4 * GiB) for i in range(3)]
+    charged = plan_file_budgets(stats, 20 * GiB, depth=1, accumulate_resident=True)
+    ignored = plan_file_budgets(stats, 20 * GiB, depth=1, accumulate_resident=False)
+    # ignoring residency gives a uniform budget; charging it declines per file
+    assert len(set(ignored)) == 1
+    assert charged[0] > charged[-1]
+    # and it charges the resident half, not the 8 GiB read
+    assert charged[0] == 20 * GiB - 4 * GiB
+
+
+def test_fit_queue_size_uses_resident_not_kept():
+    """A deeper queue fits once offloaded bytes stop being charged."""
+    files = [FileWeightStats(f"f{i}", 4 * GiB, 4 * GiB, GiB) for i in range(4)]
+    # same bytes read, but all of them are relocated to host after the load
+    offloaded = [FileWeightStats(f"f{i}", 4 * GiB, 4 * GiB, GiB, 0) for i in range(4)]
+    budget = 10 * GiB
+    deep = fit_queue_size(8, offloaded, budget)
+    shallow = fit_queue_size(8, files, budget)
+    # charging 16 GiB of reads against a 10 GiB budget fits at no depth at all
+    assert shallow is None
+    assert deep is not None
+
+
+def _metas_two_tensors(tmp_path):
+    """One safetensors file: a large tensor 'big' and a small tensor 'small'."""
+    import json
+    import struct
+
+    big_bytes, small_bytes = 4096, 256
+    header = {
+        "big": {"dtype": "U8", "shape": [big_bytes], "data_offsets": [0, big_bytes]},
+        "small": {
+            "dtype": "U8",
+            "shape": [small_bytes],
+            "data_offsets": [big_bytes, big_bytes + small_bytes],
+        },
+    }
+    raw = json.dumps(header).encode()
+    p = tmp_path / "shard.safetensors"
+    with open(p, "wb") as f:
+        f.write(struct.pack("<Q", len(raw)))
+        f.write(raw)
+        f.write(b"\0" * (big_bytes + small_bytes))
+    meta = SafeTensorsMetadata.from_file(str(p), _framework())
+    return [(str(p), meta)]
+
+
+def _framework():
+    import os
+
+    from fastsafetensors.frameworks import get_framework_op
+
+    return get_framework_op(os.getenv("TEST_FASTSAFETENSORS_FRAMEWORK", "pytorch"))
+
+
+def test_resident_tensor_requires_accumulate_resident(input_files, framework):
+    """The predicate must not be accepted where the plan would ignore it."""
+    if framework.get_name() != "pytorch":
+        pytest.skip("pytorch-only integration test")
+    from fastsafetensors import ParallelLoader
+
+    # accumulate_resident=False charges zero residency, so a predicate would be
+    # discarded -- yielding exactly the under-charged plan it exists to avoid.
+    with pytest.raises(ValueError, match="resident_tensor requires"):
+        ParallelLoader(
+            pg=None,
+            hf_weights_files=[input_files[0]],
+            device="cpu",
+            nogds=True,
+            use_tqdm_on_load=False,
+            device_memory_budget=1 << 30,
+            accumulate_resident=False,
+            resident_tensor=lambda name: True,
+        )
