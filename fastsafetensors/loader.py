@@ -210,8 +210,13 @@ class BaseSafeTensorsFileLoader:
                 if chunk is not None:
                     # Copiers without partial-read support refuse the chunk
                     # plan here (CopierInterface.set_chunk raises).
+                    # Legacy two-argument overrides work only without an
+                    # allocation size; budget-sized allocation needs all three.
                     names, ranges, allocation_size = chunk
-                    copier.set_chunk(ranges, names, allocation_size)
+                    if allocation_size is None:
+                        copier.set_chunk(ranges, names)
+                    else:
+                        copier.set_chunk(ranges, names, allocation_size)
                 elif self._tensor_filter is not None:
                     copier.set_byte_ranges(meta.select_byte_ranges(self._tensor_filter))
             else:

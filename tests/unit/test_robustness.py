@@ -163,6 +163,36 @@ def test_chunk_plan_requires_set_chunk(input_files, framework):
         loader.copy_files_to_device()
 
 
+def test_chunk_plan_supports_legacy_two_argument_set_chunk(input_files, framework):
+    if framework.get_name() != "pytorch":
+        pytest.skip("pytorch-only")
+    from fastsafetensors import SafeTensorsFileLoader, SafeTensorsMetadata
+    from fastsafetensors._planner import plan_chunks
+
+    loader = SafeTensorsFileLoader(None, "cpu", nogds=True, framework="pytorch")
+    loader.add_filenames({0: [input_files[0]]})
+    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+    names, ranges = plan_chunks(meta, meta.size_bytes)[0]
+    loader._set_chunk_plan({input_files[0]: (names, ranges, None)})
+    called = False
+
+    class LegacyChunkCopier:
+        def __init__(self, metadata):
+            self.metadata = metadata
+
+        def set_chunk(self, byte_ranges, tensor_names):
+            nonlocal called
+            called = True
+
+        def submit_io(self, use_buf_register, max_copy_block_size):
+            raise RuntimeError("legacy copier reached submit")
+
+    loader.copier_constructor = lambda m, d, f: LegacyChunkCopier(m)
+    with pytest.raises(RuntimeError, match="legacy copier reached submit"):
+        loader.copy_files_to_device()
+    assert called
+
+
 # ---- early consumer stop must not strand the producer thread ----
 
 
