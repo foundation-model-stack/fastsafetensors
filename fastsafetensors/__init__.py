@@ -4,6 +4,7 @@ from importlib.metadata import version
 
 __version__ = version(__name__)
 
+from ._planner import BudgetInfeasibleError
 from .auto_loader import AutoLoader
 from .common import (
     SafeTensorsMetadata,

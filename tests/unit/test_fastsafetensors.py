@@ -552,6 +552,133 @@ def test_SafeTensorsFileLoader_copier_selection(
     assert captured["copier_type"] == expected_type
 
 
+def test_new_gds_file_copier_skips_init_when_device_node_missing(
+    framework, monkeypatch
+) -> None:
+    """When /dev/nvidia-fs0 is absent (Linux), new_gds_file_copier must not
+    call init_gds() (which invokes cuFileDriverOpen()), to avoid the libcufile
+    bug that closes fd 0 in its error path. Instead it should fall back to the
+    nogds copier without ever calling init_gds.
+    """
+    _skip_if_not_pytorch(framework)
+    import fastsafetensors.copier.gds as gds_mod
+
+    # Force Linux so the device-node check is exercised on every CI platform.
+    monkeypatch.setattr(gds_mod.platform, "system", lambda: "Linux")
+
+    # CPU device so the test runs on CI without GPU. The close(0) bug fires
+    # in cuFileDriverOpen() regardless of device type, so the guard must
+    # protect CPU paths too.
+    device = Device(DeviceType.CPU, 0)
+
+    # Simulate the half-configured GDS state: no /dev/nvidia-fs0.
+    real_exists = os.path.exists
+
+    def fake_exists(p):
+        if p == "/dev/nvidia-fs0":
+            return False
+        return real_exists(p)
+
+    monkeypatch.setattr(os.path, "exists", fake_exists)
+
+    init_gds_called = []
+
+    def spy_init_gds(framework=None):
+        init_gds_called.append(True)
+
+    monkeypatch.setattr(gds_mod, "init_gds", spy_init_gds)
+
+    construct = gds_mod.new_gds_file_copier(device, framework=framework)
+
+    assert len(init_gds_called) == 0, (
+        "init_gds() was called despite /dev/nvidia-fs0 missing — "
+        "this triggers the libcufile close(0) bug"
+    )
+    assert construct is not None
+
+
+def test_new_gds_file_copier_inits_when_device_node_present(
+    framework, monkeypatch
+) -> None:
+    """When /dev/nvidia-fs0 exists, new_gds_file_copier should call
+    init_gds() as before (no behavior change for working GDS hosts).
+    """
+    _skip_if_not_pytorch(framework)
+    import fastsafetensors.copier.gds as gds_mod
+
+    # Force Linux so the device-node check is exercised on every CI platform.
+    monkeypatch.setattr(gds_mod.platform, "system", lambda: "Linux")
+
+    # CPU device so the test runs on CI without GPU.
+    device = Device(DeviceType.CPU, 0)
+
+    real_exists = os.path.exists
+
+    def fake_exists(p):
+        if p == "/dev/nvidia-fs0":
+            return True
+        return real_exists(p)
+
+    monkeypatch.setattr(os.path, "exists", fake_exists)
+
+    init_gds_called = []
+
+    def spy_init_gds(framework=None):
+        init_gds_called.append(True)
+
+    monkeypatch.setattr(gds_mod, "init_gds", spy_init_gds)
+
+    # Stub gds_file_reader so we don't depend on the real GDS subsystem
+    # being initialised (init_gds is spied, not called).
+    monkeypatch.setattr(gds_mod.fstcpp, "gds_file_reader", lambda *a, **kw: object())
+
+    gds_mod.new_gds_file_copier(device, framework=framework)
+    assert (
+        len(init_gds_called) == 1
+    ), "init_gds() was not called despite /dev/nvidia-fs0 existing"
+
+
+def test_new_gds_file_copier_loads_library_before_capability_checks(
+    framework, monkeypatch
+) -> None:
+    _skip_if_not_pytorch(framework)
+    import fastsafetensors.copier.gds as gds_mod
+
+    calls = []
+
+    monkeypatch.setattr(gds_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(gds_mod.os.path, "exists", lambda path: True)
+    monkeypatch.setattr(
+        gds_mod, "load_library_func", lambda framework: calls.append("load")
+    )
+
+    def is_gpu_found():
+        assert calls == ["load"]
+        calls.append("gpu")
+        return True
+
+    def is_gds_supported(device_id):
+        assert calls == ["load", "gpu"]
+        calls.append("gds")
+        return 1
+
+    def is_cufile_found():
+        assert calls == ["load", "gpu", "gds"]
+        calls.append("cufile")
+        return True
+
+    monkeypatch.setattr(gds_mod, "is_gpu_found", is_gpu_found)
+    monkeypatch.setattr(gds_mod.fstcpp, "is_gds_supported", is_gds_supported)
+    monkeypatch.setattr(gds_mod.fstcpp, "is_cufile_found", is_cufile_found)
+    monkeypatch.setattr(gds_mod, "init_gds", lambda framework: calls.append("init"))
+    monkeypatch.setattr(gds_mod.fstcpp, "gds_file_reader", lambda *args: object())
+
+    device = Device(DeviceType.CUDA, 0)
+    gds_mod.new_gds_file_copier(device, framework=framework)
+
+    assert calls == ["load", "gpu", "gds", "cufile", "init"]
+
+
 def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
     device, _ = get_and_check_device(framework)
     if framework.get_name() == "pytorch":

@@ -19,7 +19,11 @@ from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata, get_fs_type, init_logger
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
-from .base import CopierInterface, validated_byte_ranges
+from .base import (
+    CopierInterface,
+    validated_byte_ranges,
+    validated_chunk_allocation_size,
+)
 from .registry import CopierConstructFunc, register_copier_constructor
 
 logger = init_logger(__name__)
@@ -85,6 +89,7 @@ class UnifiedMemCopier(CopierInterface):
         self._pinned: List[TensorBase] = []
         self.byte_ranges: Optional[List[Tuple[int, int]]] = None
         self._chunk_names: Optional[Set[str]] = None
+        self._chunk_allocation_size: Optional[int] = None
         self._base_off = metadata.header_length
         # Worker count for the C++ O_DIRECT range reader (dma_load_runs). Single
         # -thread pin_memory is page-cache-bound (~2.5 GB/s); O_DIRECT threads
@@ -103,15 +108,23 @@ class UnifiedMemCopier(CopierInterface):
         """
         self.byte_ranges = validated_byte_ranges(self.metadata, byte_ranges)
 
-    def set_chunk(self, byte_ranges: List[Tuple[int, int]], names: Set[str]) -> None:
-        """Load only ``names`` into a buffer sized to those tensors' span.
+    def set_chunk(
+        self,
+        byte_ranges: List[Tuple[int, int]],
+        names: Set[str],
+        allocation_size: Optional[int] = None,
+    ) -> None:
+        """Load ``names`` into a compact or fixed-size device buffer.
 
-        Allocates only ``max_end - min_start`` of the runs and instantiates just
-        ``names``, so peak device memory is bounded by the chunk rather than the
-        shard -- the building block for ``max_batch_bytes`` sub-file batching.
+        Allocates the runs' span by default, or ``allocation_size`` when set.
         """
-        self.byte_ranges = byte_ranges
+        checked_ranges = validated_byte_ranges(self.metadata, byte_ranges)
+        assert checked_ranges is not None
+        self.byte_ranges = checked_ranges
         self._chunk_names = names
+        self._chunk_allocation_size = validated_chunk_allocation_size(
+            checked_ranges, allocation_size
+        )
 
     @classmethod
     def chunk_transient_multiplier(cls, paths: List[str]) -> int:
@@ -148,7 +161,8 @@ class UnifiedMemCopier(CopierInterface):
             # Compact chunk: allocate only the runs' span and map gbuf[0] to the
             # first run's start, so peak memory tracks the chunk, not the shard.
             base_off = min(s for s, _ in runs)
-            alloc_length = max(e for _, e in runs) - base_off
+            chunk_span = max(e for _, e in runs) - base_off
+            alloc_length = self._chunk_allocation_size or chunk_span
         else:
             base_off = header_length
             alloc_length = self.metadata.size_bytes - header_length
