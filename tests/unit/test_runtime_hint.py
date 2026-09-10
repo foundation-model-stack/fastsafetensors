@@ -186,9 +186,13 @@ def test_dstorage_initialization_uses_framework_bundled_cudart(monkeypatch):
             dstorage.fstcpp,
             "init_dstorage",
             lambda *args: init_calls.append(args) or "ok",
+            raising=False,
         )
         monkeypatch.setattr(
-            dstorage.fstcpp, "dstorage_stream_reader", _ReadyStreamReader
+            dstorage.fstcpp,
+            "dstorage_stream_reader",
+            _ReadyStreamReader,
+            raising=False,
         )
 
         constructor = dstorage.new_dstorage_copier(
