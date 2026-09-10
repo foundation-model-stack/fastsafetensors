@@ -18,7 +18,13 @@ unittest:
 	@FST_DIR=$(FST_DIR); \
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_0 pytest -s --cov=$(FST_DIR) tests/unit/test_fastsafetensors.py && \
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_1 CUDA_VISIBLE_DEVICES="" pytest -s --cov=$(FST_DIR) tests/unit/test_fastsafetensors.py && \
-	cd tests && TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_2 pytest -s --cov=$(FST_DIR) -s vllm/test_vllm.py
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_13 pytest -s --cov=$(FST_DIR) tests/unit/test_ep_slice.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_14 pytest -s --cov=$(FST_DIR) tests/unit/test_robustness.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_15 pytest -s --cov=$(FST_DIR) tests/unit/test_config.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_16 pytest -s --cov=$(FST_DIR) tests/unit/test_planner.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_17 pytest -s --cov=$(FST_DIR) tests/unit/test_auto_loader.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_19 pytest -s --cov=$(FST_DIR) tests/unit/test_runtime_hint.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_20 pytest -s --cov=$(FST_DIR) tests/unit/threefs/
 
 test-vllm:
 	@FST_DIR=$(FST_DIR); \
