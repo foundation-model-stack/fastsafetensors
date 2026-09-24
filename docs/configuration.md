@@ -62,6 +62,12 @@ memory, which the memory planner accounts for separately where applicable.
 `max_batch_bytes` caps each sub-file chunk. It must be at least as large as
 the largest selected tensor because tensors are not split across chunks.
 
+With `max_batch_bytes` or `device_memory_budget`, each distinct shard's header
+is parsed once and reused for planning and subsequent chunk batches. Keep the
+checkpoint files unchanged for the duration of a load. A new pipeline reads
+fresh headers, and closing the loader releases the cached metadata. Standalone
+`SafeTensorsFileLoader` registration continues to read headers on each call.
+
 `device_memory_budget` bounds resident tensors and transient chunk buffers
 across the load. Under distributed broadcast, every rank must use the same
 value to produce an identical plan.

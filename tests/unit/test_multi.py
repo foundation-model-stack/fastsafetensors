@@ -1,13 +1,67 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+from collections import Counter
+from contextlib import closing
 
 import pytest
 
-from fastsafetensors import SafeTensorsFileLoader
+from fastsafetensors import SafeTensorsFileLoader, SafeTensorsMetadata
 from fastsafetensors import cpp as fstcpp
 from fastsafetensors.common import is_gpu_found
+from fastsafetensors.parallel_loader import PipelineParallel
 from fastsafetensors.st_types import DType
+
+
+def test_chunked_metadata_reuse(input_files, pg, framework, monkeypatch):
+    """Every rank parses each shard once, including ranks receiving broadcasts."""
+    if framework.get_name() != "pytorch":
+        pytest.skip("PyTorch metadata reuse test")
+    import torch
+    from safetensors.torch import load_file
+
+    group = framework.get_process_group(pg)
+    device = f"cuda:{group.rank()}" if is_gpu_found() else "cpu"
+
+    expected = {}
+    for path in input_files:
+        expected.update(load_file(path))
+    metas = [SafeTensorsMetadata.from_file(path, framework) for path in input_files]
+    chunk_size = max(
+        frame.data_offsets[1] - frame.data_offsets[0]
+        for meta in metas
+        for frame in meta.tensors.values()
+    )
+    calls = Counter()
+    from_file = SafeTensorsMetadata.from_file
+
+    def counted_from_file(cls, filename, fw):
+        calls[filename] += 1
+        return from_file(filename, fw)
+
+    monkeypatch.setattr(
+        SafeTensorsMetadata, "from_file", classmethod(counted_from_file)
+    )
+    file_loader = SafeTensorsFileLoader(pg, device=device, nogds=True)
+    loader = PipelineParallel(
+        group,
+        file_loader,
+        input_files,
+        queue_size=0,
+        max_batch_bytes=chunk_size,
+        use_tqdm_on_load=False,
+    )
+    try:
+        assert len(loader.weight_files_batches) > len(input_files)
+        with closing(loader.iterate_weights()) as weights:
+            actual = dict(weights)
+        assert set(actual) == set(expected)
+        for name, tensor in actual.items():
+            assert torch.equal(tensor.cpu(), expected[name])
+    finally:
+        loader.close()
+    assert calls == Counter({path: 1 for path in input_files})
+    assert framework.get_mem_used() == 0
 
 
 def test_shuffle(fstcpp_log, input_files, pg, framework):

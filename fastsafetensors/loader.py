@@ -80,6 +80,9 @@ class BaseSafeTensorsFileLoader:
         self.pg = self.framework.get_process_group(pg)
         self.device = device
         self.meta: Dict[str, Tuple[SafeTensorsMetadata, int]] = {}
+        # Seeded by PipelineParallel's chunk planner and reused across batch
+        # resets. Standalone loaders continue to read headers on registration.
+        self._metadata_cache: Dict[str, SafeTensorsMetadata] = {}
         self.frames = OrderedDict[str, TensorFrame]()
         self.disable_cache = disable_cache
         self._tensor_filter: Optional[Callable[[str], bool]] = None
@@ -121,6 +124,10 @@ class BaseSafeTensorsFileLoader:
         copy_files_to_device, with an optional allocation size."""
         self._chunk_plan = chunk_plan
 
+    def _set_metadata_cache(self, metadata: Dict[str, SafeTensorsMetadata]) -> None:
+        """Reuse headers parsed for the current pipeline's chunk plan."""
+        self._metadata_cache = dict(metadata)
+
     def reset(self):
         self.frames = {}
         self.meta = {}
@@ -128,6 +135,7 @@ class BaseSafeTensorsFileLoader:
 
     def close(self):
         self.reset()
+        self._metadata_cache.clear()
         del self.copier_constructor
 
     def get_keys(self) -> List[str]:
@@ -168,7 +176,11 @@ class BaseSafeTensorsFileLoader:
                 next_idx = rank_next_idx[rank]
                 if next_idx < len(filenames[rank]):
                     realpath = filenames[rank][next_idx]  # os.path.realpath(filename)
-                    metadata = SafeTensorsMetadata.from_file(realpath, self.framework)
+                    metadata = self._metadata_cache.get(realpath)
+                    if metadata is None:
+                        metadata = SafeTensorsMetadata.from_file(
+                            realpath, self.framework
+                        )
                     self.meta[realpath] = (metadata, rank)
                     self.frames.update(metadata.tensors)
                     if rank == self.pg.rank():
@@ -194,6 +206,12 @@ class BaseSafeTensorsFileLoader:
         if the tensor data must outlive the buffer.
         """
         self.framework.set_device(self.device)
+
+        if dtype != DType.AUTO:
+            # Online conversion updates TensorFrame.dtype in the metadata.
+            # Those objects no longer describe the on-disk dtype, so a later
+            # registration must parse fresh headers instead of reusing them.
+            self._metadata_cache.clear()
 
         need_wait: List[LazyTensorFactory] = []
         factories: Dict[int, List[LazyTensorFactory]] = {}
