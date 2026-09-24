@@ -39,6 +39,13 @@ typedef struct CUfileDescr_t {
 } CUfileDescr_t;
 typedef struct CUfileError { CUfileOpError err; } CUfileError_t;
 
+// FGDS (libfgds.so) file identifier. Linux-only; resolved at runtime via
+// dlopen() in load_fgds_library(), same as cuFile/hipFile above.
+typedef struct fgds_fileid {
+    int fd;
+    int device_id;
+} fgds_fileid;
+
 // Define minimal CUDA/HIP types for both platforms to avoid compile-time dependencies
 // We load all GPU functions dynamically at runtime via dlopen()
 typedef enum cudaError { cudaSuccess = 0, cudaErrorMemoryAllocation = 2 } cudaError_t;
@@ -223,6 +230,52 @@ public:
     gds_file_reader(const int max_threads, bool use_cuda, int device_id): _next_id(1), _threads(nullptr), _s(thread_states_t{._max_threads = max_threads}), _fns(use_cuda?&cuda_fns:&cpu_fns), _device_id(device_id) {}
     static void _thread(const int thread_id, ext_funcs_t *fns, const int device_id, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, thread_states_t *s);
     const int submit_read(const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length);
+    const ssize_t wait_read(const int id);
+};
+
+// FGDS (libfgds.so) support — Linux only. Symbols are resolved at runtime in
+// load_fgds_library(), which the FGDS copier path calls on demand (so other
+// copiers never load libfgds.so); is_fgds_found() reports whether they are
+// available. init_fgds()/close_fgds() manage per-device fgds_open/fgds_close
+// explicitly, mirroring the GDS init_gds()/close_gds() model.
+void load_fgds_library();
+bool is_fgds_found();
+int init_fgds(int device_id);
+int close_fgds(int device_id);
+
+class fgds_device_buffer {
+private:
+    const uintptr_t _devPtr;
+    const uint64_t _length;
+public:
+    fgds_device_buffer(const uintptr_t dev_ptr, const uint64_t length);
+    uintptr_t get_base_address() const;
+    uint64_t get_length() const;
+};
+
+class fgds_file_handle {
+private:
+    int _fd;
+    int _device_id;
+public:
+    fgds_file_handle(std::string filename, bool o_direct, int device_id);
+    ~fgds_file_handle();
+    int get_device_id() const;
+    int get_fd() const;
+};
+
+class fgds_file_reader {
+private:
+    int _max_threads;
+    int _device_id;
+    std::thread** _threads;
+    std::atomic<int> _next_id;
+    std::map<int, ssize_t> _results;
+    std::mutex _result_lock;
+public:
+    fgds_file_reader(const int max_threads, int device_id);
+    ~fgds_file_reader();
+    const int submit_read(const fgds_file_handle& fh, const fgds_device_buffer& dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off);
     const ssize_t wait_read(const int id);
 };
 

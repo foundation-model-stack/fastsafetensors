@@ -12,6 +12,10 @@ def MyExtension(name, sources, mod_name, *args, **kwargs):
 
     pybind11_path = os.path.dirname(pybind11.__file__)
 
+    # Copy sources so per-platform tweaks (e.g. adding dstorage_reader.cpp)
+    # don't mutate the caller's list.
+    sources = list(sources)
+
     kwargs["define_macros"] = [("__MOD_NAME__", mod_name)]
     kwargs["libraries"] = ["stdc++"]
     kwargs["include_dirs"] = kwargs.get("include_dirs", []) + [
@@ -20,7 +24,7 @@ def MyExtension(name, sources, mod_name, *args, **kwargs):
     kwargs["language"] = "c++"
     kwargs["extra_compile_args"] = ["-fvisibility=hidden", "-std=c++17"]
 
-    # Windows-specific configuration for DirectStorage + D3D12/CUDA interop
+    # Windows-specific configuration for DirectStorage + D3D12/CUDA interop.
     if platform.system() == "Windows":
         sources.append("fastsafetensors/cpp/dstorage_reader.cpp")
         kwargs["libraries"] = []
@@ -57,6 +61,6 @@ setup(
             sources=["fastsafetensors/cpp/ext.cpp"],
             include_dirs=["fastsafetensors/cpp"],
             mod_name="cpp",
-        )
+        ),
     ],
 )

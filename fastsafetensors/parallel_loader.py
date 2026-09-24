@@ -736,6 +736,8 @@ class ParallelLoader(PipelineParallel):
                          non-resident tensor before requesting the next tensor.
                          Under broadcast, it must be a pure function of the name
                          with identical results on every rank.
+        use_fgds (bool): If True, use FGDS (alternative GPU Direct Storage) instead
+                        of cuFile GDS. When FGDS is unavailable, falls back to nogds.
 
     The pipeline holds up to 1 chunk buffer per rank for queue_size=-1, otherwise
     queue_size+2. Broadcast receive tensors, yield clones, and copier staging
@@ -773,6 +775,7 @@ class ParallelLoader(PipelineParallel):
         device_memory_budget: Optional[int] = None,
         accumulate_resident: bool = True,
         resident_tensor: Optional[Callable[[str], bool]] = None,
+        use_fgds: bool = False,
         **kwargs,
     ):
         """Initialize PipelineParallelLoader with a pre-configured SafeTensorsFileLoader.
@@ -790,6 +793,7 @@ class ParallelLoader(PipelineParallel):
             set_numa (bool): If True, set NUMA node for optimal memory allocation.
             debug_log (bool): Enable debug logs.
             framework (str): Framework to use for tensor operations.
+            use_fgds (bool): If True, use FGDS instead of cuFile GDS.
         """
         # all_local: load with a single-process group so each rank reads its
         # files independently (no cross-rank broadcast in get_tensor). This is
@@ -806,6 +810,7 @@ class ParallelLoader(PipelineParallel):
             set_numa=set_numa,
             debug_log=debug_log,
             framework=framework,
+            use_fgds=use_fgds,
             **kwargs,
         )
         super().__init__(
