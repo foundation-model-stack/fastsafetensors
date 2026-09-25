@@ -2,10 +2,23 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Generic, List, Optional, Tuple, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    Iterator,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    TypeVar,
+)
 
 from ..cpp import gds_device_buffer
 from ..st_types import Device, DType
+
+if TYPE_CHECKING:
+    from ..common import SafeTensorsMetadata
 
 
 @dataclass
@@ -204,6 +217,21 @@ class FrameworkOpBase(ABC, Generic[T, K]):
         sub-byte dtypes can translate logical slices into storage-unit slices.
         """
         return slices
+
+    def iter_buffer_views(
+        self,
+        metadata: "SafeTensorsMetadata",
+        gbuf: gds_device_buffer,
+        device: Device,
+        copy_start_offset: int,
+        names: Optional[Set[str]],
+    ) -> Optional[Iterator[Tuple[str, T]]]:
+        """Optionally create views sharing storage within a loader buffer.
+
+        Return None to use per-tensor DLPack conversion. Views do not own the
+        allocation and must not outlive the loader buffer, as on that path.
+        """
+        return None
 
     def synchronize(self, device: Device) -> None:
         """Block until pending asynchronous device copies are complete.

@@ -8,9 +8,9 @@ except ImportError as e:
 
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
-from ..common import SingleGroup
+from ..common import SafeTensorsMetadata, SingleGroup
 from ..cpp import cpu_free, cpu_malloc, gds_device_buffer
 from ..st_types import Device, DeviceType, DType
 from . import FrameworkOpBase, ProcessGroupBase, TensorBase
@@ -286,6 +286,61 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
     def from_dlpack(self, dl_tensor: Any, device: Device, dtype: DType) -> TorchTensor:
         t = torch.from_dlpack(dl_tensor)
         return TorchTensor(device, dtype, t)
+
+    def iter_buffer_views(
+        self,
+        metadata: SafeTensorsMetadata,
+        gbuf: gds_device_buffer,
+        device: Device,
+        copy_start_offset: int,
+        names: Optional[Set[str]],
+    ) -> Iterator[Tuple[str, TorchTensor]]:
+        """Amortize DLPack conversion over tensors with a common storage dtype."""
+        from ..dlpack import from_cuda_buffer
+
+        base_address = gbuf.get_base_address()
+        buffer_end = base_address + gbuf.get_length()
+        bases = {}
+        for name, frame in metadata.tensors.items():
+            if names is not None and name not in names:
+                continue
+            tensor_address = (
+                base_address
+                + metadata.header_length
+                + frame.data_offsets[0]
+                - copy_start_offset
+            )
+            nbytes = frame.data_offsets[1] - frame.data_offsets[0]
+            if tensor_address < base_address or tensor_address + nbytes > buffer_end:
+                raise ValueError(f"Tensor {name!r} is outside the loader buffer")
+            disk_dtype = self.as_workaround_dtype(frame.dtype)
+            itemsize = int(self.get_dtype_size(disk_dtype))
+            # Safetensors offsets need not be aligned. Separate residue classes
+            # so every view's offset is an integer number of storage elements.
+            residue = tensor_address % itemsize
+            key = (disk_dtype, residue)
+            if key not in bases:
+                shift = (residue - base_address % itemsize) % itemsize
+                typed_address = base_address + shift
+                elements = (buffer_end - typed_address) // itemsize
+                capsule = from_cuda_buffer(
+                    typed_address, [elements], [1], disk_dtype, device
+                )
+                bases[key] = (typed_address, torch.from_dlpack(capsule))
+            typed_address, raw_base = bases[key]
+            shape, strides = self.get_storage_shape(
+                frame.dtype, frame.shape, frame.strides
+            )
+            raw = torch.as_strided(
+                raw_base, shape, strides, (tensor_address - typed_address) // itemsize
+            )
+            tensor = TorchTensor(device, disk_dtype, raw)
+            if disk_dtype != frame.dtype:
+                tensor = tensor.view(frame.dtype)
+            native_shape = self.get_native_shape(frame.dtype, frame.shape)
+            if native_shape != frame.shape:
+                tensor = tensor.reshape(native_shape)
+            yield name, tensor
 
     def copy_tensor(self, dst: TorchTensor, src: TorchTensor):
         dst.real_tensor.copy_(src.real_tensor)

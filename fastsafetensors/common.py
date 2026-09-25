@@ -405,6 +405,15 @@ class SafeTensorsMetadata:
         # ``names`` restricts instantiation to that subset of tensors. Required
         # when ``gbuf`` is a compacted chunk buffer (holding only some tensors'
         # bytes): other tensors' computed offsets would fall outside the buffer.
+        # In-place dtype conversion below uses individual destination views;
+        # only the unconverted path can use shared typed storage. A single
+        # tensor has nothing to share and is cheaper on the portable path.
+        if dtype == DType.AUTO and len(self.tensors if names is None else names) > 1:
+            views = self.framework.iter_buffer_views(
+                self, gbuf, device, copy_start_offset, names
+            )
+            if views is not None:
+                return dict(views)
         ret = {}
         for tensor_name, t in self.tensors.items():
             if names is not None and tensor_name not in names:
