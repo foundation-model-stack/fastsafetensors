@@ -142,6 +142,23 @@ class CopierInterface(ABC):
             f"device_memory_budget."
         )
 
+    @classmethod
+    def fixed_device_overhead(cls, paths: List[str]) -> int:
+        """Device bytes this copier holds regardless of chunk size.
+
+        ``ParallelLoader(device_memory_budget=...)`` subtracts this fixed cost
+        before planning transient chunk buffers. Copiers should report only
+        allocations that draw on the device memory being budgeted; for example,
+        pinned host pools do not count on a discrete GPU. The default refuses
+        rather than guessing, just like ``chunk_transient_multiplier``.
+        """
+        raise NotImplementedError(
+            f"device_memory_budget needs a copier that overrides "
+            f"fixed_device_overhead; {cls.__name__} does not implement "
+            f"sub-file chunking. Use the nogds or unified copier, or unset "
+            f"device_memory_budget."
+        )
+
     @abstractmethod
     def submit_io(
         self, use_buf_register: bool, max_copy_block_size: int

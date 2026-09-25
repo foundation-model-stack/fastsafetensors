@@ -57,6 +57,8 @@ def test_chunk_transient_multiplier_default_refuses():
     for cls in (CopierInterface, GdsFileCopier):
         with pytest.raises(NotImplementedError, match="chunk_transient_multiplier"):
             cls.chunk_transient_multiplier(["f0"])
+    with pytest.raises(NotImplementedError, match="fixed_device_overhead"):
+        CopierInterface.fixed_device_overhead(["f0"])
 
 
 def test_chunking_copiers_declare_their_transient_cost():
@@ -82,15 +84,24 @@ def test_chunking_copiers_declare_their_transient_cost():
             cls.chunk_transient_multiplier.__func__
             is not CopierInterface.chunk_transient_multiplier.__func__
         )
+        declares_fixed = (
+            cls.fixed_device_overhead.__func__
+            is not CopierInterface.fixed_device_overhead.__func__
+        )
         assert chunks == declares, (
             f"{name}: set_chunk override={chunks} but "
             f"chunk_transient_multiplier override={declares}"
+        )
+        assert chunks == declares_fixed, (
+            f"{name}: set_chunk override={chunks} but "
+            f"fixed_device_overhead override={declares_fixed}"
         )
         if declares:
             assert cls.chunk_transient_multiplier(["f0", "f1"]) >= 1
     # Exact, not just >= 1: silently bumping nogds to 2 would halve every
     # budget on the default CPU path without failing anything else.
     assert get_copier_class("nogds").chunk_transient_multiplier(["f0"]) == 1
+    assert get_copier_class("nogds").fixed_device_overhead(["f0"]) == 0
 
 
 def test_copier_class_follows_factory_fallback():
@@ -164,6 +175,39 @@ def test_chunk_transient_multiplier_unified_tracks_reader_path(monkeypatch):
     monkeypatch.setenv("FASTSAFETENSORS_DMA_THREADS", "8")
     monkeypatch.setenv("FASTSAFETENSORS_ODIRECT", "0")
     assert UnifiedMemCopier.chunk_transient_multiplier(["f0"]) == 2
+
+
+def test_unified_fixed_pool_path_selection_and_worker_clamp(monkeypatch):
+    from fastsafetensors.copier import UnifiedMemCopier, unified
+
+    monkeypatch.setattr(fstcpp, "dma_load_runs", object(), raising=False)
+    monkeypatch.setattr(unified, "_odirect_ok", lambda path: path == "direct")
+    monkeypatch.delenv("FASTSAFETENSORS_DMA_THREADS", raising=False)
+    assert UnifiedMemCopier.fixed_device_overhead(["direct"]) == 128 * MiB
+    monkeypatch.setenv("FASTSAFETENSORS_DMA_THREADS", "1")
+    assert UnifiedMemCopier.fixed_device_overhead(["direct"]) == 16 * MiB
+    monkeypatch.setenv("FASTSAFETENSORS_DMA_THREADS", "2")
+
+    assert UnifiedMemCopier.chunk_transient_multiplier(["direct"]) == 1
+    assert UnifiedMemCopier.fixed_device_overhead(["direct"]) == 2 * 16 * MiB
+    # Different shards can select different readers. A fallback shard raises
+    # the per-chunk charge, while any direct shard can grow the process pool.
+    assert UnifiedMemCopier.chunk_transient_multiplier(["direct", "fallback"]) == 2
+    assert (
+        UnifiedMemCopier.fixed_device_overhead(["direct", "fallback"]) == 2 * 16 * MiB
+    )
+    assert UnifiedMemCopier.fixed_device_overhead(["fallback"]) == 0
+
+    monkeypatch.setenv("FASTSAFETENSORS_DMA_THREADS", "0")
+    assert UnifiedMemCopier.chunk_transient_multiplier(["direct"]) == 2
+    assert UnifiedMemCopier.fixed_device_overhead(["direct"]) == 0
+
+    monkeypatch.setenv("FASTSAFETENSORS_DMA_THREADS", "100")
+    assert UnifiedMemCopier.fixed_device_overhead(["direct"]) == 32 * 16 * MiB
+
+    monkeypatch.setattr(fstcpp, "dma_load_runs", None)
+    assert UnifiedMemCopier.fixed_device_overhead(["direct"]) == 0
+    assert UnifiedMemCopier.chunk_transient_multiplier(["direct"]) == 2
 
 
 # ---- planner math ----
@@ -617,6 +661,193 @@ def test_single_process_loader_budgets_yield_clone(
         assert captured["account_for_yield_clone"] is expected_account_for_clone
     finally:
         pl.close()
+
+
+def test_loader_subtracts_fixed_overhead_before_fitting_and_planning(
+    input_files, framework, monkeypatch
+):
+    if framework.get_name() != "pytorch":
+        pytest.skip("pytorch-only integration test")
+
+    from fastsafetensors import ParallelLoader, _planner
+    from fastsafetensors.copier.nogds import NoGdsFileCopier
+
+    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+    (st,) = collect_file_stats([(input_files[0], meta)])
+    overhead = 2 * st.largest_tensor
+    budget = 5 * st.largest_tensor
+    monkeypatch.setattr(
+        NoGdsFileCopier,
+        "fixed_device_overhead",
+        classmethod(lambda cls, paths: overhead),
+    )
+    seen = {}
+    real_fit = _planner.fit_queue_size
+    real_plan = _planner.plan_file_budgets
+
+    def record_fit(requested, stats, device_memory_budget, *args, **kwargs):
+        seen["fit_budget"] = device_memory_budget
+        return real_fit(requested, stats, device_memory_budget, *args, **kwargs)
+
+    def record_plan(stats, device_memory_budget, *args, **kwargs):
+        seen["plan_budget"] = device_memory_budget
+        return real_plan(stats, device_memory_budget, *args, **kwargs)
+
+    monkeypatch.setattr(_planner, "fit_queue_size", record_fit)
+    monkeypatch.setattr(_planner, "plan_file_budgets", record_plan)
+    pl = ParallelLoader(
+        pg=None,
+        hf_weights_files=[input_files[0]],
+        device="cpu",
+        nogds=True,
+        use_tqdm_on_load=False,
+        queue_size=3,
+        device_memory_budget=budget,
+        accumulate_resident=False,
+    )
+    try:
+        assert seen == {
+            "fit_budget": budget - overhead,
+            "plan_budget": budget - overhead,
+        }
+        assert pl.queue_size == 0
+    finally:
+        pl.close()
+
+
+def test_loader_reports_fixed_overhead_when_budget_cannot_cover_it(
+    input_files, framework, monkeypatch
+):
+    if framework.get_name() != "pytorch":
+        pytest.skip("pytorch-only integration test")
+
+    from fastsafetensors import ParallelLoader
+    from fastsafetensors.copier.nogds import NoGdsFileCopier
+
+    overhead = 2 * GiB
+    monkeypatch.setattr(
+        NoGdsFileCopier,
+        "fixed_device_overhead",
+        classmethod(lambda cls, paths: overhead),
+    )
+    with pytest.raises(BudgetInfeasibleError, match="fixed device overhead"):
+        ParallelLoader(
+            pg=None,
+            hf_weights_files=[input_files[0]],
+            device="cpu",
+            nogds=True,
+            use_tqdm_on_load=False,
+            device_memory_budget=overhead,
+        )
+
+
+def test_loader_enriches_serial_failure_after_fixed_overhead_deduction(
+    input_files, framework, monkeypatch
+):
+    if framework.get_name() != "pytorch":
+        pytest.skip("pytorch-only integration test")
+
+    from fastsafetensors import ParallelLoader
+    from fastsafetensors.copier.nogds import NoGdsFileCopier
+
+    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+    (st,) = collect_file_stats([(input_files[0], meta)])
+    overhead = GiB
+    budget = overhead + st.largest_tensor - 1
+    assert budget > overhead
+    monkeypatch.setattr(
+        NoGdsFileCopier,
+        "fixed_device_overhead",
+        classmethod(lambda cls, paths: overhead),
+    )
+    with pytest.raises(BudgetInfeasibleError) as ei:
+        ParallelLoader(
+            pg=None,
+            hf_weights_files=[input_files[0]],
+            device="cpu",
+            nogds=True,
+            queue_size=-1,
+            use_tqdm_on_load=False,
+            device_memory_budget=budget,
+        )
+    assert f"budget is {budget - overhead}" in str(ei.value)
+    assert f"budget passed was {budget}" in str(ei.value)
+    assert f"less {overhead} bytes of fixed NoGdsFileCopier" in str(ei.value)
+
+
+@pytest.mark.parametrize("odirect", [False, True])
+def test_unified_budgeted_load_accounts_for_pool_and_reads_correctly(
+    input_files, framework, monkeypatch, odirect
+):
+    if framework.get_name() != "pytorch":
+        pytest.skip("pytorch-only integration test")
+    import torch
+    from safetensors.torch import load_file
+
+    if not torch.cuda.is_available():
+        pytest.skip("requires CUDA")
+    if odirect and getattr(fstcpp, "dma_load_runs", None) is None:
+        pytest.skip("built without the O_DIRECT reader")
+
+    from fastsafetensors import ParallelLoader, _planner
+    from fastsafetensors.copier import UnifiedMemCopier
+
+    monkeypatch.setenv("FASTSAFETENSORS_UNIFIED_MEM", "1")
+    monkeypatch.setenv("FASTSAFETENSORS_DMA_THREADS", "8")
+    monkeypatch.setenv("FASTSAFETENSORS_ODIRECT", "1" if odirect else "0")
+    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+    (st,) = collect_file_stats([(input_files[0], meta)])
+    paths = [input_files[0]]
+    overhead = UnifiedMemCopier.fixed_device_overhead(paths)
+    assert overhead == (128 * MiB if odirect else 0)
+    multiplier = UnifiedMemCopier.chunk_transient_multiplier(paths)
+    budget = (
+        overhead
+        + st.kept_bytes
+        + pipeline_depth(0) * multiplier * st.largest_tensor
+        + 4096
+    )
+    seen = {}
+    real_plan = _planner.plan_file_budgets
+    dma_results = []
+    real_dma_load_runs = getattr(fstcpp, "dma_load_runs", None)
+    if odirect:
+
+        def record_dma_load_runs(*args):
+            rc = real_dma_load_runs(*args)
+            dma_results.append(rc)
+            return rc
+
+        monkeypatch.setattr(fstcpp, "dma_load_runs", record_dma_load_runs)
+
+    def record_plan(stats, device_memory_budget, *args, **kwargs):
+        seen["budget"] = device_memory_budget
+        return real_plan(stats, device_memory_budget, *args, **kwargs)
+
+    monkeypatch.setattr(_planner, "plan_file_budgets", record_plan)
+    pl = ParallelLoader(
+        pg=None,
+        hf_weights_files=paths,
+        device="cuda:0",
+        nogds=True,
+        use_tqdm_on_load=False,
+        device_memory_budget=budget,
+    )
+    try:
+        assert seen["budget"] == budget - overhead
+        got = dict(pl.iterate_weights())
+    finally:
+        pl.close()
+
+    if odirect:
+        if dma_results and all(rc == -2 for rc in dma_results):
+            pytest.skip("test filesystem does not support O_DIRECT")
+        assert dma_results and all(rc == 0 for rc in dma_results), dma_results
+
+    expected = load_file(input_files[0])
+    assert set(got) == set(expected)
+    for name, tensor in expected.items():
+        assert torch.equal(got[name], tensor.to(got[name].device)), name
 
 
 def test_loader_clamps_queue_size_instead_of_failing(input_files, framework):

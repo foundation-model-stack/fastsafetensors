@@ -49,6 +49,14 @@ _NETWORK_FS = {
     "virtiofs",
 }
 _warned_fs: set = set()
+_DMA_THREADS_ENV = "FASTSAFETENSORS_DMA_THREADS"
+_DMA_THREADS_DEFAULT = 8
+# Keep in sync with PIN_CHUNK in cpp/ext.cpp.
+_DMA_PIN_CHUNK = 16 << 20
+
+
+def _dma_threads_from_env() -> int:
+    return int(os.environ.get(_DMA_THREADS_ENV, str(_DMA_THREADS_DEFAULT)))
 
 
 def _odirect_ok(path: str) -> bool:
@@ -66,6 +74,22 @@ def _odirect_ok(path: str) -> bool:
             )
         return False
     return True
+
+
+def _odirect_reader_usable(path: str) -> bool:
+    """Whether ``submit_io`` can use the O_DIRECT reader for this path."""
+    return (
+        getattr(fstcpp, "dma_load_runs", None) is not None
+        and _dma_threads_from_env() > 0
+        and _odirect_ok(path)
+    )
+
+
+def _dma_worker_count(nthreads: int) -> int:
+    """Worker count after the clamp in ``dma_load_runs``."""
+    if nthreads < 1:
+        return 4
+    return min(nthreads, 32)
 
 
 class UnifiedMemCopier(CopierInterface):
@@ -95,7 +119,7 @@ class UnifiedMemCopier(CopierInterface):
         # -thread pin_memory is page-cache-bound (~2.5 GB/s); O_DIRECT threads
         # bypass the cache and drive NVMe queue depth. Falls back to pin_memory
         # if the reader is unavailable.
-        self._dma_threads = int(os.environ.get("FASTSAFETENSORS_DMA_THREADS", "8"))
+        self._dma_threads = _dma_threads_from_env()
 
     def set_byte_ranges(self, byte_ranges: Optional[List[Tuple[int, int]]]) -> None:
         """Restrict reads to these ``[start, end)`` absolute file-offset runs.
@@ -131,20 +155,29 @@ class UnifiedMemCopier(CopierInterface):
         """Per in-flight-chunk transient cost, as a multiple of chunk span.
 
         The O_DIRECT reader (dma_load_runs) reads runs straight into the device
-        buffer: each live chunk costs ~1x its span plus a small fixed thread
-        pool (measured +~150 MB on GB10 regardless of chunk size; not charged
-        here). The mmap+pin_memory fallback additionally pins the chunk's file
-        pages for the copy's lifetime; on unified-memory systems both draws
-        come from one physical pool, so each live chunk costs ~2x its span.
+        buffer: each live chunk costs ~1x its span; its pinned pool is charged
+        separately by ``fixed_device_overhead``. The mmap+pin_memory fallback
+        additionally pins the chunk's file pages for the copy's lifetime;
+        on unified-memory systems both draws come from one physical pool,
+        so each live chunk costs ~2x its span.
         Mirrors submit_io's own path selection.
         """
-        if getattr(fstcpp, "dma_load_runs", None) is None:
-            return 2
-        if int(os.environ.get("FASTSAFETENSORS_DMA_THREADS", "8")) <= 0:
-            return 2
-        if any(not _odirect_ok(p) for p in paths):
+        if any(not _odirect_reader_usable(p) for p in paths):
             return 2
         return 1
+
+    @classmethod
+    def fixed_device_overhead(cls, paths: List[str]) -> int:
+        """Pinned O_DIRECT bounce pool charged on unified-memory systems.
+
+        The C++ reader retains one 16 MiB pinned buffer per worker in a
+        process-wide pool. Mixed files may use both reader paths: any usable
+        O_DIRECT path can grow that persistent pool, even though the transient
+        multiplier is 2 when any file falls back to mmap plus pinning.
+        """
+        if not any(_odirect_reader_usable(p) for p in paths):
+            return 0
+        return _dma_worker_count(_dma_threads_from_env()) * _DMA_PIN_CHUNK
 
     def submit_io(
         self, use_buf_register: bool, max_copy_block_size: int

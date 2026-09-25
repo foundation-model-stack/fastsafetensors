@@ -1400,7 +1400,15 @@ def test_pipeline_reads_each_header_once(
         kwargs["max_batch_bytes"] = 256
     if mode in ("budget", "both"):
         resident = sum(t.numel() * t.element_size() for t in expected.values())
-        kwargs["device_memory_budget"] = resident + 512
+        # Keep the same tight chunk budget on both discrete and unified GPUs.
+        # The unified O_DIRECT reader also reserves a fixed pinned pool.
+        with closing(SafeTensorsFileLoader(None, device=device, nogds=True)) as probe:
+            copier = probe.copier_class
+            kwargs["device_memory_budget"] = (
+                resident
+                + 512 * copier.chunk_transient_multiplier(files)
+                + copier.fixed_device_overhead(files)
+            )
     loader = ParallelLoader(
         None,
         files,
