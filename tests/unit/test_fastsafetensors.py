@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import itertools
+import json
 import os
 import sys
 from collections import Counter, OrderedDict
@@ -1525,3 +1527,203 @@ def test_dtype_conversion_invalidates_cached_headers(checkpoint, device, framewo
             assert torch.equal(tensor.cpu(), expected["s0.t0"])
     finally:
         loader.close()
+
+
+@pytest.fixture(params=["cpu", "cuda:0"])
+def view_device(request, framework):
+    if framework.get_name() != "pytorch":
+        pytest.skip("shared storage is a PyTorch optimization")
+    import torch
+
+    if request.param != "cpu" and not torch.cuda.is_available():
+        pytest.skip("requires CUDA")
+    return Device.from_str(request.param)
+
+
+def _make_view_buffer(framework, device, specs, *, start=0, end=None, prefix=0):
+    """Build real metadata with deliberately unaligned and mixed-dtype data."""
+    import torch
+
+    header = {}
+    data = bytearray()
+    for name, dtype, tensor, shape in specs:
+        offset = len(data)
+        data.extend(tensor.reshape(-1).view(torch.uint8).tolist())
+        header[name] = {
+            "dtype": dtype.value,
+            "shape": list(tensor.shape) if shape is None else shape,
+            "data_offsets": [offset, len(data)],
+        }
+    metadata = SafeTensorsMetadata(json.dumps(header), 128, 128 + len(data), framework)
+    backing = torch.tensor(
+        [0] * prefix + list(data[start:end]), dtype=torch.uint8, device=device.as_str()
+    )
+    gbuf = fstcpp.gds_device_buffer(
+        backing.data_ptr(), backing.numel(), device.type.value == "cuda"
+    )
+    return metadata, backing, gbuf, 128 + start - prefix
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_shared_views_preserve_offsets_shapes_and_storage(
+    framework, view_device, chunked, monkeypatch
+):
+    import torch
+
+    specs = [
+        ("prefix", DType.U8, torch.tensor([7], dtype=torch.uint8), None),
+        ("a", DType.F32, torch.tensor([1.25, 2.5]), None),
+        ("b", DType.F32, torch.tensor([[3.75, 4.0]]), None),
+        ("gap", DType.U8, torch.tensor([8], dtype=torch.uint8), None),
+        ("scalar", DType.F32, torch.tensor(5.5), None),
+        ("bool", DType.BOOL, torch.tensor([True, False]), None),
+        ("empty", DType.F32, torch.empty(0, 3), None),
+    ]
+    selected = {"a", "b", "scalar"} if chunked else None
+    metadata, backing, gbuf, offset = _make_view_buffer(
+        framework,
+        view_device,
+        specs,
+        start=1 if chunked else 0,
+        end=22 if chunked else None,
+        prefix=3,
+    )
+    views = metadata._get_tensors(gbuf, view_device, offset, names=selected)
+    assert list(views) == [s[0] for s in specs if selected is None or s[0] in selected]
+    for name, _, expected, _ in specs:
+        if name not in views:
+            continue
+        actual = views[name].get_raw()
+        assert torch.equal(actual.cpu(), expected)
+        assert actual.shape == expected.shape
+        assert actual.dtype == expected.dtype
+        if expected.numel():
+            assert actual.data_ptr() == (
+                backing.data_ptr()
+                + 128
+                + metadata.tensors[name].data_offsets[0]
+                - offset
+            )
+    a, b = views["a"].get_raw(), views["b"].get_raw()
+    assert a.untyped_storage().data_ptr() == b.untyped_storage().data_ptr()
+    assert (
+        views["scalar"].get_raw().untyped_storage().data_ptr()
+        != a.untyped_storage().data_ptr()
+    )
+
+    # The optional hook's fallback must give the same values and ordering.
+    monkeypatch.setattr(framework, "iter_buffer_views", lambda *args: None)
+    portable = metadata._get_tensors(gbuf, view_device, offset, names=selected)
+    assert list(portable) == list(views)
+    for name in views:
+        # Copy before comparing: CUDA arithmetic kernels require alignment,
+        # while this case deliberately exercises unaligned file offsets.
+        assert torch.equal(views[name].get_raw().cpu(), portable[name].get_raw().cpu())
+    # The generator and sibling views can disappear while one view remains.
+    del views, portable, a
+    gc.collect()
+    assert torch.equal(b.cpu(), specs[2][2])
+
+
+@pytest.mark.parametrize(
+    "dtype,torch_name,shape",
+    [
+        (DType.F8_E4M3, "float8_e4m3fn", [2, 4]),
+        (DType.F8_E5M2, "float8_e5m2", [2, 4]),
+        (DType.F8_E8M0, "float8_e8m0fnu", [2, 4]),
+        (DType.F4, "float4_e2m1fn_x2", [2, 8]),
+    ],
+)
+def test_shared_views_preserve_packed_dtype_bytes(
+    framework, view_device, dtype, torch_name, shape
+):
+    import torch
+
+    if not hasattr(torch, torch_name):
+        pytest.skip(f"requires torch.{torch_name}")
+    raw = torch.arange(8, dtype=torch.uint8).reshape(2, 4)
+    expected = raw.view(getattr(torch, torch_name))
+    specs = [(name, dtype, expected, shape) for name in ("a", "b")]
+    metadata, backing, gbuf, offset = _make_view_buffer(framework, view_device, specs)
+    views = metadata._get_tensors(gbuf, view_device, offset)
+    for tensor in views.values():
+        actual = tensor.get_raw()
+        assert actual.dtype == expected.dtype
+        assert actual.shape == expected.shape
+        assert torch.equal(actual.view(torch.uint8).cpu(), raw)
+
+
+def test_shared_views_respect_empty_selection_and_buffer_bounds(framework, view_device):
+    import torch
+
+    specs = [
+        (name, DType.F32, torch.arange(4, dtype=torch.float32), None)
+        for name in ("a", "b", "c")
+    ]
+    metadata, backing, gbuf, offset = _make_view_buffer(
+        framework, view_device, specs, start=16, end=32
+    )
+    assert metadata._get_tensors(gbuf, view_device, offset, names=set()) == {}
+    for name in ("a", "c"):
+        with pytest.raises(ValueError, match="outside the loader buffer"):
+            metadata._get_tensors(gbuf, view_device, offset, names={"b", name})
+
+
+def test_shared_empty_buffer(framework, view_device):
+    import torch
+
+    specs = [(name, DType.F32, torch.empty(0, 3), None) for name in ("a", "b")]
+    metadata, backing, gbuf, offset = _make_view_buffer(framework, view_device, specs)
+    views = metadata._get_tensors(gbuf, view_device, offset)
+    assert set(views) == {"a", "b"}
+    assert all(t.get_raw().shape == (0, 3) for t in views.values())
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_shared_views_keep_loader_outputs_independent(
+    framework, view_device, tmp_path, chunked
+):
+    import torch
+    from safetensors.torch import save_file
+
+    expected = {f"t{i}": torch.arange(16, dtype=torch.float32) + i for i in range(8)}
+    path = str(tmp_path / "views.safetensors")
+    save_file(expected, path)
+    loader = ParallelLoader(
+        None,
+        [path],
+        device=view_device.as_str(),
+        nogds=True,
+        max_batch_bytes=128 if chunked else None,
+        use_tqdm_on_load=False,
+    )
+    try:
+        actual = dict(loader.iterate_weights())
+    finally:
+        loader.close()
+    gc.collect()
+    for name, tensor in actual.items():
+        assert torch.equal(tensor.cpu(), expected[name])
+    actual["t0"].zero_()
+    assert torch.equal(actual["t1"].cpu(), expected["t1"])
+
+
+def test_explicit_dtype_conversion_keeps_portable_path(
+    framework, view_device, monkeypatch
+):
+    import torch
+
+    specs = [
+        (name, DType.F32, torch.arange(4, dtype=torch.float32), None)
+        for name in ("a", "b")
+    ]
+    metadata, backing, gbuf, offset = _make_view_buffer(framework, view_device, specs)
+
+    def unexpected(*args):
+        pytest.fail("dtype conversion must not use shared typed storage")
+
+    monkeypatch.setattr(framework, "iter_buffer_views", unexpected)
+    result = metadata._get_tensors(gbuf, view_device, offset, dtype=DType.F16)
+    for name in ("a", "b"):
+        assert torch.equal(result[name].get_raw().cpu(), specs[0][2].half())
+        assert metadata.tensors[name].dtype == DType.F16
