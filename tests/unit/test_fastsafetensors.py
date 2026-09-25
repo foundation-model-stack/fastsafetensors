@@ -3,7 +3,8 @@
 import itertools
 import os
 import sys
-from collections import OrderedDict
+from collections import Counter, OrderedDict
+from contextlib import closing
 from typing import Any, Dict, List, Tuple
 
 import pytest
@@ -26,6 +27,7 @@ from fastsafetensors.copier.nogds import NoGdsFileCopier
 from fastsafetensors.copier.unified import UnifiedMemCopier, is_unified_memory_system
 from fastsafetensors.dlpack import from_cuda_buffer
 from fastsafetensors.frameworks import FrameworkOpBase
+from fastsafetensors.parallel_loader import PipelineParallel
 from fastsafetensors.st_types import Device, DeviceType, DType
 
 
@@ -1342,3 +1344,176 @@ def test_no_module_level_torch_import_outside_frameworks() -> None:
             if imports_torch(tree.body):
                 violations.append(rel)
     assert violations == [], f"module-level torch import found in: {violations}"
+
+
+@pytest.fixture
+def checkpoint(tmp_path, framework):
+    if framework.get_name() != "pytorch":
+        pytest.skip("PyTorch checkpoint fixtures")
+    import torch
+    from safetensors.torch import save_file
+
+    files, expected = [], {}
+    for shard in range(2):
+        tensors = {
+            f"s{shard}.t{i}": torch.arange(64, dtype=torch.float32) + shard * 100 + i
+            for i in range(3)
+        }
+        path = str(tmp_path / f"shard{shard}.safetensors")
+        save_file(tensors, path)
+        files.append(path)
+        expected.update(tensors)
+    return files, expected
+
+
+@pytest.fixture(params=["cpu", "cuda:0"])
+def device(request):
+    if request.param.startswith("cuda") and not is_gpu_found():
+        pytest.skip("GPU unavailable")
+    return request.param
+
+
+@pytest.mark.parametrize("mode", ["whole", "max_batch_bytes", "budget", "both"])
+@pytest.mark.parametrize("filtered", [False, True])
+@pytest.mark.parametrize("queue_size", [-1, 1])
+def test_pipeline_reads_each_header_once(
+    checkpoint, device, monkeypatch, mode, filtered, queue_size
+):
+    import torch
+
+    files, expected = checkpoint
+    keep = (lambda name: not name.endswith("t1")) if filtered else None
+    if keep is not None:
+        expected = {name: tensor for name, tensor in expected.items() if keep(name)}
+    calls = Counter()
+    from_file = SafeTensorsMetadata.from_file
+
+    def counted_from_file(cls, filename, fw):
+        calls[filename] += 1
+        return from_file(filename, fw)
+
+    monkeypatch.setattr(
+        SafeTensorsMetadata, "from_file", classmethod(counted_from_file)
+    )
+    kwargs = {}
+    if mode in ("max_batch_bytes", "both"):
+        kwargs["max_batch_bytes"] = 256
+    if mode in ("budget", "both"):
+        resident = sum(t.numel() * t.element_size() for t in expected.values())
+        kwargs["device_memory_budget"] = resident + 512
+    loader = ParallelLoader(
+        None,
+        files,
+        device=device,
+        nogds=True,
+        use_tqdm_on_load=False,
+        queue_size=queue_size,
+        tensor_filter=keep,
+        **kwargs,
+    )
+    try:
+        if mode != "whole":
+            assert len(loader.weight_files_batches) > len(files)
+        with closing(loader.iterate_weights()) as weights:
+            actual = dict(weights)
+    finally:
+        loader.close()
+    assert calls == Counter({path: 1 for path in files})
+    assert set(actual) == set(expected)
+    for name, tensor in actual.items():
+        assert torch.equal(tensor.cpu(), expected[name])
+    assert not loader.loader._metadata_cache
+
+
+def test_repeated_shard_reuses_one_header(checkpoint, device, monkeypatch):
+    files, _ = checkpoint
+    from_file = SafeTensorsMetadata.from_file
+    calls = []
+
+    def counted_from_file(cls, filename, fw):
+        calls.append(filename)
+        return from_file(filename, fw)
+
+    monkeypatch.setattr(
+        SafeTensorsMetadata, "from_file", classmethod(counted_from_file)
+    )
+    loader = ParallelLoader(
+        None,
+        [files[0], files[0]],
+        device=device,
+        nogds=True,
+        max_batch_bytes=256,
+        use_tqdm_on_load=False,
+    )
+    try:
+        with closing(loader.iterate_weights()) as weights:
+            assert len(list(weights)) == 6
+    finally:
+        loader.close()
+    assert calls == [files[0]]
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_new_pipeline_refreshes_cached_headers(checkpoint, device, chunked):
+    import torch
+    from safetensors.torch import save_file
+
+    files, _ = checkpoint
+    loader = SafeTensorsFileLoader(None, device, nogds=True)
+    try:
+        first = PipelineParallel(None, loader, files, max_batch_bytes=256)
+        with closing(first.iterate_weights()) as weights:
+            dict(weights)
+        replacement = {"replacement": torch.arange(32, dtype=torch.float32)}
+        save_file(replacement, files[0])
+        second = PipelineParallel(
+            None, loader, [files[0]], max_batch_bytes=256 if chunked else None
+        )
+        with closing(second.iterate_weights()) as weights:
+            actual = dict(weights)
+        assert set(actual) == set(replacement)
+        assert torch.equal(actual["replacement"].cpu(), replacement["replacement"])
+    finally:
+        loader.close()
+
+
+def test_standalone_reset_reads_fresh_headers(checkpoint, device):
+    import torch
+    from safetensors.torch import save_file
+
+    files, _ = checkpoint
+    loader = SafeTensorsFileLoader(None, device, nogds=True)
+    try:
+        loader.add_filenames({0: [files[0]]})
+        assert "s0.t0" in loader.get_keys()
+        loader.reset()
+        save_file({"replacement": torch.ones(4)}, files[0])
+        loader.add_filenames({0: [files[0]]})
+        assert loader.get_keys() == ["replacement"]
+    finally:
+        loader.close()
+
+
+def test_dtype_conversion_invalidates_cached_headers(checkpoint, device, framework):
+    import torch
+
+    files, expected = checkpoint
+    loader = SafeTensorsFileLoader(None, device, nogds=True)
+    try:
+        metadata = SafeTensorsMetadata.from_file(files[0], framework)
+        loader._set_metadata_cache({files[0]: metadata})
+        loader.add_filenames({0: [files[0]]})
+        with closing(loader.copy_files_to_device(dtype=DType.F16)) as buffers:
+            assert torch.equal(
+                buffers.get_tensor("s0.t0").cpu(), expected["s0.t0"].half()
+            )
+        assert metadata.tensors["s0.t0"].dtype == DType.F16
+        assert not loader._metadata_cache
+        loader.reset()
+        loader.add_filenames({0: [files[0]]})
+        with closing(loader.copy_files_to_device()) as buffers:
+            tensor = buffers.get_tensor("s0.t0")
+            assert tensor.dtype == torch.float32
+            assert torch.equal(tensor.cpu(), expected["s0.t0"])
+    finally:
+        loader.close()

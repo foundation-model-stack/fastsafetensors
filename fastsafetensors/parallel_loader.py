@@ -264,6 +264,9 @@ class PipelineParallel:
                             files for all processes in the group
         """
         batch_size = pg.size()
+        # A new pipeline must not inherit headers from a previous load, even
+        # when it uses the same underlying loader without sub-file chunking.
+        self.loader._set_metadata_cache({})
         file_batches = [
             self.hf_weights_files[i : i + batch_size]
             for i in range(0, len(self.hf_weights_files), batch_size)
@@ -274,11 +277,16 @@ class PipelineParallel:
         keep = self.loader._tensor_filter
         fw = self.loader.framework
 
+        # Parse each distinct shard once for planning and all later chunks.
+        meta_by_path = {
+            f: SafeTensorsMetadata.from_file(f, fw)
+            for f in dict.fromkeys(self.hf_weights_files)
+        }
+
         # Per-file chunk budget. Uniform (max_batch_bytes) by default; with
         # device_memory_budget, a static fit plan chooses declining budgets so
         # resident + transient stays within the budget (see planner module).
         per_file_budget: Optional[Dict[str, int]] = None
-        meta_by_path: Dict[str, SafeTensorsMetadata] = {}
         if self.device_memory_budget is not None:
             from ._planner import (
                 collect_file_stats,
@@ -288,9 +296,7 @@ class PipelineParallel:
                 plan_file_budgets,
             )
 
-            metas = [
-                (f, SafeTensorsMetadata.from_file(f, fw)) for f in self.hf_weights_files
-            ]
+            metas = [(f, meta_by_path[f]) for f in self.hf_weights_files]
             stats = collect_file_stats(metas, keep, self.resident_tensor)
             # A clone of a yielded tensor only needs its own budget when it is
             # transient. With a residency predicate that is a property of the
@@ -348,7 +354,6 @@ class PipelineParallel:
                 account_for_yield_clone=account_for_yield_clone,
             )
             per_file_budget = {f: b for (f, _), b in zip(metas, budgets)}
-            meta_by_path = dict(metas)
 
         # Expand each file-batch (one file per rank) into aligned chunk-batches.
         # Chunk-batch j holds rank r's j-th chunk (or None once that rank's file
@@ -368,7 +373,7 @@ class PipelineParallel:
             assert self.max_batch_bytes is not None
             return (
                 plan_chunks(
-                    SafeTensorsMetadata.from_file(f, fw),
+                    meta_by_path[f],
                     self.max_batch_bytes,
                     keep_tensor=keep,
                 ),
@@ -391,6 +396,7 @@ class PipelineParallel:
                     else:
                         spec.append(None)
                 chunk_batches.append(spec)
+        self.loader._set_metadata_cache(meta_by_path)
         return chunk_batches
 
     def _log_message(self, message: str, is_error: bool = False):
