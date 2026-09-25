@@ -82,12 +82,16 @@ class NoGdsFileCopier(CopierInterface):
     def chunk_transient_multiplier(cls, paths: List[str]) -> int:
         """Per in-flight-chunk transient cost, as a multiple of chunk span: 1.
 
-        Reads land in the reader's fixed pool of host bounce buffers
-        (``bbuf_size_kb`` x ``max_threads``, sized independently of the chunk),
-        so the only device-side allocation that scales with a chunk is the
-        chunk buffer itself.
+        Reads land in the reader's fixed pool of host bounce buffers, so the
+        only device-side allocation that scales with a chunk is the chunk
+        buffer itself.
         """
         return 1
+
+    @classmethod
+    def fixed_device_overhead(cls, paths: List[str]) -> int:
+        """The reader's bounce buffers are host memory on discrete GPUs."""
+        return 0
 
     def submit_io(
         self, use_buf_register: bool, max_copy_block_size: int

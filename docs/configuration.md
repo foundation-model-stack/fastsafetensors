@@ -68,9 +68,9 @@ checkpoint files unchanged for the duration of a load. A new pipeline reads
 fresh headers, and closing the loader releases the cached metadata. Standalone
 `SafeTensorsFileLoader` registration continues to read headers on each call.
 
-`device_memory_budget` bounds resident tensors and transient chunk buffers
-across the load. Under distributed broadcast, every rank must use the same
-value to produce an identical plan.
+`device_memory_budget` bounds resident tensors, transient chunk buffers, and
+fixed copier pools across the load. Under distributed broadcast, every rank
+must use the same value to produce an identical plan.
 
 If the requested queue depth does not fit, the loader reduces it automatically,
 down to `queue_size=-1`. If even serial loading cannot fit, loading raises
@@ -78,10 +78,22 @@ down to `queue_size=-1`. If even serial loading cannot fit, loading raises
 `from fastsafetensors import BudgetInfeasibleError`. It subclasses `ValueError`
 so callers can distinguish an infeasible plan from other invalid arguments.
 
-The budget excludes allocator rounding, copier fixed pools, and memory used
-outside the loader. When deriving it from free device memory, leave a reserve
-for those costs; `max(5% of free memory, 1 GiB)` is a starting point, not a
-guarantee for every workload. Reserve any post-load conversion memory separately.
+The loader subtracts the selected copier's fixed device pools from this budget
+before fitting the queue and planning chunks. The budget still excludes
+allocator rounding and memory used outside the loader. When deriving it from
+free device memory, leave a reserve for those costs;
+`max(5% of free memory, 1 GiB)` is a starting point, not a guarantee for every
+workload. The unified O_DIRECT reader reserves 16 MiB per worker (128 MiB by
+default) and keeps its pinned pool for the life of the process. It reserves for
+the configured worker limit, even if fewer buffers have been allocated so far.
+If the pool was already populated before measuring free memory, this subtraction
+can count its bytes again. Reserve any post-load conversion memory separately.
+
+This estimates one loader's configured pool, not the process-wide high-water
+mark. Account separately for memory retained by earlier loads with more workers
+or used by concurrent loaders. Custom chunk-capable copiers using
+`device_memory_budget` must implement both `chunk_transient_multiplier(paths)`
+and `fixed_device_overhead(paths)`.
 
 `use_chunk_budget_as_allocation_size: true` allocates each chunk buffer at its
 planner budget instead of its exact byte span. The loader still reads only the

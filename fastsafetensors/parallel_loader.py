@@ -188,10 +188,10 @@ class PipelineParallel:
             )
         self.use_chunk_budget_as_allocation_size = use_chunk_budget_as_allocation_size
         # When set (bytes), bound the load's TOTAL device footprint (resident
-        # tensors + transient buffers) via a static fit plan: whole-file loads
-        # while headroom is ample, per-file chunk budgets declining as the
-        # device fills. The caller picks the number -- it knows what else lives
-        # on the device and, under broadcast loading, must pass the same value
+        # tensors + transient buffers + fixed copier pools) via a static fit
+        # plan: whole-file loads while headroom is ample, per-file chunk budgets
+        # declining as the device fills. The caller knows what else lives on
+        # the device and, under broadcast loading, must pass the same value
         # on every rank (e.g. all-reduce(MIN) of each rank's free memory) so
         # the plan stays identical across ranks. See fastsafetensors._planner.
         self.device_memory_budget = device_memory_budget
@@ -289,6 +289,7 @@ class PipelineParallel:
         per_file_budget: Optional[Dict[str, int]] = None
         if self.device_memory_budget is not None:
             from ._planner import (
+                BudgetInfeasibleError,
                 collect_file_stats,
                 fit_queue_size,
                 has_non_resident,
@@ -305,12 +306,21 @@ class PipelineParallel:
             account_for_yield_clone = self.need_clone and (
                 not self.accumulate_resident or has_non_resident(stats)
             )
-            # How much transient device memory a live chunk costs is the
-            # copier's own business (e.g. the unified copier's mmap+pin
-            # fallback pins the chunk's pages alongside the device buffer,
-            # costing 2x span on a shared physical pool), so ask it.
+            # Transient and fixed device costs both depend on the copier's
+            # reader path (e.g. mmap+pin costs 2x per chunk, while O_DIRECT
+            # keeps a fixed pinned pool), so ask it before fitting and planning.
             copier = self.loader.copier_class
-            multiplier = copier.chunk_transient_multiplier([f for f, _ in metas])
+            paths = [f for f, _ in metas]
+            multiplier = copier.chunk_transient_multiplier(paths)
+            fixed_overhead = copier.fixed_device_overhead(paths)
+            effective_budget = self.device_memory_budget - fixed_overhead
+            if effective_budget <= 0:
+                raise BudgetInfeasibleError(
+                    f"device_memory_budget={self.device_memory_budget} does not "
+                    f"cover {copier.__name__}'s fixed device overhead of "
+                    f"{fixed_overhead} bytes, leaving no budget for loading. "
+                    f"Free device memory or pass a larger explicit budget."
+                )
             # Too small a budget for the requested depth is a reason to load
             # more shallowly, not to fail: the budget comes from free memory at
             # load time while queue_size is static, so nobody can pick the right
@@ -320,7 +330,7 @@ class PipelineParallel:
             fitted = fit_queue_size(
                 self.queue_size,
                 stats,
-                self.device_memory_budget,
+                effective_budget,
                 max_batch_bytes=self.max_batch_bytes,
                 accumulate_resident=self.accumulate_resident,
                 transient_multiplier=multiplier,
@@ -343,16 +353,25 @@ class PipelineParallel:
             # batch_size also sets the group width: those files load together,
             # one per rank, and every rank keeps all of them.
             depth = load_depth(self.queue_size, batch_size)
-            budgets = plan_file_budgets(
-                stats,
-                self.device_memory_budget,
-                depth,
-                max_batch_bytes=self.max_batch_bytes,
-                accumulate_resident=self.accumulate_resident,
-                transient_multiplier=multiplier,
-                group_size=batch_size,
-                account_for_yield_clone=account_for_yield_clone,
-            )
+            try:
+                budgets = plan_file_budgets(
+                    stats,
+                    effective_budget,
+                    depth,
+                    max_batch_bytes=self.max_batch_bytes,
+                    accumulate_resident=self.accumulate_resident,
+                    transient_multiplier=multiplier,
+                    group_size=batch_size,
+                    account_for_yield_clone=account_for_yield_clone,
+                )
+            except BudgetInfeasibleError as e:
+                if not fixed_overhead:
+                    raise
+                raise BudgetInfeasibleError(
+                    f"{e} (the budget passed was {self.device_memory_budget}, "
+                    f"less {fixed_overhead} bytes of fixed {copier.__name__} "
+                    f"device overhead)"
+                ) from e
             per_file_budget = {f: b for (f, _), b in zip(metas, budgets)}
 
         # Expand each file-batch (one file per rank) into aligned chunk-batches.

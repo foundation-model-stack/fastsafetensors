@@ -45,9 +45,11 @@ deepest queue size whose plan still fits. ``ParallelLoader`` clamps its own
 pipeline depth to that, so too small a budget costs throughput, not the load.
 
 The budget itself is the caller's to choose -- only the caller knows what
-else will live on the device. A caller sizing it from free memory should
-keep a reserve for allocator rounding and the copier's fixed pools (5% or
-1 GiB, whichever is larger, is a reasonable starting point), e.g.::
+else will live on the device. ``ParallelLoader`` subtracts the selected
+copier's fixed device overhead before planning. A caller sizing the budget
+from free memory should still keep a reserve for allocator rounding and other
+load-time allocations (5% or 1 GiB, whichever is larger, is a reasonable
+starting point), e.g.::
 
     free, _ = torch.cuda.mem_get_info(dev)
     budget = free - max(free // 20, 1 << 30)
@@ -55,6 +57,12 @@ keep a reserve for allocator rounding and the copier's fixed pools (5% or
 and, under broadcast loading, all-reduce(MIN) that value before passing it:
 per-rank readings diverge, and differing budgets would give ranks different
 plans and deadlock the lockstep broadcast sequence.
+
+The unified O_DIRECT reader's pool is process-persistent and its reported size
+is the configured worker limit, even if a previous load has already populated
+the pool or a small file uses fewer workers. When deriving a budget from free
+memory after that pool was allocated, this deduction is conservative and may
+count some pool bytes twice; keep that in mind when interpreting the budget.
 """
 
 from dataclasses import dataclass
@@ -276,10 +284,9 @@ def plan_file_budgets(
     times over the copier stages each in-flight chunk. Only the copier knows
     (its reader path decides), so callers pass
     ``CopierInterface.chunk_transient_multiplier(paths)``. Fixed overheads
-    that do not scale with chunk size -- bounce-buffer pools, the O_DIRECT
-    reader's thread pool (measured on GB10 unified memory: +~150 MB regardless
-    of chunk size) -- are not modelled here and must be left outside the
-    budget the caller passes.
+    that do not scale with chunk size are deducted from the loader's budget
+    before this function is called, through
+    ``CopierInterface.fixed_device_overhead(paths)``.
 
     ``group_size`` is the number of files loaded concurrently, one per rank
     (``pg.size()`` under broadcast loading, 1 otherwise). Every rank ends up
