@@ -44,8 +44,9 @@ class AutoLoader:
     Usage::
 
         loader = AutoLoader(pg, files, device="cuda:0")
-        for key, tensor in loader.iterate_weights():
-            process(key, tensor)
+        with contextlib.closing(loader.iterate_weights()) as weights:
+            for key, tensor in weights:
+                process(key, tensor)
         loader.close()
     """
 
