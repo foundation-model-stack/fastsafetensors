@@ -137,15 +137,17 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
         if self.real_pg:
             if _needs_uint8_view(dst.dtype):
                 dist.broadcast(
-                    dst.real_tensor.view(torch.uint8), rank, group=self.real_pg
+                    dst.real_tensor.view(torch.uint8),
+                    group=self.real_pg,
+                    group_src=rank,
                 )
             elif _is_fp8(dst.dtype) and _needs_fp8_cast():
                 buf = dst.real_tensor.to(torch.bfloat16)
-                dist.broadcast(buf, rank, group=self.real_pg)
+                dist.broadcast(buf, group=self.real_pg, group_src=rank)
                 dst.real_tensor.copy_(buf.to(dst.real_tensor.dtype))
                 del buf
             else:
-                dist.broadcast(dst.real_tensor, rank, group=self.real_pg)
+                dist.broadcast(dst.real_tensor, group=self.real_pg, group_src=rank)
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
 
@@ -161,19 +163,19 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
                 dist.scatter(
                     dst.real_tensor.view(torch.uint8),
                     scatter_list=sl,
-                    src=src,
                     group=self.real_pg,
+                    group_src=src,
                 )
             elif _is_fp8(dst.dtype) and _needs_fp8_cast():
                 sl = [t.real_tensor.to(torch.bfloat16) for t in scatter_list]
                 buf = dst.real_tensor.to(torch.bfloat16)
-                dist.scatter(buf, scatter_list=sl, src=src, group=self.real_pg)
+                dist.scatter(buf, scatter_list=sl, group=self.real_pg, group_src=src)
                 dst.real_tensor.copy_(buf.to(dst.real_tensor.dtype))
                 del buf, sl
             else:
                 sl = [t.real_tensor for t in scatter_list]
                 dist.scatter(
-                    dst.real_tensor, scatter_list=sl, src=src, group=self.real_pg
+                    dst.real_tensor, scatter_list=sl, group=self.real_pg, group_src=src
                 )
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
@@ -188,16 +190,18 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
             if _needs_uint8_view(t.dtype):
                 dist.send(
                     t.real_tensor.view(torch.uint8),
-                    dst_rank,
                     group=self.real_pg,
+                    group_dst=dst_rank,
                     tag=tag,
                 )
             elif _is_fp8(t.dtype) and _needs_fp8_cast():
                 buf = t.real_tensor.to(torch.bfloat16)
-                dist.send(buf, dst_rank, group=self.real_pg, tag=tag)
+                dist.send(buf, group=self.real_pg, tag=tag, group_dst=dst_rank)
                 del buf
             else:
-                dist.send(t.real_tensor, dst_rank, group=self.real_pg, tag=tag)
+                dist.send(
+                    t.real_tensor, group=self.real_pg, tag=tag, group_dst=dst_rank
+                )
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
 
@@ -211,17 +215,19 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
             if _needs_uint8_view(t.dtype):
                 dist.recv(
                     t.real_tensor.view(torch.uint8),
-                    src_rank,
                     group=self.real_pg,
+                    group_src=src_rank,
                     tag=tag,
                 )
             elif _is_fp8(t.dtype) and _needs_fp8_cast():
                 buf = t.real_tensor.to(torch.bfloat16)
-                dist.recv(buf, src_rank, group=self.real_pg, tag=tag)
+                dist.recv(buf, group=self.real_pg, tag=tag, group_src=src_rank)
                 t.real_tensor.copy_(buf.to(t.real_tensor.dtype))
                 del buf
             else:
-                dist.recv(t.real_tensor, src_rank, group=self.real_pg, tag=tag)
+                dist.recv(
+                    t.real_tensor, group=self.real_pg, tag=tag, group_src=src_rank
+                )
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
 

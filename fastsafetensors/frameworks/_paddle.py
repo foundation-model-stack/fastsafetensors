@@ -103,9 +103,17 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
     def rank(self) -> int:
         return self.real_pg.process_group.rank() if self.real_pg else 0
 
+    def _to_global(self, rank: int) -> int:
+        # Callers pass ranks within the group; pdist takes global ranks.
+        assert self.real_pg is not None
+        ranks = self.real_pg.ranks
+        if not 0 <= rank < len(ranks):
+            raise ValueError(f"rank {rank} is not in the process group")
+        return ranks[rank]
+
     def broadcast(self, dst: PaddleTensor, rank: int) -> None:
         if self.real_pg:
-            pdist.broadcast(dst.real_tensor, rank, group=self.real_pg)
+            pdist.broadcast(dst.real_tensor, self._to_global(rank), group=self.real_pg)
             # Synchronize to ensure the NCCL broadcast (which runs on
             # the NCCL internal stream) is fully visible on the default
             # compute stream before callers read the tensor data.
@@ -123,7 +131,7 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
             pdist.scatter(
                 dst.real_tensor,
                 tensor_list=sl,
-                src=src,
+                src=self._to_global(src),
                 group=self.real_pg,
             )
             # Synchronize to ensure the NCCL scatter (which runs on
@@ -139,7 +147,7 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
         tag: int,
     ) -> None:
         if self.real_pg:
-            pdist.send(t.real_tensor, dst_rank, group=self.real_pg)
+            pdist.send(t.real_tensor, self._to_global(dst_rank), group=self.real_pg)
             # Synchronize to ensure the NCCL recv (which runs on
             # the NCCL internal stream) is fully visible on the default
             # compute stream before callers read the tensor data.
@@ -153,7 +161,7 @@ class PaddleProcessGroup(ProcessGroupBase[PaddleTensor]):
         tag: int,
     ) -> None:
         if self.real_pg:
-            pdist.recv(t.real_tensor, src_rank, group=self.real_pg)
+            pdist.recv(t.real_tensor, self._to_global(src_rank), group=self.real_pg)
             # Synchronize to ensure the NCCL recv (which runs on
             # the NCCL internal stream) is fully visible on the default
             # compute stream before callers read the tensor data.

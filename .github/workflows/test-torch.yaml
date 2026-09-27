@@ -57,6 +57,13 @@ jobs:
           COVERAGE_FILE=.coverage_3 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 test_multi.py --cov=${LIBDIR} -s test_multi.py > /tmp/pytest-log/3.log 2>&1 &
           COVERAGE_FILE=.coverage_4 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=2 test_multi.py --cov=${LIBDIR} -s test_multi.py > /tmp/pytest-log/4.log 2>&1 &
           COVERAGE_FILE=.coverage_5 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=3 test_multi.py --cov=${LIBDIR} -s test_multi.py > /tmp/pytest-log/5.log 2>&1
+          pids=""
+          for r in 0 1 2 3; do
+            COVERAGE_FILE=.coverage_sub$r torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1235 --node_rank=$r test_subgroup.py --cov=${LIBDIR} -s test_subgroup.py > /tmp/pytest-log/subgroup$r.log 2>&1 &
+            pids="$pids $!"
+          done
+          for p in $pids; do wait $p; done
+          wait
           coverage combine .coverage_*
           coverage html
           mv htmlcov /tmp/pytest-log
