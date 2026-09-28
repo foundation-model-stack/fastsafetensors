@@ -131,16 +131,21 @@ tensor name. Passing it with `accumulate_resident=False` raises `ValueError`.
 ### 1. Minimal — All Defaults (no config file needed)
 
 ```python
+from contextlib import closing
+
 from fastsafetensors import SingleGroup, AutoLoader
 
 pg = SingleGroup()
 loader = AutoLoader(pg, files, device="cuda:0")
-for key, tensor in loader.iterate_weights():
-    process(key, tensor)
+with closing(loader.iterate_weights()) as weights:
+    for key, tensor in weights:
+        process(key, tensor)
 loader.close()
 ```
 
 No config file. Uses `loader="base"`, `gds`, serial mode.
+
+`closing()` frees the load buffers even if the loop exits early; `loader.close()` does not. See [Basic API usage](./overview.md#basic-api-usage).
 
 ### 2. Base Loader with GDS
 

@@ -134,9 +134,16 @@ class BaseSafeTensorsFileLoader:
         self._chunk_plan = {}
 
     def close(self):
+        """Release the file registrations and copier. Safe to call more than once.
+
+        The loader cannot be reused afterwards. Device buffers belong to the
+        ``FilesBufferOnDevice`` returned by ``copy_files_to_device()``; close
+        that to release them.
+        """
         self.reset()
         self._metadata_cache.clear()
-        del self.copier_constructor
+        if hasattr(self, "copier_constructor"):
+            del self.copier_constructor
 
     def get_keys(self) -> List[str]:
         if self._tensor_filter is None:

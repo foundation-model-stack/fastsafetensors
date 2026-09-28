@@ -650,6 +650,13 @@ class PipelineParallel:
             ):
                 yield from self._consume_single_batch()
                 processed_batches += 1
+        except GeneratorExit:
+            # The caller closed the iterator before it was exhausted.
+            self._log_message(
+                f"iterate_weights closed early: {processed_batches} of "
+                f"{len(self.weight_files_batches)} batches fully consumed"
+            )
+            raise
         except Exception as e:
             self._log_message(f"Consumer error: {e}", is_error=True)
             self.stop_event.set()
@@ -661,8 +668,6 @@ class PipelineParallel:
                 f"Completed ParallelLoader iterate_weights, "
                 f"processed {processed_batches} batches, total time: {elapsed_time:.2f} seconds"
             )
-        if processed_batches < len(self.weight_files_batches):
-            self._log_error(f"Unexpected Error: not all tensors has been exported")
 
     def iterate_weights(self) -> Generator[Tuple[str, Any], None, None]:
         """Main weight iterator: consumer logic.
@@ -670,6 +675,12 @@ class PipelineParallel:
         This method implements the consumer side of the producer-consumer pattern.
         It retrieves batches from the queue, extracts tensors, and yields them
         one by one. It also handles cleanup and error reporting.
+
+        Yielded tensors are independent of the load buffers and stay valid.
+        Each batch's buffers are freed once the iterator moves past its last
+        tensor, and the rest when the iterator is exhausted or closed. The
+        loader's ``close()`` does not free them: if the loop can stop early,
+        close the iterator (e.g. ``contextlib.closing``) before the loader.
 
         Yields:
             Tuple[str, Any]: Key-value pairs of tensor names and framework
@@ -700,6 +711,11 @@ class PipelineParallel:
             self._drain_queue()
 
     def close(self):
+        """Close the underlying loader. Safe to call more than once.
+
+        Does not free buffers held by a live ``iterate_weights()`` iterator.
+        Exhaust or close the iterator first.
+        """
         self.loader.close()
 
 

@@ -905,6 +905,43 @@ def test_tensor_filter_iterate_weights_hides_skipped(
     assert framework.get_mem_used() == 0
 
 
+def test_iterate_weights_early_close_releases_buffers(
+    fstcpp_log, input_files, framework, capsys, monkeypatch
+):
+    monkeypatch.setenv("FASTSAFETENSORS_DEBUG", "true")
+    device, _ = get_and_check_device(framework)
+    loader = ParallelLoader(
+        pg=SingleGroup(),
+        hf_weights_files=input_files,
+        device=device.as_str(),
+        nogds=True,
+        framework=framework.get_name(),
+    )
+    with closing(loader.iterate_weights()) as weights:
+        _, tensor = next(weights)
+        expected = tensor.clone()
+        assert framework.get_mem_used() > 0
+    assert framework.get_mem_used() == 0
+    assert "iterate_weights closed early: 0 of" in capsys.readouterr().out
+    # The yielded tensor does not depend on the freed load buffers.
+    assert bool((tensor == expected).all())
+
+    loader.close()
+    loader.close()
+
+
+def test_loader_close_is_idempotent(fstcpp_log, framework):
+    device, _ = get_and_check_device(framework)
+    loader = SafeTensorsFileLoader(
+        pg=SingleGroup(),
+        device=device.as_str(),
+        framework=framework.get_name(),
+        nogds=True,
+    )
+    loader.close()
+    loader.close()
+
+
 def test_fastsafe_open(fstcpp_log, input_files, framework) -> None:
     device, _ = get_and_check_device(framework)
 

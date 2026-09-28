@@ -26,15 +26,20 @@ The technology helps minimize copy overheads from NVMe SSDs to GPU memory by byp
 
 `SafeTensorsFileLoader` is a low-level entrypoint. To use it, pass either `SingleGroup()` for simple inference or `ProcessGroup()` (from `torch.distributed`) for tensor-parallel inference. The loader supports both CPU and CUDA devices, with optional GPU Direct Storage (GDS) support. You can specify the device and GDS settings using the `device` and `nogds` arguments, respectively. If GDS turns out to be unavailable at runtime (e.g., file handle registration fails), the loader logs a warning and falls back to the bounce-buffer (`nogds`) path instead of failing; you can also set `nogds=True` explicitly to skip GDS initialization. For more information on enabling GDS, please refer to the NVIDIA documentation.
 
-After creating a `SafeTensorsFileLoader` instance, first map target files and a rank using the `.add_filenames()` method. Then, call `.copy_file_to_device()` to trigger the actual file copies on aggregated GPU memory fragments and directly instantiate a group of tensors. Once the files are loaded, you can retrieve a tensor using the `.get_tensor()` method. Additionally, you can obtain sharded tensors by `.get_sharded()`, which internally runs collective operations in `torch.distributed`.
+After creating a `SafeTensorsFileLoader` instance, first map target files and a rank using the `.add_filenames()` method. Then, call `.copy_files_to_device()` to trigger the actual file copies on aggregated GPU memory fragments and directly instantiate a group of tensors. Once the files are loaded, you can retrieve a tensor using the `.get_tensor()` method. Additionally, you can obtain sharded tensors by `.get_sharded()`, which internally runs collective operations in `torch.distributed`.
 
-Important: To release the GPU memory allocated for tensors, you must explicitly call the `.close()` method. This is because fastsafetensors allows multiple tensors to share a limited number of GPU memory fragments. As a result, it is the user's responsibility to ensure that all tensors are properly released before calling `.close()`, which will then safely release the underlying GPU memory.
+Important: the loader's own `.close()` does not free the device memory that holds loaded tensors (the *load buffers*). Close the object that owns them:
 
-`fastsafe_open` is an easier entrypoint. You can force GDS off and run in fallback mode if `nogds=True`. However, users must be aware of the above tricky memory management model, which should be fixed in future releases.
+- `SafeTensorsFileLoader`: `.copy_files_to_device()` returns a `FilesBufferOnDevice`, whose `.close()` frees the load buffers. Tensors from it may borrow those buffers, so clone any tensor you need to keep after closing it, and close it before the loader. The loader's `.close()` releases only host-side state (file registrations, the copier and its host bounce buffers), and the loader cannot be used afterwards.
+- `ParallelLoader` and `AutoLoader`: the `iterate_weights()` iterator owns the load buffers. It frees each batch's buffers once it moves past that batch's last tensor, and the rest when it is exhausted or closed. If the loop can stop early (`break`, `return`, an exception), close the iterator, e.g. `with contextlib.closing(loader.iterate_weights()) as weights:`, before calling `loader.close()`. Yielded tensors are independent copies and stay valid.
+
+To check for leaks, call `get_framework_op("pytorch").get_mem_used()` (from `fastsafetensors.frameworks`). It returns the bytes of load buffers not yet freed, summed over every loader in the process, so it reads 0 once all are closed. It is not total GPU memory: yielded tensors, pinned host buffers and PyTorch's allocator cache are not counted.
+
+`fastsafe_open` is an easier entrypoint. You can force GDS off and run in fallback mode if `nogds=True`. Leaving the `with` block closes its buffer, so, as with `FilesBufferOnDevice` above, clone any tensor you use outside the block. (This memory model may be simplified in future releases.)
 
 ```python
 with fastsafe_open(filenames=[filename], nogds=True, device="cpu", debug_log=True) as f:
-    for key in f.get_keys():
+    for key in f.keys():
         t = f.get_tensor(key).clone().detach() # clone if t is used outside
 ```
 
