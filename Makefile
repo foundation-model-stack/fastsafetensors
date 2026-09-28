@@ -37,6 +37,11 @@ unittest-parallel:
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_6 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=3 tests/unit/test_multi.py --cov=$(FST_DIR) -s tests/unit/test_multi.py > /tmp/6.log 2>&1 && \
 	wait && \
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_7 torchrun --nnodes=1 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 tests/unit/test_multi.py --cov=$(FST_DIR) -s tests/unit/test_multi.py > /tmp/7.log 2>&1 & \
+	wait && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_21 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1235 --node_rank=0 tests/unit/test_subgroup.py --cov=$(FST_DIR) -s tests/unit/test_subgroup.py > /tmp/21.log 2>&1 & \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_22 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1235 --node_rank=1 tests/unit/test_subgroup.py --cov=$(FST_DIR) -s tests/unit/test_subgroup.py > /tmp/22.log 2>&1 & \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_23 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1235 --node_rank=2 tests/unit/test_subgroup.py --cov=$(FST_DIR) -s tests/unit/test_subgroup.py > /tmp/23.log 2>&1 & \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_24 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1235 --node_rank=3 tests/unit/test_subgroup.py --cov=$(FST_DIR) -s tests/unit/test_subgroup.py > /tmp/24.log 2>&1 && \
 	wait
 
 unittest-paddle:
