@@ -29,7 +29,14 @@ class gds_file_handle:
     def __init__(self, filename: str, o_direct: bool, use_cuda: bool) -> None: ...
 
 class gds_file_reader:
-    def __init__(self, max_threads: int, use_cuda: bool, device_id: int) -> None: ...
+    def __init__(
+        self,
+        max_threads: int,
+        use_cuda: bool,
+        device_id: int,
+        block_size: int = 16 * 1024 * 1024,
+        numa_node: int = -1,
+    ) -> None: ...
     def submit_read(
         self,
         fh: gds_file_handle,

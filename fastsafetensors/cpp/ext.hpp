@@ -199,21 +199,16 @@ public:
 
 class gds_file_reader {
 private:
-    int _next_id;
-    std::thread ** _threads; // TOFIX
-    typedef struct thread_states {
-        std::mutex _result_lock;
-        std::map<int, ssize_t> _results;
-        const int _max_threads;
-    } thread_states_t;
-    thread_states_t _s;
-    ext_funcs_t *_fns;
-    int _device_id;
+    struct state;
+    std::unique_ptr<state> _state;
 public:
-    gds_file_reader(const int max_threads, bool use_cuda, int device_id): _next_id(1), _threads(nullptr), _s(thread_states_t{._max_threads = max_threads}), _fns(use_cuda?&cuda_fns:&cpu_fns), _device_id(device_id) {}
-    static void _thread(const int thread_id, ext_funcs_t *fns, const int device_id, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, thread_states_t *s);
-    const int submit_read(const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length);
-    const ssize_t wait_read(const int id);
+    gds_file_reader(int max_threads, bool use_cuda, int device_id,
+                    uint64_t block_size = 16 * 1024 * 1024, int numa_node = -1);
+    ~gds_file_reader();
+    const int submit_read(const gds_file_handle &fh, const gds_device_buffer &dst,
+                         uint64_t offset, uint64_t length, uint64_t ptr_off,
+                         uint64_t file_length);
+    const ssize_t wait_read(int id);
 };
 
 // FGDS (libfgds.so) support — Linux only. Symbols are resolved at runtime in
