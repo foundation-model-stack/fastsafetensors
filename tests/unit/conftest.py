@@ -25,8 +25,8 @@ os.makedirs(TF_DIR, 0o777, True)
 os.makedirs(TMP_DIR, 0o777, True)
 os.makedirs(GENERATED_DIR, 0o777, True)
 
-load_library_functions(resolve_runtime_lib_name())
 FRAMEWORK = get_framework_op(os.getenv("TEST_FASTSAFETENSORS_FRAMEWORK", "please set"))
+load_library_functions(resolve_runtime_lib_name(FRAMEWORK))
 
 # Print platform information at test startup
 platform_info = get_platform_info()
