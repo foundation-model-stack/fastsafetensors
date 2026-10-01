@@ -26,6 +26,22 @@ The technology helps minimize copy overheads from NVMe SSDs to GPU memory by byp
 
 `SafeTensorsFileLoader` is a low-level entrypoint. To use it, pass either `SingleGroup()` for simple inference or `ProcessGroup()` (from `torch.distributed`) for tensor-parallel inference. The loader supports both CPU and CUDA devices, with optional GPU Direct Storage (GDS) support. You can specify the device and GDS settings using the `device` and `nogds` arguments, respectively. If GDS turns out to be unavailable at runtime (e.g., file handle registration fails), the loader logs a warning and falls back to the bounce-buffer (`nogds`) path instead of failing; you can also set `nogds=True` explicitly to skip GDS initialization. For more information on enabling GDS, please refer to the NVIDIA documentation.
 
+The nogds reader keeps a fixed set of workers for the loader's lifetime. Each
+worker alternates two bounce buffers and GPU streams to overlap `pread` with
+host-to-device copies. `bbuf_size_kb` is the total host buffer budget, rounded
+to whole KiB per slot and divided across `max_threads` workers and their two
+buffers. For example, 8 workers and `bbuf_size_kb=256*1024` provide sixteen
+16 MiB slots. Closing the loader drains outstanding copies and releases its
+workers, streams and host buffers.
+
+On Linux with libnuma and known GPU NUMA topology, `set_numa=True` places
+nogds workers on the GPU's CPU node and prefers that node for their memory.
+Pinned host buffers are allocated on a separate thread with the same policy,
+leaving the caller's CPU affinity and memory policy unchanged. Other memory
+nodes remain available if the preferred node is full. Set `set_numa=False`
+to retain inherited placement; CPU readers and unavailable NUMA support also
+retain inherited placement.
+
 After creating a `SafeTensorsFileLoader` instance, first map target files and a rank using the `.add_filenames()` method. Then, call `.copy_files_to_device()` to trigger the actual file copies on aggregated GPU memory fragments and directly instantiate a group of tensors. Once the files are loaded, you can retrieve a tensor using the `.get_tensor()` method. Additionally, you can obtain sharded tensors by `.get_sharded()`, which internally runs collective operations in `torch.distributed`.
 
 Important: the loader's own `.close()` does not free the device memory that holds loaded tensors (the *load buffers*). Close the object that owns them:

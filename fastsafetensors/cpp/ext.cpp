@@ -6,6 +6,7 @@
 
 #include <fcntl.h>
 #include <cstring>
+#include <cerrno>
 #ifdef _MSC_VER
 #include <io.h>
 #include <malloc.h>
@@ -109,6 +110,9 @@ static inline int munmap(void* addr, size_t /*length*/) {
 #include <cstdlib>
 #include <algorithm>
 #include <atomic>
+#include <deque>
+#include <limits>
+#include <sys/stat.h>
 #include <thread>
 #include <vector>
 #include <mutex>
@@ -153,9 +157,14 @@ static cudaError_t cpu_cudaMemcpyAsync(void * dst, const void * src, size_t size
     std::memcpy(dst, src, size);
     return cudaSuccess;
 }
+static cudaError_t cpu_cudaStreamCreateWithFlags(cudaStream_t *stream, unsigned int) {
+    *stream = nullptr; return cudaSuccess;
+}
+static cudaError_t cpu_cudaStreamSynchronize(cudaStream_t) { return cudaSuccess; }
+static cudaError_t cpu_cudaStreamDestroy(cudaStream_t) { return cudaSuccess; }
 static cudaError_t cpu_cudaDeviceSynchronize() { return cudaSuccess; }
 static cudaError_t cpu_cudaHostAlloc(void ** p, size_t length, unsigned int) {
-    if (posix_memalign(p, ALIGN, length) < 0) {
+    if (posix_memalign(p, ALIGN, length) != 0) {
         return cudaErrorMemoryAllocation;
     }
     return cudaSuccess;
@@ -175,6 +184,7 @@ static cudaError_t cpu_cudaDeviceGetPCIBusId(char * in, int s, int) {
 }
 static cudaError_t cpu_cudaSetDevice(int) { return cudaSuccess; }
 static int cpu_numa_run_on_node(int) {return 0; }
+static void (*numa_set_preferred)(int) = nullptr;
 
 ext_funcs_t cpu_fns = ext_funcs_t {
     .cuFileDriverOpen = cpu_cuFileDriverOpen,
@@ -188,6 +198,9 @@ ext_funcs_t cpu_fns = ext_funcs_t {
     .cuFileRead = nullptr,
     .cudaMemcpy = cpu_cudaMemcpy,
     .cudaMemcpyAsync = cpu_cudaMemcpyAsync,
+    .cudaStreamCreateWithFlags = cpu_cudaStreamCreateWithFlags,
+    .cudaStreamSynchronize = cpu_cudaStreamSynchronize,
+    .cudaStreamDestroy = cpu_cudaStreamDestroy,
     .cudaDeviceSynchronize = cpu_cudaDeviceSynchronize,
     .cudaHostAlloc = cpu_cudaHostAlloc,
     .cudaFreeHost = cpu_cudaFreeHost,
@@ -253,6 +266,9 @@ static bool load_gpu_lib(const std::string& lib_name, bool is_hip, bool init_log
 
     mydlsym(&cuda_fns.cudaMemcpy,             handle, is_hip ? HIP_SYM_MEMCPY                : CUDA_SYM_MEMCPY);
     mydlsym(&cuda_fns.cudaMemcpyAsync,        handle, is_hip ? HIP_SYM_MEMCPY_ASYNC          : CUDA_SYM_MEMCPY_ASYNC);
+    mydlsym(&cuda_fns.cudaStreamCreateWithFlags, handle, is_hip ? "hipStreamCreateWithFlags" : "cudaStreamCreateWithFlags");
+    mydlsym(&cuda_fns.cudaStreamSynchronize, handle, is_hip ? "hipStreamSynchronize" : "cudaStreamSynchronize");
+    mydlsym(&cuda_fns.cudaStreamDestroy, handle, is_hip ? "hipStreamDestroy" : "cudaStreamDestroy");
     mydlsym(&cuda_fns.cudaDeviceSynchronize,  handle, is_hip ? HIP_SYM_DEVICE_SYNCHRONIZE    : CUDA_SYM_DEVICE_SYNCHRONIZE);
     mydlsym(&cuda_fns.cudaHostAlloc,          handle, is_hip ? HIP_SYM_HOST_ALLOC            : CUDA_SYM_HOST_ALLOC);
     mydlsym(&cuda_fns.cudaFreeHost,           handle, is_hip ? HIP_SYM_FREE_HOST             : CUDA_SYM_FREE_HOST);
@@ -306,6 +322,7 @@ static void load_library_functions(const std::string& cudart_override = "") {
         void* handle_numa = dlopen(numaLib, mode);
         if (handle_numa) {
             mydlsym(&cpu_fns.numa_run_on_node, handle_numa, "numa_run_on_node");
+            mydlsym(&numa_set_preferred, handle_numa, "numa_set_preferred");
             if (cpu_fns.numa_run_on_node) {
                 cuda_fns.numa_run_on_node = cpu_fns.numa_run_on_node;
                 if (init_log) {
@@ -770,165 +787,230 @@ const int gds_device_buffer::memmove(uint64_t _dst_off, uint64_t _src_off, const
 }
 
 
-void nogds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const int device_id, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off, thread_states_t *s) {
-    void * src = nullptr;
-    cudaError_t err;
+// Persistent workers alternate bounce buffers, draining DMA before slot reuse.
+struct nogds_file_reader::state {
+    struct request {
+        int fd;
+        uintptr_t destination;
+        int64_t offset, length, next = 0;
+        uint64_t remaining;
+        bool failed = false;
+    };
+    ext_funcs_t *fns;
+    int device, numa_node;
+    bool use_mmap, streams;
+    static constexpr size_t buffers_per_thread = 2;
+    uint64_t block_size, allocation_size = 0;
+    void *allocation = nullptr;
+    std::vector<cudaStream_t> copy_streams;
+    std::vector<std::thread> workers;
+    std::mutex mutex;
+#ifdef _MSC_VER
+    std::mutex file_mutex;
+#endif
+    std::condition_variable ready, done;
+    std::deque<std::shared_ptr<request>> queue;
+    std::map<int, std::shared_ptr<request>> requests;
+    bool stopping = false;
+    int next_id = 1;
 
-    // Set the CUDA device for this thread. New std::threads do not inherit the
-    // parent thread's CUDA device and default to device 0, which would create
-    // an unwanted CUDA context on device 0.
-    if (device_id >= 0) {
-        fns->cudaSetDevice(device_id);
+    static void check(cudaError_t error) {
+        if (error != cudaSuccess)
+            throw std::runtime_error("nogds GPU operation failed: " + std::to_string(error));
     }
-    int64_t count;
-    bool failed = false;
-    void * buffer = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(s->_read_buffer) + s->_bbuf_size_kb * 1024 * (thread_id % s->_max_threads));
-
-    if (s->_use_mmap) {
-        std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-        src = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, offset);
-        if (src == MAP_FAILED) {
-            std::printf("nogds_file_reader._thread: mmap(fd=%d, offset=%" PRIu64 ", length=%" PRIu64 ") failed\n", fd, offset, length);
-            failed = true;
-            goto out;
-        }
-        if (debug_log) {
-            std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-            std::printf("[DEBUG] nogds_file_reader._thread: mmap, fd=%d, offset=%" PRIu64 ", length=%" PRIu64 ", elapsed=%" PRId64 " us\n",
-                fd, offset, length, std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
-        }
+    void bind_numa() {
+        if (numa_node >= 0 && fns->numa_run_on_node(numa_node) == 0)
+            numa_set_preferred(numa_node);
     }
-    count = 0;
-    while (count < length) {
-        int64_t l = length - count;
-        int64_t c;
-        if (l > (int64_t)(s->_bbuf_size_kb * 1024)) {
-            l = (int64_t)(s->_bbuf_size_kb * 1024);
-        }
-        std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-        if (s->_use_mmap) {
-            std::memcpy(buffer, (void *)((uintptr_t)src + count), l);
-            c = l;
+    void read(const request &req, int64_t position, int64_t length,
+              char *bounce, cudaStream_t stream) {
+        const int64_t offset = req.offset + position;
+        if (use_mmap) {
+#ifdef _MSC_VER
+            constexpr int granularity = 65536;
+#else
+            constexpr int granularity = ALIGN;
+#endif
+            const int64_t map_offset = offset - offset % granularity;
+            const size_t map_length = length + offset - map_offset;
+            void *source = mmap(nullptr, map_length, PROT_READ, MAP_PRIVATE, req.fd, map_offset);
+            if (source == MAP_FAILED) throw std::runtime_error("nogds mmap failed");
+            std::memcpy(bounce, static_cast<char *>(source) + offset - map_offset, length);
+            munmap(source, map_length);
         } else {
-            c = pread(fd, buffer, l, offset + count);
-            if (c != l) {
-                std::printf("nogds_file_reader._thread failed: pread(fd=%d, buffer=%p, offset=%" PRIu64 ", count=%" PRIi64 ", l=%" PRIi64 "), c=%" PRIi64 "\n", fd, buffer, offset, count, l, c);
+            int64_t got;
+            do {
+#ifdef _MSC_VER
+                std::lock_guard<std::mutex> file_lock(file_mutex);
+#endif
+                got = pread(req.fd, bounce, length, offset);
+            } while (got < 0 && errno == EINTR);
+            if (got != length) throw std::runtime_error("nogds read failed or truncated input");
+        }
+        void *destination = reinterpret_cast<void *>(req.destination + position);
+        if (streams) {
+            check(fns->cudaMemcpyAsync(destination, bounce, length, cudaMemcpyHostToDevice, stream));
+        } else {
+            check(fns->cudaMemcpy(destination, bounce, length, cudaMemcpyHostToDevice));
+            check(fns->cudaDeviceSynchronize());
+        }
+    }
+    void complete(const std::shared_ptr<request> &req, bool failed) {
+        std::lock_guard<std::mutex> lock(mutex);
+        req->failed |= failed;
+        if (--req->remaining == 0) done.notify_all();
+    }
+    void worker(size_t index) {
+        bind_numa();
+        const cudaError_t device_error = fns->cudaSetDevice(device);
+        std::vector<std::shared_ptr<request>> pending(buffers_per_thread);
+        const size_t first_slot = index * buffers_per_thread;
+        size_t slot = 0;
+        auto drain = [&](size_t i) {
+            if (!pending[i]) return;
+            bool failed = fns->cudaStreamSynchronize(copy_streams[first_slot + i]) != cudaSuccess;
+            complete(pending[i], failed);
+            pending[i].reset();
+        };
+        for (;;) {
+            std::shared_ptr<request> req;
+            int64_t position, length;
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                if (queue.empty()) {
+                    // Finish pending DMA before sleeping, so wait_read can finish.
+                    lock.unlock();
+                    for (size_t i = 0; i < buffers_per_thread; ++i) drain(i);
+                    lock.lock();
+                }
+                ready.wait(lock, [&] { return stopping || !queue.empty(); });
+                if (queue.empty()) break;
+                req = queue.front();
+                position = req->next;
+                length = std::min<int64_t>(block_size, req->length - position);
+                req->next += length;
+                if (req->next == req->length) queue.pop_front();
+            }
+            drain(slot);
+            bool failed = false;
+            try {
+                check(device_error);
+                const size_t i = first_slot + slot;
+                read(*req, position, length, static_cast<char *>(allocation) + block_size * i, copy_streams[i]);
+            } catch (const std::exception &error) {
+                // Drain any queued DMA before either source or destination reuse.
+                if (streams) fns->cudaStreamSynchronize(copy_streams[first_slot + slot]);
+                else fns->cudaDeviceSynchronize();
+                std::fprintf(stderr, "%s\n", error.what());
                 failed = true;
-                goto out;
             }
-        }
-        std::chrono::steady_clock::time_point memcpy_begin = std::chrono::steady_clock::now();
-        err = fns->cudaMemcpy(dst._get_raw_pointer(ptr_off + count, c), buffer, c, cudaMemcpyHostToDevice);
-        if (err != cudaSuccess) {
-            std::printf("nogds_file_reader._thread: cudaMemcpy(%p, %p, %" PRIi64 ") failed, err=%d\n", dst._get_raw_pointer(ptr_off + count, c), buffer, count, err);
-            failed = true;
-            goto out;
-        } else if (c <= 64 * 1024) {
-            fns->cudaDeviceSynchronize();
-        }
-        count += c;
-        if (debug_log) {
-            std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-            std::printf("[DEBUG] nogds_file_reader._thread: read (mmap=%d), fd=%d, offset=%" PRIu64 ", count=%" PRIi64 ", c=%" PRIi64 ", copy=%" PRId64 " us, cuda_copy=%" PRId64 " us\n",
-                s->_use_mmap, fd, offset, count, c, std::chrono::duration_cast<std::chrono::microseconds>(memcpy_begin - begin).count(), std::chrono::duration_cast<std::chrono::microseconds>(end - memcpy_begin).count());
+            if (streams && !failed) pending[slot] = req;
+            else complete(req, failed);
+            slot = (slot + 1) % buffers_per_thread;
         }
     }
-out:
+    ~state() {
+        { std::lock_guard<std::mutex> lock(mutex); stopping = true; }
+        ready.notify_all();
+        for (auto &worker : workers) if (worker.joinable()) worker.join();
+        fns->cudaSetDevice(device);
+        if (streams) for (auto stream : copy_streams) fns->cudaStreamDestroy(stream);
+        if (allocation) {
+            fns->cudaFreeHost(allocation);
+            mc.bounce_buffer_bytes -= allocation_size;
+        }
+    }
+};
+
+nogds_file_reader::nogds_file_reader(bool use_mmap, uint64_t bbuf_size_kb,
+        uint64_t max_threads, bool use_cuda, int device_id, int numa_node)
+        : _state(new state) {
+    state &s = *_state;
+    s.fns = use_cuda ? &cuda_fns : &cpu_fns;
+    s.device = device_id;
+    s.numa_node = use_cuda && numa_set_preferred && s.fns->numa_run_on_node ? numa_node : -1;
+    s.streams = s.fns->cudaMemcpyAsync && s.fns->cudaStreamCreateWithFlags
+        && s.fns->cudaStreamSynchronize && s.fns->cudaStreamDestroy;
+    if (bbuf_size_kb == 0 || max_threads == 0)
+        throw std::invalid_argument("bounce buffer size and thread count must be positive");
+    if (bbuf_size_kb > (1ULL << 30) || max_threads > 1024)
+        throw std::invalid_argument("nogds buffer size or thread count is too large");
+    const uint64_t slots = max_threads * state::buffers_per_thread;
+    s.block_size = ((bbuf_size_kb + slots - 1) / slots) * 1024;
+    s.use_mmap = use_mmap;
+    state::check(s.fns->cudaSetDevice(device_id));
+    s.allocation_size = s.block_size * slots;
+    // Allocate on a temporary GPU-local thread without changing the caller's
+    // CPU affinity or memory policy. Prefer the node, allowing OOM fallback.
+    cudaError_t allocation_error = cudaSuccess;
+    auto allocate = [&] {
+        allocation_error = s.fns->cudaSetDevice(device_id);
+        if (allocation_error == cudaSuccess)
+            allocation_error = s.fns->cudaHostAlloc(&s.allocation, s.allocation_size, 0);
+    };
+    if (s.numa_node >= 0) {
+        std::thread allocator([&] { s.bind_numa(); allocate(); });
+        allocator.join();
+    } else {
+        allocate();
+    }
+    state::check(allocation_error);
+    mc.bounce_buffer_bytes += s.allocation_size;
+    for (uint64_t i = 0; i < slots; ++i) {
+        cudaStream_t stream = nullptr;
+        if (s.streams) state::check(s.fns->cudaStreamCreateWithFlags(&stream, 1));
+        s.copy_streams.push_back(stream);
+    }
+    for (uint64_t i = 0; i < max_threads; ++i)
+        s.workers.emplace_back([&s, i] { s.worker(i); });
+}
+
+const int nogds_file_reader::submit_read(int fd, const gds_device_buffer &dst,
+        int64_t offset, int64_t length, uint64_t ptr_off) {
+    if (offset < 0 || length < 0 || offset > std::numeric_limits<int64_t>::max() - length)
+        throw std::invalid_argument("invalid read offset or length");
+    if (ptr_off > dst.get_length() || static_cast<uint64_t>(length) > dst.get_length() - ptr_off)
+        throw std::out_of_range("destination out of bounds");
+    state &s = *_state;
+    if (s.use_mmap) {
+#ifdef _MSC_VER
+        struct _stat64 info{};
+        if (_fstat64(fd, &info) || offset + length > info.st_size)
+#else
+        struct stat info{};
+        if (fstat(fd, &info) || offset + length > info.st_size)
+#endif
+            throw std::runtime_error("nogds mmap input is truncated");
+    }
+    state::check(s.fns->cudaSetDevice(s.device));
+    // Fence after framework allocation: cached storage can have a pending clone.
+    state::check(s.fns->cudaDeviceSynchronize());
+    auto req = std::make_shared<state::request>();
+    req->fd = fd; req->destination = dst.get_base_address() + ptr_off;
+    req->offset = offset; req->length = length;
+    req->remaining = length ? (length - 1) / s.block_size + 1 : 0;
+    int id;
     {
-        std::unique_lock lk(s->_result_mutex);
-        if (failed) {
-            s->_results[thread_id] = nullptr;
-        } else {
-            s->_results[thread_id] = dst._get_raw_pointer(ptr_off, length);
-        }
-        s->_result_cond.notify_one();
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (s.next_id == std::numeric_limits<int>::max()) throw std::overflow_error("request id overflow");
+        id = s.next_id++;
+        s.requests[id] = req;
+        if (length) s.queue.push_back(req);
     }
-    if (s->_use_mmap && src != nullptr) {
-        munmap(src, length);
-    }
+    s.ready.notify_all();
+    return id;
 }
 
-const int nogds_file_reader::submit_read(const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off)
-{
-    const int thread_id = this->_next_thread_id++;
-    if (this->_threads == nullptr) {
-        this->_threads = new std::thread*[this->_s._max_threads];
-        for (uint64_t i = 0; i < this->_s._max_threads; ++i) {
-            this->_threads[i] = nullptr;
-        }
-    }
-    if (this->_s._read_buffer == nullptr) {
-        cudaError_t err;
-        std::chrono::steady_clock::time_point alloc_begin = std::chrono::steady_clock::now();
-        auto buf_len = this->_s._bbuf_size_kb * 1024 * this->_s._max_threads;
-        err = _fns->cudaHostAlloc(&this->_s._read_buffer, buf_len, 0);
-        if (err != cudaSuccess) {
-            std::printf("nogds_file_reader.submit_read: cudaHostAlloc(%" PRIi64 ") failed\n", buf_len);
-            return -1;
-        }
-        mc.bounce_buffer_bytes += buf_len;
-        if (debug_log) {
-            std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-            std::printf("[DEBUG] nogds_file_reader.submit_read: cudaHostAlloc, addr=%p, size=%" PRIi64 ", elapsed=%" PRId64 " us\n",
-                reinterpret_cast<void*>(this->_s._read_buffer),
-                buf_len, std::chrono::duration_cast<std::chrono::microseconds>(end - alloc_begin).count());
-        }
-    }
-    std::thread *t = this->_threads[thread_id % this->_s._max_threads];
-    if (t != nullptr) {
-        t->join();
-        delete(t);
-    }
-    t = new std::thread(nogds_file_reader::_thread, thread_id, _fns, this->_device_id, fd, dst, offset, length, ptr_off, &this->_s);
-    this->_threads[thread_id % this->_s._max_threads] = t;
-    if (debug_log) {
-        std::printf("[DEBUG] nogds_file_reader.submit_read #3, thread_id=%d\n", thread_id);
-    }
-    return thread_id;
+const uintptr_t nogds_file_reader::wait_read(int id) {
+    state &s = *_state;
+    std::unique_lock<std::mutex> lock(s.mutex);
+    auto req = s.requests.at(id);
+    s.done.wait(lock, [&] { return req->remaining == 0; });
+    s.requests.erase(id);
+    return req->failed ? 0 : req->destination;
 }
 
-const uintptr_t nogds_file_reader::wait_read(const int thread_id) {
-    void * ret;
-    {
-        std::unique_lock lk(this->_s._result_mutex);
-        while(this->_s._results.count(thread_id) == 0) {
-            this->_s._result_cond.wait(lk);
-        }
-        ret = this->_s._results.at(thread_id);
-        this->_s._results.erase(thread_id);
-    }
-    return reinterpret_cast<const uintptr_t>(ret);
-}
-
-nogds_file_reader::~nogds_file_reader() {
-    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    if (this->_s._read_buffer != nullptr) {
-        auto buf_len = this->_s._bbuf_size_kb * 1024 * this->_s._max_threads;
-        _fns->cudaFreeHost(this->_s._read_buffer);
-        if (debug_log) {
-            std::printf("[DEBUG] cudaFreeHost, addr=%p, size=%" PRIi64 "\n",
-                reinterpret_cast<void *>(this->_s._read_buffer), buf_len);
-        }
-        this->_s._read_buffer = nullptr;
-        mc.bounce_buffer_bytes -= buf_len;
-    }
-    if (this->_threads != nullptr) {
-        for (uint64_t i = 0; i < this->_s._max_threads; ++i) {
-            std::thread * t = this->_threads[i];
-            if (t != nullptr) {
-                t->join();
-                delete(t);
-            }
-        }
-        delete(this->_threads);
-        this->_threads = nullptr;
-    }
-    if (debug_log) {
-        std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] ~nogds_file_reader: elapsed=%" PRId64 " us\n",
-            std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
-    }
-}
+nogds_file_reader::~nogds_file_reader() = default;
 
 raw_gds_file_handle::raw_gds_file_handle(std::string filename, bool o_direct, bool use_cuda) {
     CUfileHandle_t cf_handle;
@@ -1418,7 +1500,10 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     };
 
     pybind11::class_<nogds_file_reader>(m, "nogds_file_reader")
-        .def(pybind11::init<const bool, const uint64_t, const int, bool, int>())
+        .def(pybind11::init<bool, uint64_t, uint64_t, bool, int, int>(),
+             pybind11::arg("use_mmap"), pybind11::arg("bbuf_size_kb"),
+             pybind11::arg("max_threads"), pybind11::arg("use_cuda"),
+             pybind11::arg("device_id"), pybind11::arg("numa_node") = -1)
         .def("submit_read", nogds_submit_read)
         .def("wait_read", nogds_wait_read);
 

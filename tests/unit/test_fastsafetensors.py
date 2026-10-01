@@ -1764,3 +1764,320 @@ def test_explicit_dtype_conversion_keeps_portable_path(
     for name in ("a", "b"):
         assert torch.equal(result[name].get_raw().cpu(), specs[0][2].half())
         assert metadata.tensors[name].dtype == DType.F16
+
+
+@pytest.mark.parametrize("target", ["cpu", "cuda:0"])
+@pytest.mark.parametrize("threads", [1, 3])
+@pytest.mark.parametrize("mode", ["buffered", "mmap"])
+def test_nogds_single_request_splits_and_drains(tmp_path, target, threads, mode):
+    import torch
+
+    if target.startswith("cuda") and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    payload = bytes(range(256)) * 4096 + b"ragged"
+    path = tmp_path / "data"
+    path.write_bytes(payload)
+    output = torch.full((len(payload) + 31,), 165, dtype=torch.uint8, device=target)
+    buffer = fstcpp.gds_device_buffer(
+        output.data_ptr(), output.numel(), target != "cpu"
+    )
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    before = fstcpp.get_cpp_metrics().bounce_buffer_bytes
+    reader = fstcpp.nogds_file_reader(mode == "mmap", 7, threads, target != "cpu", 0)
+    try:
+        request = reader.submit_read(fd, buffer, 3, len(payload) - 3, 13)
+        assert reader.wait_read(request) == output.data_ptr() + 13
+        assert output[13 : 13 + len(payload) - 3].cpu().numpy().tobytes() == payload[3:]
+        assert torch.all(output[:13] == 165)
+        request = reader.submit_read(fd, buffer, 0, 0, 0)
+        assert reader.wait_read(request) == output.data_ptr()
+        # Destruction must wait even when wait_read has not been called.
+        reader.submit_read(fd, buffer, 0, len(payload), 7)
+        del reader
+        assert output[7 : 7 + len(payload)].cpu().numpy().tobytes() == payload
+        assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == before
+    finally:
+        if "reader" in locals():
+            del reader
+        os.close(fd)
+
+
+@pytest.mark.parametrize("target", ["cpu", "cuda:0"])
+@pytest.mark.parametrize("mode", ["buffered", "mmap"])
+def test_nogds_truncation_and_next_request(tmp_path, target, mode):
+    import torch
+
+    if target.startswith("cuda") and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    path = tmp_path / "short"
+    path.write_bytes(b"x" * 8193)
+    output = torch.zeros(20001, dtype=torch.uint8, device=target)
+    buffer = fstcpp.gds_device_buffer(
+        output.data_ptr(), output.numel(), target != "cpu"
+    )
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    reader = fstcpp.nogds_file_reader(mode == "mmap", 7, 3, target != "cpu", 0)
+    try:
+        if mode == "mmap":
+            with pytest.raises(RuntimeError, match="truncated"):
+                reader.submit_read(fd, buffer, 0, output.numel(), 0)
+        else:
+            request = reader.submit_read(fd, buffer, 0, output.numel(), 0)
+            assert reader.wait_read(request) == 0
+        request = reader.submit_read(fd, buffer, 0, 8193, 0)
+        assert reader.wait_read(request) != 0
+        assert output[:8193].cpu().numpy().tobytes() == b"x" * 8193
+        with pytest.raises(IndexError):
+            reader.submit_read(fd, buffer, 0, 1, output.numel() + 1)
+        with pytest.raises(IndexError):
+            reader.wait_read(9999)
+        with pytest.raises(ValueError):
+            reader.submit_read(fd, buffer, 2**63 - 1, 2, 0)
+    finally:
+        del reader
+        os.close(fd)
+
+
+@pytest.mark.parametrize("target", ["cpu", "cuda:0"])
+def test_nogds_multiple_requests_waited_in_reverse_order(tmp_path, target):
+    import torch
+
+    if target.startswith("cuda") and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    payload = bytes(range(256)) * 1024
+    path = tmp_path / "data"
+    path.write_bytes(payload)
+    output = torch.full((len(payload),), 165, dtype=torch.uint8, device=target)
+    buffer = fstcpp.gds_device_buffer(
+        output.data_ptr(), output.numel(), target != "cpu"
+    )
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    reader = fstcpp.nogds_file_reader(False, 7, 3, target != "cpu", 0)
+    try:
+        requests = []
+        for offset in range(0, len(payload), 8193):
+            length = min(8193, len(payload) - offset)
+            requests.append(
+                (reader.submit_read(fd, buffer, offset, length, offset), offset)
+            )
+        for request, offset in reversed(requests):
+            assert reader.wait_read(request) == output.data_ptr() + offset
+        assert output.cpu().numpy().tobytes() == payload
+    finally:
+        del reader
+        os.close(fd)
+
+
+@pytest.mark.parametrize("size,threads", [(0, 1), (1, 0), (1024, 1025)])
+def test_nogds_invalid_configuration_does_not_leak_buffers(size, threads):
+    before = fstcpp.get_cpp_metrics().bounce_buffer_bytes
+    with pytest.raises(ValueError):
+        fstcpp.nogds_file_reader(False, size, threads, False, 0)
+    assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == before
+
+
+def test_nogds_copier_reports_native_read_failure(tmp_path):
+    import torch
+    from safetensors.torch import save_file
+
+    path = tmp_path / "truncated.safetensors"
+    save_file({"weight": torch.arange(4096)}, str(path))
+    with closing(SafeTensorsFileLoader(None, "cpu", nogds=True)) as loader:
+        meta = SafeTensorsMetadata.from_file(str(path), loader.framework)
+        os.truncate(path, meta.header_length + 1)
+        copier = loader.copier_constructor(meta, loader.device, loader.framework)
+        buffer = copier.submit_io(False, 16 * 2**20)
+        try:
+            with pytest.raises(Exception, match="wait_nogds_read failed"):
+                copier.wait_io(buffer)
+        finally:
+            loader.framework.free_tensor_memory(buffer, loader.device)
+
+
+def test_nogds_reused_device_buffer_waits_for_pending_clone(tmp_path):
+    """A clone queued before free must finish before native streams overwrite it."""
+    import torch
+    from safetensors.torch import save_file
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+
+    if torch.version.hip is not None or not hasattr(torch.cuda, "_sleep"):
+        pytest.skip("CUDA delayed-work helper required")
+    expected = torch.full((6 * 2**20,), 54, dtype=torch.uint8)
+    replacement = torch.full_like(expected, 154)
+    old_path, new_path = tmp_path / "old.safetensors", tmp_path / "new.safetensors"
+    save_file({"weight": expected}, str(old_path))
+    save_file({"weight": replacement}, str(new_path))
+    with closing(
+        SafeTensorsFileLoader(None, "cuda:0", nogds=True, max_threads=3)
+    ) as loader:
+
+        def make_copier(path):
+            meta = SafeTensorsMetadata.from_file(str(path), loader.framework)
+            return loader.copier_constructor(meta, loader.device, loader.framework)
+
+        first = make_copier(old_path)
+        first_buffer = first.submit_io(False, 16 * 2**30)
+        tensors = first.wait_io(first_buffer)
+        first_pointer = first_buffer.get_base_address()
+        torch.cuda._sleep(100_000_000)
+        retained = tensors["weight"].get_raw().clone()
+        loader.framework.free_tensor_memory(first_buffer, loader.device)
+        del tensors
+        second = make_copier(new_path)
+        second_buffer = second.submit_io(False, 16 * 2**30)
+        try:
+            assert second_buffer.get_base_address() == first_pointer
+            second.wait_io(second_buffer)
+            assert torch.equal(retained.cpu(), expected)
+        finally:
+            loader.framework.free_tensor_memory(second_buffer, loader.device)
+
+
+@pytest.mark.parametrize("set_numa", [True, False])
+def test_nogds_reader_numa_opt_out(monkeypatch, set_numa):
+    """The existing loader switch controls per-reader NUMA placement."""
+    import torch
+
+    import fastsafetensors.copier.nogds as nogds_module
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    calls = []
+    native = fstcpp.nogds_file_reader
+
+    def reader(*args):
+        calls.append(args)
+        return native(*args)
+
+    monkeypatch.setattr(fstcpp, "nogds_file_reader", reader)
+    monkeypatch.setattr(nogds_module, "get_device_numa_node", lambda device: 0)
+    loader = SafeTensorsFileLoader(
+        pg=None,
+        device="cuda:0",
+        nogds=True,
+        set_numa=set_numa,
+        bbuf_size_kb=1024,
+        max_threads=2,
+    )
+    try:
+        assert calls[-1][-1] == (0 if set_numa else -1)
+    finally:
+        loader.close()
+
+
+@pytest.mark.parametrize("placement", [True, False])
+def test_nogds_numa_worker_affinity_and_caller_policy(placement):
+    """Reader placement must not change the caller's affinity or memory policy."""
+    import ctypes
+    import pathlib
+    import sys
+    import time
+
+    import torch
+
+    if not sys.platform.startswith("linux") or not torch.cuda.is_available():
+        pytest.skip("Linux CUDA NUMA test")
+    node = get_device_numa_node(0)
+    if node is None or node < 0:
+        pytest.skip("GPU NUMA topology unavailable")
+    try:
+        lib = ctypes.CDLL("libnuma.so.1", use_errno=True)
+    except OSError:
+        pytest.skip("libnuma unavailable")
+
+    def memory_policy():
+        mode = ctypes.c_int()
+        mask = (ctypes.c_ulong * 16)()
+        if lib.get_mempolicy(ctypes.byref(mode), mask, 1024, None, 0) != 0:
+            pytest.skip("get_mempolicy is unavailable in this environment")
+        return mode.value, list(mask)
+
+    node_cpus = set()
+    text = pathlib.Path(f"/sys/devices/system/node/node{node}/cpulist").read_text()
+    for item in text.strip().split(","):
+        bounds = item.split("-")
+        node_cpus.update(range(int(bounds[0]), int(bounds[-1]) + 1))
+    original_affinity = os.sched_getaffinity(0)
+    available = node_cpus & original_affinity
+    if len(available) < 2:
+        pytest.skip("Need at least two allowed CPUs in the GPU NUMA node")
+    # Initialize CUDA allocation internals before counting reader threads.
+    warmup = fstcpp.nogds_file_reader(False, 1024, 2, True, 0, node)
+    del warmup
+    reader = None
+    try:
+        os.sched_setaffinity(0, {min(available)})
+        caller_affinity = os.sched_getaffinity(0)
+        caller_policy = memory_policy()
+        existing = set(os.listdir("/proc/self/task"))
+        reader = fstcpp.nogds_file_reader(
+            False, 1024, 2, True, 0, node if placement else -1
+        )
+        deadline = time.monotonic() + 2
+        while True:
+            # Linux can briefly retain an exited allocator task after join().
+            threads = set(os.listdir("/proc/self/task")) - existing
+            affinities = []
+            for thread in threads:
+                try:
+                    affinities.append(os.sched_getaffinity(int(thread)))
+                except ProcessLookupError:
+                    pass
+            placed = (
+                all(len(a) > 1 and a <= node_cpus for a in affinities)
+                if placement
+                else all(a == caller_affinity for a in affinities)
+            )
+            if len(affinities) == 2 and placed:
+                break
+            if time.monotonic() >= deadline:
+                pytest.fail(f"Workers not placed on GPU NUMA node: {affinities}")
+            time.sleep(0.01)
+        if not placement:
+            assert all(a == caller_affinity for a in affinities)
+        assert os.sched_getaffinity(0) == caller_affinity
+        assert memory_policy() == caller_policy
+    finally:
+        del reader
+        os.sched_setaffinity(0, original_affinity)
+
+
+def test_nogds_first_loader_resolves_numa_after_runtime_init():
+    """A fresh process must resolve topology before constructing its first reader."""
+    import subprocess
+    import sys
+    import textwrap
+
+    import torch
+
+    if not sys.platform.startswith("linux") or not torch.cuda.is_available():
+        pytest.skip("Linux CUDA NUMA test")
+    if get_device_numa_node(0) is None:
+        pytest.skip("GPU NUMA topology unavailable")
+    code = textwrap.dedent(
+        """
+        from fastsafetensors import SafeTensorsFileLoader, cpp
+        from fastsafetensors.common import get_device_numa_node
+        assert cpp.get_device_pci_bus(0) == ''
+        native = cpp.nogds_file_reader
+        calls = []
+        def reader(*args):
+            calls.append(args)
+            return native(*args)
+        cpp.nogds_file_reader = reader
+        loader = SafeTensorsFileLoader(None, 'cuda:0', nogds=True,
+                                      bbuf_size_kb=1024, max_threads=2)
+        try:
+            node = get_device_numa_node(0)
+            assert node is not None
+            assert calls[-1][-1] == node, (calls, node)
+        finally:
+            loader.close()
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

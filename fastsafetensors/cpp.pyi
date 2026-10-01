@@ -18,6 +18,7 @@ class nogds_file_reader:
         max_threads: int,
         use_cuda: bool,
         device_id: int,
+        numa_node: int = -1,
     ) -> None: ...
     def submit_read(
         self, fd: int, dst: gds_device_buffer, offset: int, length: int, ptr_off: int
