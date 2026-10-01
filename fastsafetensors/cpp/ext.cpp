@@ -1076,12 +1076,13 @@ struct gds_file_reader::state {
     struct request {
         gds_file_handle fh;
         gds_device_buffer dst;
-        uint64_t offset, length, ptr_off, next = 0, remaining;
+        uint64_t offset, length, file_bytes, ptr_off, next = 0, remaining;
         ssize_t bytes = 0;
         bool failed = false;
         request(const gds_file_handle &f, const gds_device_buffer &d,
-                uint64_t o, uint64_t l, uint64_t p, uint64_t n)
-            : fh(f), dst(d), offset(o), length(l), ptr_off(p), remaining(n) {}
+                uint64_t o, uint64_t l, uint64_t valid, uint64_t p, uint64_t n)
+            : fh(f), dst(d), offset(o), length(l), file_bytes(valid),
+              ptr_off(p), remaining(n) {}
     };
     ext_funcs_t *fns;
     int device, node, next_id = 1;
@@ -1101,20 +1102,23 @@ struct gds_file_reader::state {
         const bool device_failed = fns->cudaSetDevice(device) != cudaSuccess;
         for (;;) {
             std::shared_ptr<request> r;
-            uint64_t position, length;
+            uint64_t position, length, expected;
             {
                 std::unique_lock<std::mutex> lock(mutex);
                 ready.wait(lock, [&] { return stopping || !queue.empty(); });
                 if (queue.empty()) break;
                 r = queue.front(); position = r->next;
                 length = std::min(block, r->length - position);
-                r->next += length;
-                if (r->next == r->length) queue.pop_front();
+                expected = std::min(length, r->file_bytes - position);
+                r->next += expected;
+                if (r->next == r->file_bytes) queue.pop_front();
             }
             ssize_t bytes = 0;
             bool failed = device_failed;
             void *base = r->dst._get_raw_pointer(r->ptr_off, r->length);
-            while (!failed && static_cast<uint64_t>(bytes) < length) {
+            // Keep the padded I/O length for O_DIRECT, but finish when the
+            // expected file bytes arrive rather than reading again past EOF.
+            while (!failed && static_cast<uint64_t>(bytes) < expected) {
                 const uint64_t buffer_offset = position + bytes;
                 ssize_t count;
                 if (fns->cuFileRead) {
@@ -1128,7 +1132,7 @@ struct gds_file_reader::state {
                           length - bytes, r->offset + buffer_offset);
                 }
                 if (count <= 0) { failed = true; break; }
-                bytes += count;
+                bytes += std::min<uint64_t>(count, expected - bytes);
             }
             {
                 std::lock_guard<std::mutex> lock(mutex);
@@ -1165,21 +1169,21 @@ const int gds_file_reader::submit_read(const gds_file_handle &fh,
     if (ptr_off > dst.get_length() || length > dst.get_length() - ptr_off)
         throw std::out_of_range("destination out of bounds");
     dst._get_raw_pointer(ptr_off, length);
-    length = std::min(length, file_length - offset);
+    const uint64_t file_bytes = std::min(length, file_length - offset);
     state &s = *_state;
     // Protect allocator reuse against framework operations on other streams.
     if (s.fns->cudaSetDevice(s.device) != cudaSuccess ||
         s.fns->cudaDeviceSynchronize() != cudaSuccess)
         throw std::runtime_error("cuFile allocator fence failed");
-    auto r = std::make_shared<state::request>(fh, dst, offset, length, ptr_off,
-                        length ? (length - 1) / s.block + 1 : 0);
+    auto r = std::make_shared<state::request>(fh, dst, offset, length, file_bytes,
+                        ptr_off, file_bytes ? (file_bytes - 1) / s.block + 1 : 0);
     int id;
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         if (s.next_id == std::numeric_limits<int>::max())
             throw std::overflow_error("request id overflow");
         id = s.next_id++; s.requests[id] = r;
-        if (length) s.queue.push_back(r);
+        if (file_bytes) s.queue.push_back(r);
     }
     s.ready.notify_all();
     return id;
