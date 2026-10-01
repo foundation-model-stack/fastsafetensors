@@ -1378,7 +1378,7 @@ def test_no_module_level_torch_import_outside_frameworks() -> None:
             rel = os.path.relpath(path, pkg_dir)
             if rel in allowed:
                 continue
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 tree = ast.parse(f.read(), filename=path)
             if imports_torch(tree.body):
                 violations.append(rel)

@@ -99,7 +99,11 @@ static inline int munmap(void* addr, size_t /*length*/) {
 // Map POSIX names to MSVC equivalents
 #define open  _open
 #define close _close
-#define O_RDONLY _O_RDONLY
+#undef O_RDONLY
+// Tensor and checkpoint files are byte streams. The CRT defaults descriptors
+// to text mode, which translates CRLF and treats Ctrl-Z as EOF unless binary
+// mode is requested explicitly.
+#define O_RDONLY (_O_RDONLY | _O_BINARY)
 #ifndef O_DIRECT
 #define O_DIRECT 0
 #endif
