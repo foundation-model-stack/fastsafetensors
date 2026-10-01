@@ -1071,92 +1071,127 @@ raw_gds_file_handle::~raw_gds_file_handle() {
     }
 }
 
-void gds_file_reader::_thread(const int thread_id, ext_funcs_t *fns, const int device_id, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, thread_states_t *s) {
-    // Set the CUDA device for this thread. New std::threads do not inherit the
-    // parent thread's CUDA device and default to device 0, which would create
-    // an unwanted CUDA context on device 0.
-    if (device_id >= 0) {
-        fns->cudaSetDevice(device_id);
+// Split cuFile requests across persistent workers, retaining registered bases.
+struct gds_file_reader::state {
+    struct request {
+        gds_file_handle fh;
+        gds_device_buffer dst;
+        uint64_t offset, length, ptr_off, next = 0, remaining;
+        ssize_t bytes = 0;
+        bool failed = false;
+        request(const gds_file_handle &f, const gds_device_buffer &d,
+                uint64_t o, uint64_t l, uint64_t p, uint64_t n)
+            : fh(f), dst(d), offset(o), length(l), ptr_off(p), remaining(n) {}
+    };
+    ext_funcs_t *fns;
+    int device, node, next_id = 1;
+    uint64_t block;
+    bool stopping = false;
+    std::vector<std::thread> workers;
+    std::mutex mutex;
+#ifdef _MSC_VER
+    std::mutex file_mutex;
+#endif
+    std::condition_variable ready, done;
+    std::deque<std::shared_ptr<request>> queue;
+    std::map<int, std::shared_ptr<request>> requests;
+    void worker() {
+        if (node >= 0 && fns->numa_run_on_node(node) == 0 && numa_set_preferred)
+            numa_set_preferred(node);
+        const bool device_failed = fns->cudaSetDevice(device) != cudaSuccess;
+        for (;;) {
+            std::shared_ptr<request> r;
+            uint64_t position, length;
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                ready.wait(lock, [&] { return stopping || !queue.empty(); });
+                if (queue.empty()) break;
+                r = queue.front(); position = r->next;
+                length = std::min(block, r->length - position);
+                r->next += length;
+                if (r->next == r->length) queue.pop_front();
+            }
+            ssize_t bytes = 0;
+            bool failed = device_failed;
+            void *base = r->dst._get_raw_pointer(r->ptr_off, r->length);
+            while (!failed && static_cast<uint64_t>(bytes) < length) {
+                const uint64_t buffer_offset = position + bytes;
+                ssize_t count;
+                if (fns->cuFileRead) {
+                    count = fns->cuFileRead(r->fh._get_cf_handle(), base,
+                          length - bytes, r->offset + buffer_offset, buffer_offset);
+                } else {
+#ifdef _MSC_VER
+                    std::lock_guard<std::mutex> file_lock(file_mutex);
+#endif
+                    count = pread(r->fh._get_fd(), static_cast<char *>(base) + buffer_offset,
+                          length - bytes, r->offset + buffer_offset);
+                }
+                if (count <= 0) { failed = true; break; }
+                bytes += count;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                r->failed |= failed; r->bytes += bytes;
+                if (--r->remaining == 0) done.notify_all();
+            }
+        }
     }
-    ssize_t count = 0;
-    void * devPtr_base = dst._get_raw_pointer(ptr_off, length);
-    std::chrono::steady_clock::time_point begin, begin_notify;
+    ~state() {
+        { std::lock_guard<std::mutex> lock(mutex); stopping = true; }
+        ready.notify_all();
+        for (auto &worker : workers) if (worker.joinable()) worker.join();
+    }
+};
 
-    // NOTE: we cannot call register_buffer here since it apparently fails when cuFileRead runs in background.
-    begin = std::chrono::steady_clock::now();
-    while (uint64_t(count) < length && offset + uint64_t(count) < file_length) {
-        ssize_t c;
-        if (!fns->cuFileRead) {
-            c = pread(fh._get_fd(), reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(devPtr_base) + count), length - count, offset + count);
-        } else {
-            c = fns->cuFileRead(fh._get_cf_handle(), devPtr_base, length - count, offset + count, count);
-        }
-        if (debug_log) {
-            std::printf("[DEBUG] gds_file_reader._thread: cuFileRead(fh, %p, length=%" PRIu64 ", off=%" PRIu64 ", ptr_off=%" PRIu64 ", count=%zd)=%zd\n", devPtr_base, length, offset, ptr_off, count, c);
-        }
-        if (c < 0) {
-            std::fprintf(stderr, "gds_file_reader._thread: cuFileRead returned an error: errno=%d\n", errno);
-            count = -1;
-            break;
-        } else if (c == 0) {
-            break;
-        }
-        count += size_t(c);
-    }
-    begin_notify = std::chrono::steady_clock::now();
-    {
-        std::lock_guard<std::mutex> guard(s->_result_lock);
-        s->_results.insert(std::make_pair(thread_id, count));
-    }
-    if (debug_log) {
-        std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        std::printf("[DEBUG] gds_file_reader._thread: fh=%p, offset=%" PRIu64 ", length=%" PRIu64 ", count=%zd, read=%" PRId64" us, notify=%" PRId64 " us\n",
-            fh._get_cf_handle(), offset, length, count,
-            std::chrono::duration_cast<std::chrono::microseconds>(begin_notify - begin).count(),
-            std::chrono::duration_cast<std::chrono::microseconds>(end - begin_notify).count());
-    }
+gds_file_reader::gds_file_reader(int max_threads, bool use_cuda, int device_id,
+                               uint64_t block_size, int numa_node)
+        : _state(new state) {
+    if (max_threads <= 0 || max_threads > 1024 || !block_size)
+        throw std::invalid_argument("invalid cuFile pool settings");
+    state &s = *_state;
+    s.fns = use_cuda ? &cuda_fns : &cpu_fns;
+    s.device = device_id; s.node = numa_node; s.block = block_size;
+    for (int i = 0; i < max_threads; ++i)
+        s.workers.emplace_back([&s] { s.worker(); });
 }
 
-const int gds_file_reader::submit_read(const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length) {
+gds_file_reader::~gds_file_reader() = default;
+
+const int gds_file_reader::submit_read(const gds_file_handle &fh,
+        const gds_device_buffer &dst, uint64_t offset, uint64_t length,
+        uint64_t ptr_off, uint64_t file_length) {
+    if (offset > file_length) throw std::out_of_range("file offset out of bounds");
+    if (ptr_off > dst.get_length() || length > dst.get_length() - ptr_off)
+        throw std::out_of_range("destination out of bounds");
+    dst._get_raw_pointer(ptr_off, length);
+    length = std::min(length, file_length - offset);
+    state &s = *_state;
+    // Protect allocator reuse against framework operations on other streams.
+    if (s.fns->cudaSetDevice(s.device) != cudaSuccess ||
+        s.fns->cudaDeviceSynchronize() != cudaSuccess)
+        throw std::runtime_error("cuFile allocator fence failed");
+    auto r = std::make_shared<state::request>(fh, dst, offset, length, ptr_off,
+                        length ? (length - 1) / s.block + 1 : 0);
     int id;
-    std::thread * t;
-
-    id = this->_next_id++;
-    size_t thread_index = (size_t)(id % this->_s._max_threads);
-
-    if (this->_threads == nullptr) {
-        this->_threads = new std::thread*[this->_s._max_threads];
-        for (int i = 0; i < this->_s._max_threads; i++) {
-            this->_threads[i] = nullptr;
-        }
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (s.next_id == std::numeric_limits<int>::max())
+            throw std::overflow_error("request id overflow");
+        id = s.next_id++; s.requests[id] = r;
+        if (length) s.queue.push_back(r);
     }
-
-    t = this->_threads[thread_index];
-    if (t != nullptr) {
-        // block if we have too many readers
-        // NOTE: caller (i.e., python code) runs on a single thread.  so, we do not care about more than two waiters
-        t->join();
-        delete(t);
-    }
-    t = new std::thread(_thread, id, _fns, this->_device_id, fh, dst, offset, length, ptr_off, file_length, &this->_s);
-    this->_threads[thread_index] = t;
+    s.ready.notify_all();
     return id;
 }
 
-const ssize_t gds_file_reader::wait_read(const int id) {
-    size_t thread_index = (size_t)(id % this->_s._max_threads);
-    if (this->_threads != nullptr) {
-        std::thread * t = this->_threads[thread_index];
-        if (t != nullptr) {
-            t->join();
-            delete(t);
-            this->_threads[thread_index] = nullptr;
-        }
-    }
-    std::lock_guard<std::mutex> guard(this->_s._result_lock);
-    ssize_t ret = this->_s._results.at(id);
-    this->_s._results.erase(id);
-    return ret;
+const ssize_t gds_file_reader::wait_read(int id) {
+    state &s = *_state;
+    std::unique_lock<std::mutex> lock(s.mutex);
+    auto r = s.requests.at(id);
+    s.done.wait(lock, [&] { return r->remaining == 0; });
+    s.requests.erase(id);
+    return r->failed ? -1 : r->bytes;
 }
 
 // --- FGDS (FGDS_LIB) classes ---
@@ -1533,7 +1568,10 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     };
 
     pybind11::class_<gds_file_reader>(m, "gds_file_reader")
-        .def(pybind11::init<const int, bool, int>())
+        .def(pybind11::init<int, bool, int, uint64_t, int>(),
+             pybind11::arg("max_threads"), pybind11::arg("use_cuda"),
+             pybind11::arg("device_id"), pybind11::arg("block_size") = 16 * 1024 * 1024,
+             pybind11::arg("numa_node") = -1)
         .def("submit_read", gds_submit_read)
         .def("wait_read", gds_wait_read);
 

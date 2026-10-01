@@ -2081,3 +2081,105 @@ def test_nogds_first_loader_resolves_numa_after_runtime_init():
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.fixture
+def gds_pool_input(tmp_path):
+    import hashlib
+
+    from fastsafetensors.common import resolve_runtime_lib_name
+
+    pytest.importorskip("torch")
+    fstcpp.load_library_functions(resolve_runtime_lib_name())
+    path = tmp_path / "pool.bin"
+    data = hashlib.shake_256(b"cuFile pool test").digest(16 * 1024 * 1024)
+    data += b"partial-tail"
+    path.write_bytes(data)
+    return path, data
+
+
+@pytest.mark.parametrize("gpu", [None, 0, 4])
+@pytest.mark.parametrize("registered", [False, True])
+def test_gds_pool_split_requests_and_offset(gds_pool_input, gpu, registered):
+    import torch
+
+    path, data = gds_pool_input
+    use_cuda = gpu is not None
+    if use_cuda and (not torch.cuda.is_available() or torch.cuda.device_count() <= gpu):
+        pytest.skip("GPU unavailable")
+    if use_cuda and not os.path.exists("/dev/nvidia-fs0"):
+        pytest.skip("GDS device unavailable")
+    if use_cuda:
+        assert fstcpp.init_gds() == 0
+    device = "cpu" if gpu is None else f"cuda:{gpu}"
+    torch.cuda.set_device(gpu or 0) if use_cuda else None
+    tensor = torch.full((len(data) + 4096,), 211, dtype=torch.uint8, device=device)
+    if use_cuda:
+        torch.cuda.synchronize(gpu)
+    buf = fstcpp.gds_device_buffer(tensor.data_ptr(), tensor.numel(), use_cuda)
+    fh = fstcpp.gds_file_handle(str(path), False, use_cuda)
+    if registered:
+        assert buf.cufile_register(0, tensor.numel()) == 0
+    reader = fstcpp.gds_file_reader(4, use_cuda, gpu or 0, 1024 * 1024, -1)
+    # Two requests with distinct destination and file offsets. Registered
+    # requests retain their base; the first request deliberately covers EOF pad.
+    first = reader.submit_read(fh, buf, 4096, len(data), 0, len(data))
+    assert reader.wait_read(first) == len(data) - 4096
+    second = reader.submit_read(fh, buf, 0, 4096, len(data), len(data))
+    assert reader.wait_read(second) == 4096
+    if use_cuda:
+        torch.cuda.synchronize(gpu)
+    assert tensor[: len(data) - 4096].cpu().numpy().tobytes() == data[4096:]
+    assert tensor[len(data) :].cpu().numpy().tobytes() == data[:4096]
+    if registered:
+        buf.cufile_deregister(0)
+    del reader, fh, buf
+
+
+def test_gds_pool_drains_on_destruction(gds_pool_input):
+    import torch
+
+    path, data = gds_pool_input
+    tensor = torch.empty(len(data), dtype=torch.uint8)
+    buf = fstcpp.gds_device_buffer(tensor.data_ptr(), tensor.numel(), False)
+    reader = fstcpp.gds_file_reader(4, False, 0, 4096, -1)
+    fh = fstcpp.gds_file_handle(str(path), False, False)
+    reader.submit_read(fh, buf, 0, len(data), 0, len(data))
+    del fh
+    del reader
+    gc.collect()
+    assert tensor.numpy().tobytes() == data
+
+
+def test_gds_pool_truncated_input_fails(gds_pool_input):
+    import torch
+
+    path, data = gds_pool_input
+    tensor = torch.empty(len(data), dtype=torch.uint8)
+    buf = fstcpp.gds_device_buffer(tensor.data_ptr(), tensor.numel(), False)
+    fh = fstcpp.gds_file_handle(str(path), False, False)
+    os.truncate(path, 4096)
+    reader = fstcpp.gds_file_reader(4, False, 0, 4096, -1)
+    req = reader.submit_read(fh, buf, 0, len(data), 0, len(data))
+    assert reader.wait_read(req) == -1
+
+
+@pytest.mark.parametrize("threads,block", [(0, 4096), (-1, 4096), (2, 0), (1025, 4096)])
+def test_gds_pool_invalid_configuration(threads, block):
+    with pytest.raises(ValueError):
+        fstcpp.gds_file_reader(threads, False, 0, block)
+
+
+@pytest.mark.parametrize(
+    "ptr_off,length", [(17, 0), (16, 1), (2**64 - 1, 16), (1, 2**64 - 1)]
+)
+def test_gds_pool_invalid_destination(gds_pool_input, ptr_off, length):
+    import torch
+
+    path, data = gds_pool_input
+    tensor = torch.empty(16, dtype=torch.uint8)
+    buf = fstcpp.gds_device_buffer(tensor.data_ptr(), tensor.numel(), False)
+    fh = fstcpp.gds_file_handle(str(path), False, False)
+    reader = fstcpp.gds_file_reader(2, False, 0)
+    with pytest.raises(IndexError, match="destination out of bounds"):
+        reader.submit_read(fh, buf, 0, length, ptr_off, len(data))
