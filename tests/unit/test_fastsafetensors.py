@@ -146,6 +146,11 @@ def test_framework(fstcpp_log, framework) -> None:
         else:
             assert cuda_ver == "0.0"
 
+    if cuda_ver.startswith("cuda-"):
+        assert fstcpp.is_cuda_found()
+    elif cuda_ver.startswith("hip-"):
+        assert fstcpp.is_hip_found()
+
 
 def test_get_framework_fail(fstcpp_log) -> None:
     from fastsafetensors.frameworks import get_framework_op
@@ -359,6 +364,7 @@ def test_NoGdsFileCopier(fstcpp_log, input_files, framework) -> None:
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="cuFile GDS is Linux-only")
 def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
     print("test_GdsFileCopier")
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)
@@ -526,7 +532,13 @@ def test_is_unified_memory_system(
         ("cuda:0", True, False, "1", "unified"),  # opt-in on GPU
         ("cuda:0", True, False, "0", "nogds"),  # opt-out on GPU
         ("cpu", True, False, "1", "nogds"),  # CPU device skips unified even with env
-        ("cuda:0", False, False, "1", "gds"),  # nogds=False default picks gds
+        (
+            "cuda:0",
+            False,
+            False,
+            "1",
+            "dstorage" if sys.platform == "win32" else "gds",
+        ),  # Windows uses DirectStorage; other platforms use GDS
         ("cuda:0", False, True, "0", "fgds"),  # use_fgds=True picks fgds
         ("cpu", False, True, "0", "fgds"),  # use_fgds=True on CPU still selects fgds
         (
