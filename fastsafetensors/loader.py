@@ -92,7 +92,9 @@ class BaseSafeTensorsFileLoader:
         self._chunk_plan: Dict[
             str, Tuple[Set[str], List[Tuple[int, int]], Optional[int]]
         ] = {}
-        self.init_numa(set_numa)
+        kwargs["set_numa"] = set_numa
+        if copier_type != "nogds":
+            self.init_numa(set_numa)
         self.copier_constructor: CopierConstructFunc = create_copier_constructor(
             copier_type=copier_type,
             device=device,

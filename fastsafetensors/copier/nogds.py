@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from .. import cpp as fstcpp
 from ..common import (
     SafeTensorsMetadata,
+    get_device_numa_node,
     is_gpu_found,
     resolve_runtime_lib_name,
 )
@@ -137,7 +138,7 @@ class NoGdsFileCopier(CopierInterface):
         failed = []
         for req in self.reqs:
             count = self.reader.wait_read(req)
-            if count < 0:
+            if count == 0:
                 failed.append(req)
         if self.fd > 0:
             os.close(self.fd)
@@ -186,8 +187,18 @@ def new_nogds_file_copier(
         )
 
     device_id = device.index if device.index is not None else 0
+    numa_node = (
+        get_device_numa_node(device_id)
+        if device_is_not_cpu and kwargs.get("set_numa", True)
+        else None
+    )
     nogds_reader = fstcpp.nogds_file_reader(
-        False, bbuf_size_kb, max_threads, device_is_not_cpu, device_id
+        False,
+        bbuf_size_kb,
+        max_threads,
+        device_is_not_cpu,
+        device_id,
+        numa_node if numa_node is not None else -1,
     )
 
     def construct_nogds_copier(

@@ -4,11 +4,13 @@
 #define __EXT_HPP__
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <condition_variable>
 #include <thread>
 #include <map>
 #include <string>
+#include <stdexcept>
 
 #ifdef _MSC_VER
 #include <BaseTsd.h>
@@ -161,33 +163,14 @@ public:
 
 class nogds_file_reader {
 private:
-    int _next_thread_id;
-    std::mutex _mutex;
-    std::condition_variable _cond;
-    std::thread ** _threads; // TOFIX
-    ext_funcs_t * _fns;
-    int _device_id;
-
-    typedef struct thread_states {
-        std::mutex _result_mutex;
-        std::condition_variable _result_cond;
-        std::map<int, void *> _results;
-        void * _read_buffer;
-        const bool _use_mmap;
-        const uint64_t _bbuf_size_kb;
-        const uint64_t _max_threads;
-    } thread_states_t;
-    thread_states_t _s;
+    struct state;
+    std::unique_ptr<state> _state;
 public:
-    nogds_file_reader(const bool use_mmap, const uint64_t bbuf_size_kb, const uint64_t max_threads, bool use_cuda, int device_id):
-        _next_thread_id(1), _threads(nullptr), _fns(use_cuda?&cuda_fns:&cpu_fns), _device_id(device_id),
-        _s(thread_states_t{._read_buffer = nullptr, ._use_mmap = use_mmap,
-            ._bbuf_size_kb = (bbuf_size_kb + max_threads - 1)/max_threads, ._max_threads = max_threads})
-         {}
-
-    static void _thread(const int thread_id, ext_funcs_t *fns, const int device_id, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off, thread_states_t *s); // not exposed to python
-    const int submit_read(const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off);
-    const uintptr_t wait_read(const int thread_id);
+    nogds_file_reader(bool use_mmap, uint64_t bbuf_size_kb, uint64_t max_threads,
+                      bool use_cuda, int device_id, int numa_node = -1);
+    const int submit_read(int fd, const gds_device_buffer& dst, int64_t offset,
+                          int64_t length, uint64_t ptr_off);
+    const uintptr_t wait_read(int request_id);
     ~nogds_file_reader();
 };
 
@@ -291,6 +274,9 @@ typedef struct ext_funcs {
     ssize_t (*cuFileRead)(CUfileHandle_t, void *, size_t, off_t, off_t);
     cudaError_t (*cudaMemcpy)(void *, const void *, size_t, enum cudaMemcpyKind);
     cudaError_t (*cudaMemcpyAsync)(void *, const void *, size_t, enum cudaMemcpyKind, cudaStream_t);
+    cudaError_t (*cudaStreamCreateWithFlags)(cudaStream_t *, unsigned int);
+    cudaError_t (*cudaStreamSynchronize)(cudaStream_t);
+    cudaError_t (*cudaStreamDestroy)(cudaStream_t);
     cudaError_t (*cudaDeviceSynchronize)(void);
     cudaError_t (*cudaHostAlloc)(void **, size_t, unsigned int);
     cudaError_t (*cudaFreeHost)(void *);
