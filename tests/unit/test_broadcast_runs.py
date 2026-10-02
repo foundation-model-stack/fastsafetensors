@@ -85,14 +85,17 @@ def _checkpoint(path, prefix):
     return values
 
 
+@pytest.mark.parametrize("residency", ["all", "none", "mixed"])
 @pytest.mark.parametrize("chunked", [True, False])
-def test_pipeline_runs_own_storage(pg, framework, tmp_dir, chunked):
+def test_pipeline_runs_own_storage(pg, framework, tmp_dir, residency, chunked):
     if framework.get_name() != "pytorch":
         pytest.skip("PyTorch broadcast optimization")
     import torch
     import torch.distributed as dist
 
     group = framework.get_process_group(pg)
+    accumulate = residency != "none"
+    resident = (lambda name: name.endswith(".f")) if residency == "mixed" else None
     device = f"cuda:{group.rank()}" if is_gpu_found() else "cpu"
     paths = [os.path.join(tmp_dir, f"broadcast-runs-{i}.safetensors") for i in range(2)]
     if group.rank() == 0:
@@ -111,6 +114,8 @@ def test_pipeline_runs_own_storage(pg, framework, tmp_dir, chunked):
         device=device,
         nogds=True,
         use_tqdm_on_load=False,
+        accumulate_resident=accumulate,
+        resident_tensor=resident,
         broadcast_run_bytes=0,
         max_batch_bytes=32 if chunked else None,
     )
@@ -135,17 +140,35 @@ def test_pipeline_runs_own_storage(pg, framework, tmp_dir, chunked):
             device=device,
             nogds=True,
             use_tqdm_on_load=False,
+            accumulate_resident=accumulate,
+            resident_tensor=resident,
             broadcast_run_bytes=32,
             broadcast_run_tensors=3,
             max_batch_bytes=32 if chunked else None,
         )
         try:
             with closing(loader.iterate_weights()) as weights:
-                actual = dict(weights)
+                # Keep copies in non-resident mode, as required by its contract.
+                actual = {
+                    name: (
+                        tensor
+                        if accumulate and (resident is None or resident(name))
+                        else tensor.cpu().clone()
+                    )
+                    for name, tensor in weights
+                }
             order = list(actual)
         finally:
             loader.close()
     assert order == expected_order
+    if residency == "mixed":
+        assert resident is not None
+        for name, tensor in actual.items():
+            if resident(name):
+                assert (
+                    tensor.untyped_storage().nbytes()
+                    == tensor.numel() * tensor.element_size()
+                )
     # Test after the buffers and iterator have been closed, on every rank.
     for name, tensor in actual.items():
         want = expected[name]
@@ -154,14 +177,17 @@ def test_pipeline_runs_own_storage(pg, framework, tmp_dir, chunked):
             tensor.cpu().reshape(-1).view(torch.uint8),
             want.reshape(-1).view(torch.uint8),
         ), name
-    if group.size() > 1:
+    if group.size() > 1 and resident is None:
         assert observed_runs and max(observed_runs) <= 3
         assert any(n > 1 for n in observed_runs)
+    else:
+        assert not observed_runs
     assert framework.get_mem_used() == 0
     assert cpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
 
-def test_pipeline_runs_early_close(input_files, pg, framework):
+@pytest.mark.parametrize("accumulate", [True, False])
+def test_pipeline_runs_early_close(input_files, pg, framework, accumulate):
     if framework.get_name() != "pytorch":
         pytest.skip("PyTorch stream lifetime")
     import torch
@@ -169,7 +195,12 @@ def test_pipeline_runs_early_close(input_files, pg, framework):
     group = framework.get_process_group(pg)
     device = f"cuda:{group.rank()}" if is_gpu_found() else "cpu"
     loader = ParallelLoader(
-        pg, input_files, device=device, nogds=True, use_tqdm_on_load=False
+        pg,
+        input_files,
+        device=device,
+        nogds=True,
+        use_tqdm_on_load=False,
+        accumulate_resident=accumulate,
     )
     iterator = loader.iterate_weights()
     name, first = next(iterator)

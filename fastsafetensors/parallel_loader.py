@@ -228,9 +228,11 @@ class PipelineParallel:
             and loader.framework.get_name() == "pytorch"
             and broadcast_run_bytes > 0
             and broadcast_run_tensors > 0
-            and accumulate_resident
+            # Keep selected resident tensors from retaining unrelated run
+            # storage by delivering them individually.
             and resident_tensor is None
         )
+        self._drain_broadcast_runs = not accumulate_resident
 
         # Before _create_batches, which reports any queue_size clamp.
         self.print_log = os.getenv("FASTSAFETENSORS_DEBUG", "false").lower() == "true"
@@ -633,6 +635,7 @@ class PipelineParallel:
                         batch.keys,
                         self.broadcast_run_bytes,
                         self.broadcast_run_tensors,
+                        self._drain_broadcast_runs,
                     )
                 else:
                     weights = ((key, batch.fb.get_tensor(key)) for key in batch.keys)

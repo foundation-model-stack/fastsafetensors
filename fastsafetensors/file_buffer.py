@@ -211,11 +211,16 @@ class FilesBufferOnDevice:
         tensor_names: List[str],
         max_bytes: int,
         max_tensors: int,
+        drain_runs: bool,
     ) -> Iterator[Tuple[str, Any]]:
-        """Deliver resident tensors as views of owned contiguous broadcasts."""
+        """Deliver views of owned runs, draining transient runs before release.
+
+        Views share their run's storage. Non-resident consumers must relocate
+        and release each view before requesting the next tensor.
+        """
         auto_mem_delete = self.auto_mem_delete
-        # Keep loader storage until owned source copies finish, including
-        # when the iterator closes early.
+        # A source clone can still be reading the raw loader allocation on
+        # CUDA. Keep it until the final stream drain, including on early exit.
         self.auto_mem_delete = False
         devices = [
             self.rank_loaders[r][i].device
@@ -244,13 +249,18 @@ class FilesBufferOnDevice:
                 else:
                     for name, tensor in zip(run, tensors):
                         yield name, tensor.get_raw()
+                    if drain_runs:
+                        # NCCL wait orders CUDA streams but does not block the
+                        # CPU. Drain consumed runs so pending communications
+                        # and consumer copies cannot accumulate staging buffers.
+                        self.framework.synchronize_current_stream(loader.device)
                     # Release the staging run before allocating the next one.
                     del tensor
                     del tensors
         finally:
             try:
                 for device in devices:
-                    self.framework.synchronize(device)
+                    self.framework.synchronize_current_stream(device)
             finally:
                 self.auto_mem_delete = auto_mem_delete
 

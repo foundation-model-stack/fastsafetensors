@@ -257,6 +257,10 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
 
 
 class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
+    def synchronize_current_stream(self, device: Device) -> None:
+        if device.type == DeviceType.CUDA:
+            torch.cuda.current_stream(device.as_str()).synchronize()
+
     @staticmethod
     def _flat_source_run(tensors: List[TorchTensor], sizes: List[int]) -> torch.Tensor:
         """Describe adjacent loader views, including bounded DLPack storage."""
@@ -290,8 +294,10 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
             flat = self._flat_source_run(source_tensors, sizes).clone()
         else:
             flat = torch.empty(sum(sizes), dtype=torch.uint8, device=device.as_str())
-        dist.broadcast(flat, group=pg.real_pg, group_src=src_rank)
-        self.synchronize(device)
+        work = dist.broadcast(flat, group=pg.real_pg, group_src=src_rank, async_op=True)
+        # NCCL wait orders this thread's current stream without synchronizing
+        # the whole device, allowing the producer's checkpoint reads to proceed.
+        work.wait()
         outputs = []
         offset = 0
         for frame, size in zip(frames, sizes):
