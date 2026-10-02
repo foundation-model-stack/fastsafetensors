@@ -21,3 +21,4 @@ from .ep_slice import (
 from .file_buffer import FilesBufferOnDevice
 from .loader import SafeTensorsFileLoader, fastsafe_open
 from .parallel_loader import ParallelLoader
+from .saver import ParallelSaver
