@@ -57,6 +57,30 @@ Without chunking, each buffer covers a whole shard. These counts exclude
 resident tensors, broadcast receive tensors, yield clones, and copier staging
 memory, which the memory planner accounts for separately where applicable.
 
+## Distributed Tensor Delivery
+
+PyTorch distributed loading coalesces adjacent tensors from one source file
+into byte broadcasts, preserving the iterator's order. The default limits are
+`broadcast_run_bytes=16777216` (16 MiB) and `broadcast_run_tensors=64` in the
+Python `ParallelLoader` API. Every rank must use identical limits. Setting
+either limit to zero restores per-tensor broadcasts. Individual tensors larger
+than the byte limit are sent alone; file boundaries, gaps and dtype alignment
+also split runs. Single-process and Paddle loading use the existing paths.
+
+NCCL communication establishes a dependency on the consumer's current CUDA
+stream instead of synchronizing the whole device for every tensor. The consumer
+stream is drained before each batch's backing buffers are released, including
+when the iterator closes early. Consumers using other CUDA streams must arrange
+their usual stream dependencies before accessing the yielded tensors.
+
+Yielded tensors remain valid after the iterator and loader close. Adjacent
+outputs share one independently owned run allocation; retaining a view retains
+its entire run. With `accumulate_resident=False`, relocate and release each
+tensor before requesting the next. The consumer stream is drained between runs
+to bound pending staging allocations while checkpoint reads continue on other
+streams. A `resident_tensor` predicate keeps the per-tensor delivery path, so
+retaining selected tensors does not retain unrelated bytes from shared runs.
+
 ## Bounded Device Memory
 
 `max_batch_bytes` caps each sub-file chunk. It must be at least as large as

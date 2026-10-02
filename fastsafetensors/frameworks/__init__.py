@@ -136,6 +136,22 @@ K = TypeVar("K", bound=ProcessGroupBase)
 
 
 class FrameworkOpBase(ABC, Generic[T, K]):
+    def broadcast_contiguous_run(
+        self,
+        pg: K,
+        source_tensors: List[T],
+        frames: List[Any],
+        src_rank: int,
+        device: Device,
+    ) -> Optional[List[T]]:
+        """Optionally broadcast adjacent tensors using an owned byte buffer.
+
+        Return None for the portable per-tensor path. Returned views must own
+        their storage independently of the loader buffer. CUDA implementations
+        must establish a dependency on the consumer's current stream.
+        """
+        return None
+
     @abstractmethod
     def get_name(self) -> str:
         pass
@@ -258,6 +274,10 @@ class FrameworkOpBase(ABC, Generic[T, K]):
         (e.g. cudaMemcpyAsync) must override this.
         """
         return None
+
+    def synchronize_current_stream(self, device: Device) -> None:
+        """Finish consumer work before releasing raw loader storage."""
+        self.synchronize(device)
 
     def get_global_rank(self) -> int:
         """Return this process's rank in the framework's global distributed

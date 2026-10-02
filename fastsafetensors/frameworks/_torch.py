@@ -257,6 +257,56 @@ class TorchProcessGroup(ProcessGroupBase[TorchTensor]):
 
 
 class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
+    def synchronize_current_stream(self, device: Device) -> None:
+        if device.type == DeviceType.CUDA:
+            torch.cuda.current_stream(device.as_str()).synchronize()
+
+    @staticmethod
+    def _flat_source_run(tensors: List[TorchTensor], sizes: List[int]) -> torch.Tensor:
+        """Describe adjacent loader views, including bounded DLPack storage."""
+        for previous, current, size in zip(tensors, tensors[1:], sizes):
+            if previous.data_ptr() + size != current.data_ptr():
+                raise ValueError("broadcast run is not contiguous in device memory")
+        from ..dlpack import from_cuda_buffer
+
+        # Each DLPack Storage may describe only one tensor even when the
+        # underlying loader allocation spans the entire validated run.
+        return torch.from_dlpack(
+            from_cuda_buffer(
+                tensors[0].data_ptr(), [sum(sizes)], [1], DType.U8, tensors[0].device
+            )
+        )
+
+    def broadcast_contiguous_run(
+        self,
+        pg: TorchProcessGroup,
+        source_tensors: List[TorchTensor],
+        frames: List[Any],
+        src_rank: int,
+        device: Device,
+    ) -> Optional[List[TorchTensor]]:
+        if pg.real_pg is None:
+            return None
+        sizes = [frame.data_offsets[1] - frame.data_offsets[0] for frame in frames]
+        if pg.rank() == src_rank:
+            # The iterator promises outputs survive buffer close, including
+            # on the source rank. Clone the span once, rather than borrowing it.
+            flat = self._flat_source_run(source_tensors, sizes).clone()
+        else:
+            flat = torch.empty(sum(sizes), dtype=torch.uint8, device=device.as_str())
+        work = dist.broadcast(flat, group=pg.real_pg, group_src=src_rank, async_op=True)
+        # NCCL wait orders this thread's current stream without synchronizing
+        # the whole device, allowing the producer's checkpoint reads to proceed.
+        work.wait()
+        outputs = []
+        offset = 0
+        for frame, size in zip(frames, sizes):
+            raw = flat.narrow(0, offset, size).view(dtype_convert[frame.dtype])
+            raw = raw.reshape(self.get_native_shape(frame.dtype, frame.shape))
+            outputs.append(TorchTensor(device, frame.dtype, raw))
+            offset += size
+        return outputs
+
     def __init__(self) -> None:
         self.mem_used = 0
 
