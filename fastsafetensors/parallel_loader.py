@@ -146,6 +146,8 @@ class PipelineParallel:
         device_memory_budget: Optional[int] = None,
         accumulate_resident: bool = True,
         resident_tensor: Optional[Callable[[str], bool]] = None,
+        broadcast_run_bytes: int = 16 << 20,
+        broadcast_run_tensors: int = 64,
         **kwargs,
     ):
 
@@ -217,6 +219,18 @@ class PipelineParallel:
 
         # Single-process yields borrow the file buffer and require a clone.
         self.need_clone = pg.size() == 1
+        if broadcast_run_bytes < 0 or broadcast_run_tensors < 0:
+            raise ValueError("broadcast run limits must be non-negative")
+        self.broadcast_run_bytes = broadcast_run_bytes
+        self.broadcast_run_tensors = broadcast_run_tensors
+        self._coalesce_broadcasts = (
+            pg.size() > 1
+            and loader.framework.get_name() == "pytorch"
+            and broadcast_run_bytes > 0
+            and broadcast_run_tensors > 0
+            and accumulate_resident
+            and resident_tensor is None
+        )
 
         # Before _create_batches, which reports any queue_size clamp.
         self.print_log = os.getenv("FASTSAFETENSORS_DEBUG", "false").lower() == "true"
@@ -614,11 +628,21 @@ class PipelineParallel:
             with TimingContext(
                 "get_tensor", self._log_message, batch.batch_id
             ) as timer:
-                for key in batch.keys:
-                    tensor = batch.fb.get_tensor(key)
-                    if self.need_clone:
-                        tensor = tensor.clone()
-                    yield key, tensor
+                if self._coalesce_broadcasts:
+                    weights = batch.fb._iter_tensors(
+                        batch.keys,
+                        self.broadcast_run_bytes,
+                        self.broadcast_run_tensors,
+                    )
+                else:
+                    weights = ((key, batch.fb.get_tensor(key)) for key in batch.keys)
+                try:
+                    for key, tensor in weights:
+                        if self.need_clone:
+                            tensor = tensor.clone()
+                        yield key, tensor
+                finally:
+                    weights.close()
             get_tensor_time = timer.elapsed_ms
         finally:
             # Close the file buffer
@@ -779,6 +803,11 @@ class ParallelLoader(PipelineParallel):
                          with identical results on every rank.
         use_fgds (bool): If True, use FGDS (alternative GPU Direct Storage) instead
                         of cuFile GDS. When FGDS is unavailable, falls back to nogds.
+        broadcast_run_bytes (int): Maximum bytes per coalesced PyTorch broadcast
+                         (default 16 MiB). A larger individual tensor is sent alone.
+                         Zero disables coalescing. Identical on every rank.
+        broadcast_run_tensors (int): Maximum tensors per coalesced broadcast
+                         (default 64). Zero disables coalescing. Identical on every rank.
 
     The pipeline holds up to 1 chunk buffer per rank for queue_size=-1, otherwise
     queue_size+2. Broadcast receive tensors, yield clones, and copier staging
@@ -817,6 +846,8 @@ class ParallelLoader(PipelineParallel):
         accumulate_resident: bool = True,
         resident_tensor: Optional[Callable[[str], bool]] = None,
         use_fgds: bool = False,
+        broadcast_run_bytes: int = 16 << 20,
+        broadcast_run_tensors: int = 64,
         **kwargs,
     ):
         """Initialize PipelineParallelLoader with a pre-configured SafeTensorsFileLoader.
@@ -867,5 +898,7 @@ class ParallelLoader(PipelineParallel):
             device_memory_budget=device_memory_budget,
             accumulate_resident=accumulate_resident,
             resident_tensor=resident_tensor,
+            broadcast_run_bytes=broadcast_run_bytes,
+            broadcast_run_tensors=broadcast_run_tensors,
             **kwargs,
         )

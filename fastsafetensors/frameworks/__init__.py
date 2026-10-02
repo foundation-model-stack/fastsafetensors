@@ -136,6 +136,22 @@ K = TypeVar("K", bound=ProcessGroupBase)
 
 
 class FrameworkOpBase(ABC, Generic[T, K]):
+    def broadcast_contiguous_run(
+        self,
+        pg: K,
+        source_tensors: List[T],
+        frames: List[Any],
+        src_rank: int,
+        device: Device,
+    ) -> Optional[List[T]]:
+        """Optionally broadcast adjacent tensors using an owned byte buffer.
+
+        Return None for the portable per-tensor path. Returned views must own
+        their storage independently of the loader buffer. Copies and
+        communication must finish before returning.
+        """
+        return None
+
     @abstractmethod
     def get_name(self) -> str:
         pass

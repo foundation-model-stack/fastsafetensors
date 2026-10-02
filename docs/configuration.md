@@ -57,6 +57,21 @@ Without chunking, each buffer covers a whole shard. These counts exclude
 resident tensors, broadcast receive tensors, yield clones, and copier staging
 memory, which the memory planner accounts for separately where applicable.
 
+## Distributed Tensor Delivery
+
+PyTorch distributed loading coalesces adjacent tensors from one source file
+into byte broadcasts, preserving the iterator's order. The default limits are
+`broadcast_run_bytes=16777216` (16 MiB) and `broadcast_run_tensors=64` in the
+Python `ParallelLoader` API. Every rank must use identical limits. Setting
+either limit to zero restores per-tensor broadcasts. Individual tensors larger
+than the byte limit are sent alone; file boundaries, gaps and dtype alignment
+also split runs. Single-process and Paddle loading use the existing paths.
+
+Coalescing currently applies when all outputs remain resident
+(`accumulate_resident=True` and no `resident_tensor` predicate). Other residency
+modes keep per-tensor delivery. Adjacent outputs share an independently owned
+run allocation and remain valid after the iterator and loader close.
+
 ## Bounded Device Memory
 
 `max_batch_bytes` caps each sub-file chunk. It must be at least as large as

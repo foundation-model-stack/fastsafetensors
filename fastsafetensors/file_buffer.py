@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections import OrderedDict
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from .common import init_logger
 from .frameworks import FrameworkOpBase, ProcessGroupBase, TensorBase
@@ -171,6 +171,88 @@ class FilesBufferOnDevice:
         cloned/copied it to independent storage.
         """
         return self.get_tensor_wrapped(tensor_name, device, dtype).get_raw()
+
+    def _broadcast_runs(
+        self, tensor_names: List[str], max_bytes: int, max_tensors: int
+    ) -> Iterator[List[str]]:
+        """Keep checkpoint order and split at file, gap, size or alignment."""
+        run: List[str] = []
+        location = None
+        end = None
+        size = 0
+        for name in tensor_names:
+            rank, lidx = self._get_rank_lidx(name)
+            frame = self.rank_loaders[rank][lidx].metadata.tensors[name]
+            start, stop = frame.data_offsets
+            alignment = max(1, int(self.framework.get_dtype_size(frame.dtype)))
+            if run and (
+                location != (rank, lidx)
+                or start != end
+                or size + stop - start > max_bytes
+                or len(run) >= max_tensors
+                or size % alignment != 0
+                or start == stop
+            ):
+                yield run
+                run = []
+                size = 0
+            run.append(name)
+            size += stop - start
+            location, end = (rank, lidx), stop
+            if start == stop:
+                yield run
+                run = []
+                size = 0
+        if run:
+            yield run
+
+    def _iter_tensors(
+        self,
+        tensor_names: List[str],
+        max_bytes: int,
+        max_tensors: int,
+    ) -> Iterator[Tuple[str, Any]]:
+        """Deliver resident tensors as views of owned contiguous broadcasts."""
+        auto_mem_delete = self.auto_mem_delete
+        # Keep loader storage until owned source copies finish, including
+        # when the iterator closes early.
+        self.auto_mem_delete = False
+        devices = [
+            self.rank_loaders[r][i].device
+            for r, i in dict.fromkeys(
+                self._get_rank_lidx(name) for name in tensor_names
+            )
+        ]
+        try:
+            for run in self._broadcast_runs(tensor_names, max_bytes, max_tensors):
+                rank, lidx = self._get_rank_lidx(run[0])
+                loader = self.rank_loaders[rank][lidx]
+                frames = [loader.metadata.tensors[name] for name in run]
+                tensors = None
+                if frames[0].data_offsets[1] > frames[0].data_offsets[0]:
+                    source = (
+                        [loader.tensors[name] for name in run]
+                        if self.pg.rank() == rank
+                        else []
+                    )
+                    tensors = self.framework.broadcast_contiguous_run(
+                        self.pg, source, frames, rank, loader.device
+                    )
+                if tensors is None:
+                    for name in run:
+                        yield name, self.get_tensor(name)
+                else:
+                    for name, tensor in zip(run, tensors):
+                        yield name, tensor.get_raw()
+                    # Release the staging run before allocating the next one.
+                    del tensor
+                    del tensors
+        finally:
+            try:
+                for device in devices:
+                    self.framework.synchronize(device)
+            finally:
+                self.auto_mem_delete = auto_mem_delete
 
     def push_tensor(
         self,
