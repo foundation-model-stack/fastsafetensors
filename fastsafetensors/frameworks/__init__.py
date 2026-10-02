@@ -31,6 +31,20 @@ class TensorBase:
         pass
 
     @abstractmethod
+    def get_shape(self) -> List[int]:
+        """Return the logical safetensors shape, including sub-byte elements."""
+        pass
+
+    @abstractmethod
+    def get_nbytes(self) -> int:
+        pass
+
+    @abstractmethod
+    def copy_to_buffer(self, buf: memoryview) -> None:
+        """Copy tensor bytes in logical C order into the supplied buffer."""
+        pass
+
+    @abstractmethod
     def contiguous(self) -> "TensorBase":
         pass
 
@@ -153,6 +167,10 @@ class FrameworkOpBase(ABC, Generic[T, K]):
     @abstractmethod
     def copy_tensor(self, dst: T, src: T) -> None:
         pass
+
+    def wrap_tensor(self, tensor: Any) -> T:
+        """Wrap a framework-native tensor without copying its storage."""
+        raise NotImplementedError(f"{self.get_name()}: wrap_tensor")
 
     @abstractmethod
     def get_dtype_size(self, dtype: DType) -> float:

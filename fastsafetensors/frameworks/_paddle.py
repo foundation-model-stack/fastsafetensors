@@ -11,6 +11,7 @@ except ImportError as e:
     ) from e
 
 from dataclasses import dataclass
+from math import prod
 from typing import Any, Dict, List, Optional
 
 from ..common import SingleGroup
@@ -44,6 +45,12 @@ if hasattr(paddle, "float8_e5m2"):
 if hasattr(paddle, "float8_e4m3fn"):
     dtype_convert[DType.F8_E4M3] = paddle.float8_e4m3fn
 
+_fst_dtypes = {
+    native: dtype
+    for dtype, native in dtype_convert.items()
+    if dtype not in (DType.U16, DType.U32, DType.U64)
+}
+
 
 @dataclass
 class PaddleTensor(TensorBase):
@@ -51,6 +58,28 @@ class PaddleTensor(TensorBase):
 
     def get_raw(self) -> paddle.Tensor:
         return self.real_tensor
+
+    def get_shape(self) -> List[int]:
+        return list(self.real_tensor.shape)
+
+    def get_nbytes(self) -> int:
+        return prod(self.get_shape()) * paddle_core.size_of_dtype(
+            self.real_tensor.dtype
+        )
+
+    def copy_to_buffer(self, buf: memoryview) -> None:
+        if self.get_nbytes() == 0:
+            return
+        raw = (
+            self.real_tensor.detach()
+            .contiguous()
+            .reshape([-1])
+            .view(paddle.uint8)
+            .cpu()
+            .numpy()
+        )
+        with memoryview(raw) as view:
+            buf[:] = view.cast("B")
 
     def contiguous(self) -> "PaddleTensor":
         return PaddleTensor(self.device, self.dtype, self.real_tensor.contiguous())
@@ -242,6 +271,15 @@ class PaddleOp(FrameworkOpBase[PaddleTensor, PaddleProcessGroup]):
         paddle.assign(src.real_tensor, output=dst.real_tensor)
         dst.dtype = src.dtype
         dst.device = src.device
+
+    def wrap_tensor(self, tensor: paddle.Tensor) -> PaddleTensor:
+        if tensor.place.is_cpu_place():
+            device = Device(DeviceType.CPU)
+        elif tensor.place.is_gpu_place():
+            device = Device(DeviceType.GPU, tensor.place.gpu_device_id())
+        else:
+            raise ValueError(f"unsupported tensor place: {tensor.place}")
+        return PaddleTensor(device, _fst_dtypes[tensor.dtype], tensor)
 
     def get_cuda_ver(self) -> str:
         """Get GPU runtime version with platform indicator.

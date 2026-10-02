@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 from ..common import SafeTensorsMetadata, SingleGroup
 from ..cpp import cpu_free, cpu_malloc, gds_device_buffer
-from ..st_types import Device, DeviceType, DType
+from ..st_types import DTYPE_SIZES, Device, DeviceType, DType
 from . import FrameworkOpBase, ProcessGroupBase, TensorBase
 
 dtype_convert: Dict[DType, Any] = {
@@ -49,6 +49,13 @@ if hasattr(torch, "uint32"):
 if hasattr(torch, "uint64"):
     dtype_convert[DType.U64] = torch.uint64
 
+_fst_dtypes = {dtype: fst for fst, dtype in dtype_convert.items()}
+
+
+def fst_dtype(dtype: torch.dtype) -> DType:
+    """Translate a PyTorch dtype to its safetensors representation."""
+    return _fst_dtypes[dtype]
+
 
 @dataclass
 class TorchTensor(TensorBase):
@@ -56,6 +63,23 @@ class TorchTensor(TensorBase):
 
     def get_raw(self) -> torch.Tensor:
         return self.real_tensor
+
+    def get_shape(self) -> List[int]:
+        shape = list(self.real_tensor.shape)
+        if self.dtype == DType.F4:
+            if not shape:
+                raise ValueError("F4 requires a packed last dimension")
+            shape[-1] *= 2
+        return shape
+
+    def get_nbytes(self) -> int:
+        return self.real_tensor.nbytes
+
+    def copy_to_buffer(self, buf: memoryview) -> None:
+        if self.real_tensor.numel() == 0:
+            return
+        flat = self.real_tensor.detach().contiguous().reshape(-1).view(torch.uint8)
+        torch.frombuffer(buf, dtype=torch.uint8, count=flat.numel()).copy_(flat)
 
     def contiguous(self) -> "TorchTensor":
         return TorchTensor(self.device, self.dtype, self.real_tensor.contiguous())
@@ -282,12 +306,7 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
         return TorchTensor(tensors[0].device, dtype, torch.cat(ts, dim=dim))
 
     def get_dtype_size(self, dtype: DType) -> float:
-        if dtype == DType.F4:
-            # float4_e2m1fn_x2 packs two 4-bit values into one byte.
-            # safetensors stores shape in FP4-element count, so the byte
-            # size per logical element is 0.5.
-            return 0.5
-        return float(dtype_convert[dtype].itemsize)
+        return float(DTYPE_SIZES[dtype])
 
     def from_dlpack(self, dl_tensor: Any, device: Device, dtype: DType) -> TorchTensor:
         t = torch.from_dlpack(dl_tensor)
@@ -350,6 +369,13 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
 
     def copy_tensor(self, dst: TorchTensor, src: TorchTensor):
         dst.real_tensor.copy_(src.real_tensor)
+
+    def wrap_tensor(self, tensor: torch.Tensor) -> TorchTensor:
+        return TorchTensor(
+            Device(DeviceType(tensor.device.type), tensor.device.index),
+            fst_dtype(tensor.dtype),
+            tensor,
+        )
 
     def get_cuda_ver(self) -> str:
         """Get GPU runtime version with platform indicator.

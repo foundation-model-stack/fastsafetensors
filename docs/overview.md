@@ -64,6 +64,52 @@ with fastsafe_open(filenames=[filename], nogds=True, device="cpu", debug_log=Tru
 `AutoLoader` supports file-based configuration for loader type, pipeline mode, copy settings, and more.
 See [Configuration Guide](./configuration.md) for defaults, examples, and all available options.
 
+# Saving checkpoints
+
+`ParallelSaver` saves a mapping of native framework tensors as size-balanced
+safetensors shards. The destination is a filename prefix; returned paths can be passed
+to `ParallelLoader`. Settings can be reused across saves, while metadata is
+supplied for each checkpoint. Saves finish and release their file resources
+before returning; no explicit close is needed.
+
+```python
+from fastsafetensors import ParallelSaver
+
+saver = ParallelSaver(num_shards=8, num_threads=8, framework="pytorch")
+paths = saver.save(tensors, "/cache/model", metadata={"version": "1"})
+# /cache/model-00001-of-00008.safetensors, ...
+```
+
+Use `save_entries` for `WriteEntry` descriptions containing the on-disk dtype,
+shape, byte size, and an opaque `source`. Pass a `fill` callback to `ParallelSaver`
+to encode entries directly into the supplied `(buffer, entry)` pairs. Determine
+encoded byte sizes before shard planning; variable-size encoders must prepare
+their payloads first. Application-specific formats, layout metadata, and
+compatibility checks belong to the caller.
+
+`num_threads` controls default framework tensor writes; custom callbacks
+control their own parallelism. A fill callback must complete all writes before
+returning and release references to the supplied buffers.
+`shard_metadata` optionally computes string metadata from each shard's entries;
+fastsafetensors stores these values without interpreting them.
+
+`metadata` is repeated in every shard; `shard0_metadata` is stored only in the
+first shard. The lower-level `plan_shards`, `write_shards`, and `save_sharded`
+functions remain available for custom planning and fill callbacks. Completed
+shards are published by individual file renames; the set is not published
+atomically.
+
+`save` accepts native PyTorch tensors by default; use `framework="paddle"`
+for native Paddle tensors. Applications can pass the tensor objects they
+already hold. The saver adapts them internally without copying their storage
+and without importing a tensor framework until native tensor access is needed.
+Existing `TensorBase` wrappers from `get_tensor_wrapped` are also accepted.
+Custom fill and shard metadata callbacks receive the original `source` objects,
+including native tensors, without wrapping. `save_entries` with a custom fill
+callback accepts arbitrary sources and does not load a framework adapter.
+Device tensors are copied to host memory before files are persisted;
+GPU Direct Storage writing is not implemented.
+
 # ROCm
 
 On ROCm, direct storage-to-GPU loading is supported through hipFile (ROCm >= 7.2): when `libhipfile.so` is available, the GDS code path uses it transparently. On older ROCm without hipFile, the loader falls back to the bounce-buffer (`nogds`) path.

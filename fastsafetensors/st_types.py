@@ -61,3 +61,25 @@ class DType(Enum):
     F8_E8M0 = "F8_E8M0"
     F4 = "F4"
     AUTO = "AUTO"
+
+
+# Bytes per logical safetensors element; F4 packs two elements into one byte.
+DTYPE_SIZES = {
+    DType.BOOL: 1,
+    DType.U8: 1,
+    DType.I8: 1,
+    DType.F8_E5M2: 1,
+    DType.F8_E4M3: 1,
+    DType.F8_E8M0: 1,
+    DType.I16: 2,
+    DType.U16: 2,
+    DType.F16: 2,
+    DType.BF16: 2,
+    DType.I32: 4,
+    DType.U32: 4,
+    DType.F32: 4,
+    DType.I64: 8,
+    DType.U64: 8,
+    DType.F64: 8,
+    DType.F4: 0.5,
+}
