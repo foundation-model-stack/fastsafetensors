@@ -148,6 +148,7 @@ class PipelineParallel:
         resident_tensor: Optional[Callable[[str], bool]] = None,
         broadcast_run_bytes: int = 16 << 20,
         broadcast_run_tensors: int = 64,
+        overlap_io: bool = True,
         **kwargs,
     ):
 
@@ -160,6 +161,7 @@ class PipelineParallel:
         if pg is None:
             pg = SingleGroup()
         self.loader = loader
+        self.overlap_io = overlap_io
         # Read only the tensors this rank keeps (e.g. its owned experts); see
         # SafeTensorsFileLoader.set_tensor_filter. get_tensor broadcasts across
         # the loader's process group, so a per-rank filter is only correct when
@@ -477,13 +479,20 @@ class PipelineParallel:
 
     def _drain_queue(self):
         """Discard queued items, closing any file buffers the consumer never took."""
+        error = None
         while True:
             try:
                 item = self.batch_queue.get_nowait()
             except queue.Empty:
-                return
+                break
             if isinstance(item, FileBatch):
-                item.fb.close()
+                try:
+                    item.fb.close()
+                except Exception as exc:
+                    if error is None:
+                        error = exc
+        if error is not None:
+            raise error
 
     def _spec_to_maps(self, spec: List[Any]):
         """Turn a batch spec into (rank_file_map, chunk_plan).
@@ -549,7 +558,7 @@ class PipelineParallel:
             with TimingContext(
                 "copy_files_to_device", self._log_message, batch_id
             ) as timer:
-                fb = self.loader.copy_files_to_device()
+                fb = self.loader.copy_files_to_device(allow_inflight=self.overlap_io)
             copy_time = timer.elapsed_ms
 
             # Get tensor keys
@@ -728,14 +737,22 @@ class PipelineParallel:
             self.stop_event.set()
             if self.consumer_processed is not None:
                 self.consumer_processed.set()
-            self._drain_queue()
-            producer_thread.join(timeout=5)
-            if producer_thread.is_alive():
-                self._log_error(
-                    "producer thread still running after close (it exits "
-                    "once any in-flight copy completes)"
-                )
-            self._drain_queue()
+            error = None
+            try:
+                self._drain_queue()
+            except Exception as exc:
+                error = exc
+            # Stop may arrive while the producer submits IO or builds views.
+            # It owns those buffers until its cancellable queue put finishes.
+            # Join before closing the loader, even if a queued read failed.
+            producer_thread.join()
+            try:
+                self._drain_queue()
+            except Exception as exc:
+                if error is None:
+                    error = exc
+            if error is not None:
+                raise error
 
     def close(self):
         """Close the underlying loader. Safe to call more than once.
@@ -804,6 +821,10 @@ class ParallelLoader(PipelineParallel):
                          non-resident tensor before requesting the next tensor.
                          Under broadcast, it must be a pure function of the name
                          with identical results on every rank.
+        overlap_io (bool): Prepare NoGDS / Unified O_DIRECT views during DMA,
+                         and wait only for
+                         each requested tensor. Default True. Unsupported copiers
+                         retain whole-batch waits. False disables this overlap.
         use_fgds (bool): If True, use FGDS (alternative GPU Direct Storage) instead
                         of cuFile GDS. When FGDS is unavailable, falls back to nogds.
         broadcast_run_bytes (int): Maximum bytes per coalesced PyTorch broadcast
@@ -851,6 +872,7 @@ class ParallelLoader(PipelineParallel):
         use_fgds: bool = False,
         broadcast_run_bytes: int = 16 << 20,
         broadcast_run_tensors: int = 64,
+        overlap_io: bool = True,
         **kwargs,
     ):
         """Initialize PipelineParallelLoader with a pre-configured SafeTensorsFileLoader.
@@ -903,5 +925,6 @@ class ParallelLoader(PipelineParallel):
             resident_tensor=resident_tensor,
             broadcast_run_bytes=broadcast_run_bytes,
             broadcast_run_tensors=broadcast_run_tensors,
+            overlap_io=overlap_io,
             **kwargs,
         )

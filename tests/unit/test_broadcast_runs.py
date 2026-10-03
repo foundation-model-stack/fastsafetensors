@@ -87,7 +87,8 @@ def _checkpoint(path, prefix):
 
 @pytest.mark.parametrize("residency", ["all", "none", "mixed"])
 @pytest.mark.parametrize("chunked", [True, False])
-def test_pipeline_runs_own_storage(pg, framework, tmp_dir, residency, chunked):
+@pytest.mark.parametrize("overlap", [False, True])
+def test_pipeline_runs_own_storage(pg, framework, tmp_dir, residency, chunked, overlap):
     if framework.get_name() != "pytorch":
         pytest.skip("PyTorch broadcast optimization")
     import torch
@@ -118,6 +119,7 @@ def test_pipeline_runs_own_storage(pg, framework, tmp_dir, residency, chunked):
         resident_tensor=resident,
         broadcast_run_bytes=0,
         max_batch_bytes=32 if chunked else None,
+        overlap_io=overlap,
     )
     try:
         with closing(reference_loader.iterate_weights()) as weights:
@@ -145,6 +147,7 @@ def test_pipeline_runs_own_storage(pg, framework, tmp_dir, residency, chunked):
             broadcast_run_bytes=32,
             broadcast_run_tensors=3,
             max_batch_bytes=32 if chunked else None,
+            overlap_io=overlap,
         )
         try:
             with closing(loader.iterate_weights()) as weights:
@@ -187,7 +190,8 @@ def test_pipeline_runs_own_storage(pg, framework, tmp_dir, residency, chunked):
 
 
 @pytest.mark.parametrize("accumulate", [True, False])
-def test_pipeline_runs_early_close(input_files, pg, framework, accumulate):
+@pytest.mark.parametrize("overlap", [False, True])
+def test_pipeline_runs_early_close(input_files, pg, framework, accumulate, overlap):
     if framework.get_name() != "pytorch":
         pytest.skip("PyTorch stream lifetime")
     import torch
@@ -201,6 +205,7 @@ def test_pipeline_runs_early_close(input_files, pg, framework, accumulate):
         nogds=True,
         use_tqdm_on_load=False,
         accumulate_resident=accumulate,
+        overlap_io=overlap,
     )
     iterator = loader.iterate_weights()
     name, first = next(iterator)

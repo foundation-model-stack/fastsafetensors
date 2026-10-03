@@ -169,7 +169,8 @@ public:
     nogds_file_reader(bool use_mmap, uint64_t bbuf_size_kb, uint64_t max_threads,
                       bool use_cuda, int device_id, int numa_node = -1);
     const int submit_read(int fd, const gds_device_buffer& dst, int64_t offset,
-                          int64_t length, uint64_t ptr_off);
+                          int64_t length, uint64_t ptr_off, bool track_progress = false);
+    const uint64_t wait_read_prefix(int request_id, uint64_t length);
     const uintptr_t wait_read(int request_id);
     ~nogds_file_reader();
 };
@@ -207,7 +208,8 @@ public:
     ~gds_file_reader();
     const int submit_read(const gds_file_handle &fh, const gds_device_buffer &dst,
                          uint64_t offset, uint64_t length, uint64_t ptr_off,
-                         uint64_t file_length);
+                         uint64_t file_length, bool track_progress = false);
+    const uint64_t wait_read_prefix(int id, uint64_t length);
     const ssize_t wait_read(int id);
 };
 

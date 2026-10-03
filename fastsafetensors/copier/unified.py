@@ -13,6 +13,9 @@ module never imports torch or paddle directly.
 """
 
 import os
+import threading
+from bisect import bisect_right
+from operator import itemgetter
 from typing import Dict, List, Optional, Set, Tuple
 
 from .. import cpp as fstcpp
@@ -53,6 +56,7 @@ _DMA_THREADS_ENV = "FASTSAFETENSORS_DMA_THREADS"
 _DMA_THREADS_DEFAULT = 8
 # Keep in sync with PIN_CHUNK in cpp/ext.cpp.
 _DMA_PIN_CHUNK = 16 << 20
+_range_end = itemgetter(1)
 
 
 def _dma_threads_from_env() -> int:
@@ -106,6 +110,7 @@ class UnifiedMemCopier(CopierInterface):
         metadata: SafeTensorsMetadata,
         device: Device,
         framework: FrameworkOpBase,
+        dma_gate: Optional[threading.Lock] = None,
     ):
         self.metadata = metadata
         self.device = device
@@ -120,6 +125,72 @@ class UnifiedMemCopier(CopierInterface):
         # bypass the cache and drive NVMe queue depth. Falls back to pin_memory
         # if the reader is unavailable.
         self._dma_threads = _dma_threads_from_env()
+        self._dma_gate = dma_gate if dma_gate is not None else threading.Lock()
+        self._readiness = False
+        self._completion: Optional[fstcpp.dma_completion] = None
+        self._dma_thread: Optional[threading.Thread] = None
+        self._dma_error: Optional[BaseException] = None
+        self._dma_rc = 0
+        self._ready_blocks = bytearray()
+        self._read_ranges: List[Tuple[int, int]] = []
+
+    def enable_tensor_readiness(self) -> bool:
+        self._readiness = (
+            self.device.type != DeviceType.CPU
+            and self._dma_threads > 0
+            and _odirect_ok(self.metadata.src)
+            and hasattr(fstcpp, "dma_load_runs_progress")
+        )
+        return self._readiness
+
+    def prepare_tensors(self, gbuf: fstcpp.gds_device_buffer) -> Dict[str, TensorBase]:
+        return self.metadata._get_tensors(
+            gbuf, self.device, self._base_off, names=self._chunk_names
+        )
+
+    def wait_tensor(self, name: str) -> None:
+        if self._completion is None:
+            return
+        frame = self.metadata.tensors[name]
+        start = self.metadata.header_length + frame.data_offsets[0]
+        end = self.metadata.header_length + frame.data_offsets[1]
+        if start == end:
+            return
+        covered = start
+        index = bisect_right(self._read_ranges, start, key=_range_end)
+        while covered < end and index < len(self._read_ranges):
+            lo, hi = self._read_ranges[index]
+            if lo > covered:
+                break
+            covered = min(end, hi)
+            index += 1
+        if covered != end:
+            raise ValueError(f"tensor {name} includes unread bytes")
+        first = (start - self._base_off) // _DMA_PIN_CHUNK
+        last = (end - 1 - self._base_off) // _DMA_PIN_CHUNK
+        if self._ready_blocks.find(b"\x00", first, last + 1) == -1:
+            return
+        rc = self._completion.wait_range(start, end)
+        if rc:
+            raise RuntimeError(f"dma_load_runs failed with rc={rc}")
+        self._ready_blocks[first : last + 1] = b"\x01" * (last - first + 1)
+
+    def finish_io(self) -> None:
+        if self._dma_thread is not None:
+            self._dma_thread.join()
+            self._dma_thread = None
+        elif self._pinned:
+            self.framework.synchronize(self.device)
+        self._pinned = []
+        self._completion = None
+        self._ready_blocks.clear()
+        self._read_ranges.clear()
+        error, rc = self._dma_error, self._dma_rc
+        self._dma_error, self._dma_rc = None, 0
+        if error is not None:
+            raise error
+        if rc:
+            raise RuntimeError(f"dma_load_runs failed with rc={rc}")
 
     def set_byte_ranges(self, byte_ranges: Optional[List[Tuple[int, int]]]) -> None:
         """Restrict reads to these ``[start, end)`` absolute file-offset runs.
@@ -224,6 +295,45 @@ class UnifiedMemCopier(CopierInterface):
                 device_id = -1
             else:
                 device_id = self.device.index if self.device.index is not None else 0
+            if self._readiness:
+                completion = fstcpp.dma_completion(base_off, starts, ends)
+                self._completion = completion
+                self._read_ranges = list(runs)
+                last = max(ends, default=base_off)
+                self._ready_blocks = bytearray(
+                    (last - base_off + _DMA_PIN_CHUNK - 1) // _DMA_PIN_CHUNK
+                )
+
+                def read():
+                    try:
+                        # One active DMA job per loader keeps the reusable pinned
+                        # pool at the planner's fixed worker-count allowance.
+                        with self._dma_gate:
+                            self.framework.set_device(self.device)
+                            self.framework.synchronize(self.device)
+                            self._dma_rc = fstcpp.dma_load_runs_progress(
+                                gbuf.get_base_address(),
+                                self.metadata.src,
+                                base_off,
+                                starts,
+                                ends,
+                                self._dma_threads,
+                                device_id,
+                                completion,
+                            )
+                    except BaseException as error:
+                        self._dma_error = error
+                        completion.finish(-6)
+
+                self._dma_thread = threading.Thread(target=read, name="fst-unified-dma")
+                try:
+                    self._dma_thread.start()
+                except BaseException:
+                    self._dma_thread = None
+                    self._completion = None
+                    self.framework.free_tensor_memory(gbuf, self.device)
+                    raise
+                return gbuf
             rc = dma_load_runs(
                 gbuf.get_base_address(),
                 self.metadata.src,
@@ -267,6 +377,7 @@ class UnifiedMemCopier(CopierInterface):
         dtype: DType = DType.AUTO,
         noalign: bool = False,
     ) -> Dict[str, TensorBase]:
+        self.finish_io()
         self.framework.synchronize(self.device)
 
         # Alignment note: unlike the GDS copier, we only copy the data section
@@ -312,12 +423,13 @@ def new_unified_copier(device: Device, **kwargs) -> CopierConstructFunc:
     from .nogds import load_library_func
 
     load_library_func(kwargs.get("framework"))
+    dma_gate = threading.Lock()
 
     def construct_unified_copier(
         metadata: SafeTensorsMetadata,
         device: Device,
         framework: FrameworkOpBase,
     ) -> CopierInterface:
-        return UnifiedMemCopier(metadata, device, framework)
+        return UnifiedMemCopier(metadata, device, framework, dma_gate)
 
     return construct_unified_copier

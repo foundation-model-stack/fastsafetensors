@@ -23,6 +23,7 @@ unittest:
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_15 pytest -s --cov=$(FST_DIR) tests/unit/test_config.py && \
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_16 pytest -s --cov=$(FST_DIR) tests/unit/test_planner.py && \
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_17 pytest -s --cov=$(FST_DIR) tests/unit/test_auto_loader.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_18 pytest -s --cov=$(FST_DIR) tests/unit/test_tensor_readiness.py && \
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_19 pytest -s --cov=$(FST_DIR) tests/unit/test_runtime_hint.py && \
 	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_20 pytest -s --cov=$(FST_DIR) tests/unit/threefs/
 

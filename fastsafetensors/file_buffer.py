@@ -71,10 +71,17 @@ class FilesBufferOnDevice:
         Any tensor returned from this FilesBufferOnDevice becomes invalid after
         close() unless the caller cloned/copied it to independent storage.
         """
+        error = None
         for _, loaders in self.rank_loaders.items():
             for loader in loaders:
-                loader.free_dev_ptrs()
+                try:
+                    loader.free_dev_ptrs()
+                except Exception as exc:
+                    if error is None:
+                        error = exc
         self.rank_loaders = {}
+        if error is not None:
+            raise error
 
     def get_filename(self, tensor_name: str) -> str:
         rank, lidx = self._get_rank_lidx(tensor_name)
@@ -235,6 +242,12 @@ class FilesBufferOnDevice:
                 frames = [loader.metadata.tensors[name] for name in run]
                 tensors = None
                 if frames[0].data_offsets[1] > frames[0].data_offsets[0]:
+                    # Readiness-capable copiers can publish views before DMA
+                    # finishes. Wait for every source range before cloning it.
+                    wait_tensor = getattr(loader, "wait_tensor", None)
+                    if self.pg.rank() == rank and wait_tensor is not None:
+                        for name in run:
+                            wait_tensor(name)
                     source = (
                         [loader.tensors[name] for name in run]
                         if self.pg.rank() == rank

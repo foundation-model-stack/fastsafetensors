@@ -205,8 +205,14 @@ class BaseSafeTensorsFileLoader:
         dtype: DType = DType.AUTO,
         use_buf_register: bool = True,
         max_copy_block_size: int = 16 * 1024 * 1024 * 1024,
+        allow_inflight: bool = False,
     ) -> FilesBufferOnDevice:
         """
+        With allow_inflight=True, supporting copiers prepare AUTO dtype views
+        during IO and wait for the necessary DMA range at tensor access. Closing
+        the returned buffer drains all outstanding IO. Other copiers and online
+        dtype conversion retain the blocking behavior.
+
         trigger copying all the files to device buffers.
         At this moment, we do not instantiate tensors but just creating copies at device buffers with or without GDS.
         Users can instantiate and/or partition tensors with FilesBufferOnDevice returned by this function.
@@ -229,43 +235,58 @@ class BaseSafeTensorsFileLoader:
 
         factory_idx_bits = math.ceil(math.log2(len(self.meta) + 1))
         lidx = 1
-        for realpath, (meta, rank) in sorted(self.meta.items(), key=lambda x: x[0]):
-            self_rank = self.pg.rank() == rank
-            if self_rank:
-                copier = self.copier_constructor(meta, self.device, self.framework)
-                chunk = self._chunk_plan.get(realpath)
-                if chunk is not None:
-                    # Copiers without partial-read support refuse the chunk
-                    # plan here (CopierInterface.set_chunk raises).
-                    # Legacy two-argument overrides work only without an
-                    # allocation size; budget-sized allocation needs all three.
-                    names, ranges, allocation_size = chunk
-                    if allocation_size is None:
-                        copier.set_chunk(ranges, names)
-                    else:
-                        copier.set_chunk(ranges, names, allocation_size)
-                elif self._tensor_filter is not None:
-                    copier.set_byte_ranges(meta.select_byte_ranges(self._tensor_filter))
-            else:
-                copier = None
-            factory = LazyTensorFactory(
-                meta,
-                self.device,
-                rank,
-                self_rank,
-                factory_idx_bits,
-                lidx,
-                copier,
-                self.framework,
-                disable_cache=self.disable_cache,
-            )
-            factory.submit_io(use_buf_register, max_copy_block_size)
-            factories[rank].append(factory)
-            if self_rank:
-                need_wait.append(factory)
-            lidx += 1
-        for factory in need_wait:
-            factory.wait_io(dtype=dtype, noalign=False)
+        try:
+            for realpath, (meta, rank) in sorted(self.meta.items(), key=lambda x: x[0]):
+                self_rank = self.pg.rank() == rank
+                if self_rank:
+                    copier = self.copier_constructor(meta, self.device, self.framework)
+                    chunk = self._chunk_plan.get(realpath)
+                    if chunk is not None:
+                        # Copiers without partial-read support refuse the chunk
+                        # plan here (CopierInterface.set_chunk raises).
+                        # Legacy two-argument overrides work only without an
+                        # allocation size; budget-sized allocation needs all three.
+                        names, ranges, allocation_size = chunk
+                        if allocation_size is None:
+                            copier.set_chunk(ranges, names)
+                        else:
+                            copier.set_chunk(ranges, names, allocation_size)
+                    elif self._tensor_filter is not None:
+                        copier.set_byte_ranges(
+                            meta.select_byte_ranges(self._tensor_filter)
+                        )
+                else:
+                    copier = None
+                factory = LazyTensorFactory(
+                    meta,
+                    self.device,
+                    rank,
+                    self_rank,
+                    factory_idx_bits,
+                    lidx,
+                    copier,
+                    self.framework,
+                    disable_cache=self.disable_cache,
+                )
+                factories[rank].append(factory)
+                factory.submit_io(
+                    use_buf_register,
+                    max_copy_block_size,
+                    allow_inflight=allow_inflight and dtype == DType.AUTO,
+                )
+                if self_rank:
+                    need_wait.append(factory)
+                lidx += 1
+            for factory in need_wait:
+                factory.wait_io(dtype=dtype, noalign=False)
+        except BaseException:
+            for loaders in factories.values():
+                for factory in loaders:
+                    try:
+                        factory.free_dev_ptrs()
+                    except Exception:
+                        pass  # Preserve the original submission/materialization error.
+            raise
         if self._chunk_plan:
             # Only this sub-batch's chunk tensors should be registered/visible.
             chunk_keys = set().union(
