@@ -89,6 +89,22 @@ def validated_chunk_allocation_size(
 class CopierInterface(ABC):
     metadata: SafeTensorsMetadata
 
+    def enable_tensor_readiness(self) -> bool:
+        """Opt into view creation during IO and tensor-specific DMA waits.
+
+        Unsupported copiers retain the blocking wait_io contract.
+        """
+        return False
+
+    def prepare_tensors(self, gbuf: fstcpp.gds_device_buffer) -> Dict[str, TensorBase]:
+        raise NotImplementedError("this copier cannot prepare views during IO")
+
+    def wait_tensor(self, name: str) -> None:
+        """Wait until the bytes underlying this prepared view are readable."""
+
+    def finish_io(self) -> None:
+        """Drain all inflight writes before buffer or file descriptor release."""
+
     def set_byte_ranges(self, byte_ranges: Optional[List[Tuple[int, int]]]) -> None:
         """Restrict reads to these ``[start, end)`` absolute file-offset runs.
 

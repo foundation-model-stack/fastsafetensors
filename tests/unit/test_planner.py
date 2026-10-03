@@ -776,8 +776,9 @@ def test_loader_enriches_serial_failure_after_fixed_overhead_deduction(
 
 
 @pytest.mark.parametrize("odirect", [False, True])
+@pytest.mark.parametrize("overlap_io", [False, True])
 def test_unified_budgeted_load_accounts_for_pool_and_reads_correctly(
-    input_files, framework, monkeypatch, odirect
+    input_files, framework, monkeypatch, odirect, overlap_io
 ):
     if framework.get_name() != "pytorch":
         pytest.skip("pytorch-only integration test")
@@ -810,7 +811,8 @@ def test_unified_budgeted_load_accounts_for_pool_and_reads_correctly(
     seen = {}
     real_plan = _planner.plan_file_budgets
     dma_results = []
-    real_dma_load_runs = getattr(fstcpp, "dma_load_runs", None)
+    dma_function = "dma_load_runs_progress" if overlap_io else "dma_load_runs"
+    real_dma_load_runs = getattr(fstcpp, dma_function, None)
     if odirect:
 
         def record_dma_load_runs(*args):
@@ -818,7 +820,7 @@ def test_unified_budgeted_load_accounts_for_pool_and_reads_correctly(
             dma_results.append(rc)
             return rc
 
-        monkeypatch.setattr(fstcpp, "dma_load_runs", record_dma_load_runs)
+        monkeypatch.setattr(fstcpp, dma_function, record_dma_load_runs)
 
     def record_plan(stats, device_memory_budget, *args, **kwargs):
         seen["budget"] = device_memory_budget
@@ -832,6 +834,7 @@ def test_unified_budgeted_load_accounts_for_pool_and_reads_correctly(
         nogds=True,
         use_tqdm_on_load=False,
         device_memory_budget=budget,
+        overlap_io=overlap_io,
     )
     try:
         assert seen["budget"] == budget - overhead

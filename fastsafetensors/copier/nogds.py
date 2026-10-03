@@ -2,6 +2,8 @@
 
 import os
 import sys
+from bisect import bisect_right
+from operator import itemgetter
 from typing import Dict, List, Optional, Set, Tuple
 
 from .. import cpp as fstcpp
@@ -19,6 +21,8 @@ from .base import (
     validated_chunk_allocation_size,
 )
 from .registry import CopierConstructFunc, register_copier_constructor
+
+_request_end = itemgetter(2)
 
 
 class NoGdsFileCopier(CopierInterface):
@@ -48,6 +52,42 @@ class NoGdsFileCopier(CopierInterface):
         self._chunk_names: Optional[Set[str]] = None
         self._chunk_allocation_size: Optional[int] = None
         self._base_off = metadata.header_length
+        self._readiness = False
+        self._request_ranges: List[Tuple[int, int, int]] = []
+        self._ready_prefix: Dict[int, int] = {}
+
+    def enable_tensor_readiness(self) -> bool:
+        self._readiness = True
+        return True
+
+    def prepare_tensors(self, gbuf: fstcpp.gds_device_buffer) -> Dict[str, TensorBase]:
+        # AUTO view construction does not access tensor contents. Online dtype
+        # conversion still uses blocking wait_io, since it reads/writes bytes.
+        return self.metadata._get_tensors(
+            gbuf, self.device, self._base_off, names=self._chunk_names
+        )
+
+    def wait_tensor(self, name: str) -> None:
+        frame = self.metadata.tensors[name]
+        start = self.metadata.header_length + frame.data_offsets[0]
+        end = self.metadata.header_length + frame.data_offsets[1]
+        if start == end:
+            return
+        covered = start
+        # Requests are ordered and disjoint. Skip earlier requests without
+        # rescanning them for every tensor, including out-of-order access.
+        index = bisect_right(self._request_ranges, start, key=_request_end)
+        while covered < end and index < len(self._request_ranges):
+            req, lo, hi = self._request_ranges[index]
+            if lo > covered:
+                break
+            needed = min(end, hi) - lo
+            if self._ready_prefix.get(req, 0) < needed:
+                self._ready_prefix[req] = self.reader.wait_read_prefix(req, needed)
+            covered = min(end, hi)
+            index += 1
+        if covered != end:
+            raise ValueError(f"tensor {name} includes unread bytes")
 
     def set_byte_ranges(self, byte_ranges: Optional[List[Tuple[int, int]]]) -> None:
         """Restrict reads to these ``[start, end)`` absolute file-offset runs.
@@ -97,6 +137,8 @@ class NoGdsFileCopier(CopierInterface):
     def submit_io(
         self, use_buf_register: bool, max_copy_block_size: int
     ) -> fstcpp.gds_device_buffer:
+        if max_copy_block_size <= 0:
+            raise ValueError("max_copy_block_size must be positive")
         header_length = self.metadata.header_length
         # Default to a single run spanning the whole data section, which
         # reproduces the original full-file read.
@@ -114,17 +156,35 @@ class NoGdsFileCopier(CopierInterface):
             alloc_length = self.metadata.size_bytes - header_length
         self._base_off = base_off
         gbuf = self.framework.alloc_tensor_memory(alloc_length, self.device)
-        for start, end in runs:
-            count = start
-            while count < end:
-                l = end - count
-                if max_copy_block_size < l:
-                    l = max_copy_block_size
-                req = self.reader.submit_read(self.fd, gbuf, count, l, count - base_off)
-                if req < 0:
-                    raise Exception(f"submit_io: submit_nogds_read failed, err={req}")
-                self.reqs.append(req)
-                count += l
+        try:
+            for start, end in runs:
+                count = start
+                while count < end:
+                    l = end - count
+                    if max_copy_block_size < l:
+                        l = max_copy_block_size
+                    if self._readiness:
+                        req = self.reader.submit_read(
+                            self.fd, gbuf, count, l, count - base_off, True
+                        )
+                    else:
+                        req = self.reader.submit_read(
+                            self.fd, gbuf, count, l, count - base_off
+                        )
+                    if req < 0:
+                        raise Exception(
+                            f"submit_io: submit_nogds_read failed, err={req}"
+                        )
+                    self.reqs.append(req)
+                    if self._readiness:
+                        self._request_ranges.append((req, count, count + l))
+                    count += l
+        except BaseException:
+            try:
+                self.finish_io()
+            finally:
+                self.framework.free_tensor_memory(gbuf, self.device)
+            raise
         return gbuf
 
     def wait_io(
@@ -133,6 +193,12 @@ class NoGdsFileCopier(CopierInterface):
         dtype: DType = DType.AUTO,
         noalign: bool = False,
     ) -> Dict[str, TensorBase]:
+        self.finish_io()
+        return self.metadata._get_tensors(
+            gbuf, self.device, self._base_off, dtype=dtype, names=self._chunk_names
+        )
+
+    def finish_io(self) -> None:
         # Drain every request before closing the fd so no in-flight read can
         # observe a closed descriptor, then report failures.
         failed = []
@@ -140,14 +206,14 @@ class NoGdsFileCopier(CopierInterface):
             count = self.reader.wait_read(req)
             if count == 0:
                 failed.append(req)
-        if self.fd > 0:
+        self.reqs.clear()
+        self._request_ranges.clear()
+        self._ready_prefix.clear()
+        if self.fd >= 0:
             os.close(self.fd)
-            self.fd = 0
+            self.fd = -1
         if len(failed) > 0:
             raise Exception(f"wait_io: wait_nogds_read failed, reqs={failed}")
-        return self.metadata._get_tensors(
-            gbuf, self.device, self._base_off, dtype=dtype, names=self._chunk_names
-        )
 
 
 _loaded_library = False

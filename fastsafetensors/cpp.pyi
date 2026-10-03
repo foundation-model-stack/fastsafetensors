@@ -21,9 +21,32 @@ class nogds_file_reader:
         numa_node: int = -1,
     ) -> None: ...
     def submit_read(
-        self, fd: int, dst: gds_device_buffer, offset: int, length: int, ptr_off: int
+        self,
+        fd: int,
+        dst: gds_device_buffer,
+        offset: int,
+        length: int,
+        ptr_off: int,
+        track_progress: bool = False,
     ) -> int: ...
+    def wait_read_prefix(self, request_id: int, length: int) -> int: ...
     def wait_read(self, thread_id: int) -> int: ...
+
+class dma_completion:
+    def __init__(self, base: int, starts: list[int], ends: list[int]) -> None: ...
+    def wait_range(self, start: int, end: int) -> int: ...
+    def finish(self, result: int) -> int: ...
+
+def dma_load_runs_progress(
+    gbuf_dev: int,
+    path: str,
+    header_len: int,
+    starts: list[int],
+    ends: list[int],
+    nthreads: int,
+    device_id: int,
+    completion: dma_completion,
+) -> int: ...
 
 class gds_file_handle:
     def __init__(self, filename: str, o_direct: bool, use_cuda: bool) -> None: ...
@@ -45,7 +68,9 @@ class gds_file_reader:
         length: int,
         ptr_off: int,
         file_length: int,
+        track_progress: bool = False,
     ) -> int: ...
+    def wait_read_prefix(self, request_id: int, length: int) -> int: ...
     def wait_read(self, id: int) -> int: ...
 
 class fgds_file_handle:

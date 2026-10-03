@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from . import cpp as fstcpp
 from .common import SafeTensorsMetadata, init_logger, is_debug
@@ -38,9 +38,19 @@ class LazyTensorFactory:
         self.lidx = lidx
         self.next_tag = 1
         self.disable_cache = disable_cache
+        # Bind directly to the copier only when views precede DMA completion.
+        # Blocking and unsupported paths have no per-tensor callback overhead.
+        self.wait_tensor: Optional[Callable[[str], None]] = None
 
-    def submit_io(self, use_buf_register: bool, max_copy_block_size: int):
+    def submit_io(
+        self,
+        use_buf_register: bool,
+        max_copy_block_size: int,
+        allow_inflight: bool = False,
+    ):
         if self.copier is not None:
+            if allow_inflight and self.copier.enable_tensor_readiness():
+                self.wait_tensor = self.copier.wait_tensor
             self.gbuf = self.copier.submit_io(use_buf_register, max_copy_block_size)
             if self.gbuf:
                 logger.debug(
@@ -49,11 +59,15 @@ class LazyTensorFactory:
 
     def wait_io(self, dtype: DType = DType.AUTO, noalign: bool = False):
         if self.copier is not None and self.gbuf is not None:
+            if self.wait_tensor is not None and dtype == DType.AUTO:
+                self.tensors = self.copier.prepare_tensors(self.gbuf)
+                return
             self.tensors = self.copier.wait_io(self.gbuf, dtype=dtype, noalign=noalign)
             if is_debug(logger):
                 for name in self.tensors.keys():
                     logger.debug("wait_io: tensor=%s", name)
             self.copier = None
+            self.wait_tensor = None
 
     def push(
         self,
@@ -62,6 +76,8 @@ class LazyTensorFactory:
         dst_rank: int,
         src_rank: int,
     ) -> Optional[TensorBase]:
+        if self.wait_tensor is not None:
+            self.wait_tensor(tensor_name)
         if pg.size() == 1:
             return self.tensors[tensor_name]
         tag = (self.next_tag << self.factory_idx_bits) + self.lidx
@@ -116,14 +132,16 @@ class LazyTensorFactory:
         return t
 
     def shuffle(self, pg: ProcessGroupBase, tensor_name: str, dim: int) -> TensorBase:
-        if pg.size() == 1:
-            # The returned tensor shares the backing gbuf lifetime; public APIs
-            # document that callers must clone/copy before buffer close.
-            return self.tensors[tensor_name]
         if tensor_name in self.shuffled:
             logger.debug("shuffle: use cache, tensor_name=%s", tensor_name)
             t = self.shuffled[tensor_name].clone().detach()
             return t
+        if self.wait_tensor is not None:
+            self.wait_tensor(tensor_name)
+        if pg.size() == 1:
+            # The returned tensor shares the backing gbuf lifetime; public APIs
+            # document that callers must clone/copy before buffer close.
+            return self.tensors[tensor_name]
         frame = self.metadata.tensors[tensor_name]
         if dim == -1:
             if tensor_name in self.tensors:
@@ -197,6 +215,8 @@ class LazyTensorFactory:
         rank_tensors: List[List[TensorBase]] = [[] for i in range(0, pg.size())]
         new_shape: List[int] = []
         for tensor_name in tensor_names:
+            if self.wait_tensor is not None:
+                self.wait_tensor(tensor_name)
             frame = self.metadata.tensors[tensor_name]
             total_size = frame.shape[dim]
             block_size = (total_size + pg.size() - 1) // pg.size()
@@ -259,6 +279,20 @@ class LazyTensorFactory:
         return dst
 
     def free_dev_ptrs(self):
+        try:
+            if self.copier is not None:
+                if self.wait_tensor is None and self.gbuf is not None:
+                    # A later file can fail before this blocking copier's
+                    # wait_io was reached. Drain its writes before cleanup.
+                    self.copier.wait_io(self.gbuf, noalign=True)
+                else:
+                    self.copier.finish_io()
+        finally:
+            self.copier = None
+            self.wait_tensor = None
+            self._free_buffer()
+
+    def _free_buffer(self):
         self.tensors = {}
         if self.gbuf is not None and not isinstance(self.gbuf, DummyDeviceBuffer):
             self.framework.free_tensor_memory(self.gbuf, self.device)

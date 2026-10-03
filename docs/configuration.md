@@ -81,6 +81,39 @@ to bound pending staging allocations while checkpoint reads continue on other
 streams. A `resident_tensor` predicate keeps the per-tensor delivery path, so
 retaining selected tensors does not retain unrelated bytes from shared runs.
 
+## Tensor IO overlap
+
+`ParallelLoader` and `PipelineParallel` default to `overlap_io=True`. The NoGDS,
+GDS, and Unified Memory O_DIRECT copiers create tensor views while their workers
+read and transfer the chunk. A view does not imply ready data: NoGDS access
+waits for the completed DMA prefix that covers the tensor, and Unified Memory
+access waits for completed 16 MiB blocks. Different workers may complete out of
+order; access waits until every block covering the requested tensor is complete.
+GDS publishes a completed prefix after each synchronous cuFileRead block returns.
+Files requiring in-place device pointer alignment repair retain whole-file GDS
+waits, since relocating bytes while DMA writes remain in flight would race.
+Closing a buffer or iterator drains all outstanding writes before freeing
+device storage or closing input files.
+This uses the existing bounce pool and chunk allocations; memory planner limits
+and independent ownership of iterator outputs remain the same.
+
+Use `overlap_io=False` to compare against whole-chunk waits. The low-level
+`SafeTensorsFileLoader.copy_files_to_device()` continues to block by default;
+pass `allow_inflight=True` to opt into guarded tensor access. Online dtype
+conversion and copiers without readiness support retain blocking IO. Unified
+Memory keeps one active O_DIRECT DMA job per loader, so its reusable pinned pool
+stays within the existing fixed worker allowance even with queued chunks. Each
+worker fences its own DMA stream before publishing bytes. O_DIRECT failures
+after asynchronous submission are fatal and are drained on close; rereading
+with mmap after partial delivery would be unsafe. Network filesystems and
+`FASTSAFETENSORS_DMA_THREADS=0` retain blocking mmap/pinning. FGDS and
+DirectStorage do not yet publish partial completion here.
+
+Coalesced broadcasts wait for every tensor in the source run before cloning
+or broadcasting its bytes. Once that run is ready, communication and consumer
+work can overlap the remaining checkpoint reads. Disabling coalescing restores
+per-tensor broadcasts, which synchronize the whole device and limit this overlap.
+
 ## Bounded Device Memory
 
 `max_batch_bytes` caps each sub-file chunk. It must be at least as large as

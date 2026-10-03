@@ -3,7 +3,9 @@
 import os
 import platform
 import warnings
-from typing import Dict, List, Optional
+from bisect import bisect_right
+from operator import itemgetter
+from typing import Dict, List, Optional, Tuple
 
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata, init_logger, is_gpu_found
@@ -14,6 +16,7 @@ from .nogds import load_library_func, new_nogds_file_copier
 from .registry import CopierConstructFunc, register_copier_constructor
 
 logger = init_logger(__name__)
+_request_end = itemgetter(2)
 
 _warned_gds_fallback = False
 
@@ -31,10 +34,14 @@ class GdsFileCopier(CopierInterface):
         self.metadata = metadata
         self.device = device
         self.reader = reader
-        self.gbuf = None
+        self.gbuf: Optional[fstcpp.gds_device_buffer] = None
         self.fh: Optional[fstcpp.gds_file_handle] = None
-        self.copy_reqs: Dict[int, int] = {}
+        self.copy_reqs: List[int] = []
         self.aligned_length = 0
+        self._readiness = False
+        self._request_ranges: List[Tuple[int, int, int]] = []
+        self._ready_prefix: Dict[int, int] = {}
+        self._registered_offsets: List[int] = []
         self._fallback: Optional[CopierInterface] = None
         # One-slot cell shared by all copiers from the same factory, so a
         # broken-GDS host builds a single nogds fallback reader (and its
@@ -67,9 +74,45 @@ class GdsFileCopier(CopierInterface):
     def set_o_direct(self, enable: bool):
         self.o_direct = enable
 
+    def enable_tensor_readiness(self) -> bool:
+        # Relocating misaligned bytes in place can race outstanding DMA. Those
+        # files retain the whole-file wait and alignment repair before access.
+        self._readiness = self.metadata.aligned
+        return self._readiness
+
+    def prepare_tensors(self, gbuf: fstcpp.gds_device_buffer) -> Dict[str, TensorBase]:
+        if self._fallback is not None:
+            return self._fallback.prepare_tensors(gbuf)
+        return self.metadata.get_tensors(gbuf, self.device, self.aligned_offset)
+
+    def wait_tensor(self, name: str) -> None:
+        if self._fallback is not None:
+            self._fallback.wait_tensor(name)
+            return
+        frame = self.metadata.tensors[name]
+        start = self.metadata.header_length + frame.data_offsets[0]
+        end = self.metadata.header_length + frame.data_offsets[1]
+        if start == end:
+            return
+        index = bisect_right(self._request_ranges, start, key=_request_end)
+        covered = start
+        while covered < end and index < len(self._request_ranges):
+            req, lo, hi = self._request_ranges[index]
+            if lo > covered:
+                break
+            needed = min(end, hi) - lo
+            if self._ready_prefix.get(req, 0) < needed:
+                self._ready_prefix[req] = self.reader.wait_read_prefix(req, needed)
+            covered = min(end, hi)
+            index += 1
+        if covered != end:
+            raise ValueError(f"tensor {name} includes unread bytes")
+
     def submit_io(
         self, use_buf_register: bool, max_copy_block_size: int
     ) -> fstcpp.gds_device_buffer:
+        if max_copy_block_size <= 0:
+            raise ValueError("max_copy_block_size must be positive")
         dev_is_cuda = (
             self.device.type == DeviceType.CUDA or self.device.type == DeviceType.GPU
         )
@@ -112,6 +155,9 @@ class GdsFileCopier(CopierInterface):
                 self._fallback = new_nogds_file_copier(
                     self.device, framework=self.framework
                 )(self.metadata, self.device, self.framework)
+            if self._readiness:
+                if not self._fallback.enable_tensor_readiness():
+                    raise RuntimeError("GDS fallback does not support tensor readiness")
             return self._fallback.submit_io(use_buf_register, max_copy_block_size)
         offset = self.metadata.header_length
         length = self.metadata.size_bytes - self.metadata.header_length
@@ -125,41 +171,89 @@ class GdsFileCopier(CopierInterface):
         aligned_offset = offset - head_bytes
 
         gbuf = self.framework.alloc_tensor_memory(aligned_length, self.device)
-        if use_buf_register:
+        self.gbuf = gbuf
+        self.aligned_offset = aligned_offset
+        self.aligned_length = aligned_length
+        try:
+            if use_buf_register:
+                count = 0
+                while count < aligned_length:
+                    req_len = min(aligned_length - count, max_copy_block_size)
+                    if gbuf.cufile_register(count, req_len) < 0:
+                        raise RuntimeError(
+                            f"submit_io: register_buffer failed, offset={count}, length={req_len}"
+                        )
+                    self._registered_offsets.append(count)
+                    count += req_len
             count = 0
             while count < aligned_length:
-                req_len = aligned_length - count
-                if req_len > max_copy_block_size:
-                    req_len = max_copy_block_size
-                if gbuf.cufile_register(count, req_len) < 0:
-                    raise Exception(
-                        "submit_io: register_buffer failed, ptr=0x{:x}, count={}, len={}".format(
-                            gbuf.get_base_address(), count, req_len
+                req_len = min(aligned_length - count, max_copy_block_size)
+                args = (
+                    self.fh,
+                    gbuf,
+                    aligned_offset + count,
+                    req_len,
+                    count,
+                    self.metadata.size_bytes,
+                )
+                req = (
+                    self.reader.submit_read(*args, True)
+                    if self._readiness
+                    else self.reader.submit_read(*args)
+                )
+                if req < 0:
+                    raise RuntimeError(f"submit_io: submit_gds_read failed, err={req}")
+                self.copy_reqs.append(req)
+                if self._readiness:
+                    self._request_ranges.append(
+                        (
+                            req,
+                            aligned_offset + count,
+                            min(
+                                aligned_offset + count + req_len,
+                                self.metadata.size_bytes,
+                            ),
                         )
                     )
                 count += req_len
-
-        count = 0
-        while count < aligned_length:
-            req_len = aligned_length - count
-            if req_len > max_copy_block_size:
-                req_len = max_copy_block_size
-            # TODO: pass timeout so that wait_copy_tensors can recognize too slow pread()
-            req = self.reader.submit_read(
-                self.fh,
-                gbuf,
-                aligned_offset + count,
-                req_len,
-                count,
-                self.metadata.size_bytes,
-            )
-            if req < 0:
-                raise Exception(f"submit_io: submit_gds_read failed, err={req}")
-            self.copy_reqs[req] = -1 if not use_buf_register else count
-            count += req_len
-        self.aligned_offset = aligned_offset
-        self.aligned_length = aligned_length
+        except BaseException:
+            try:
+                self.finish_io()
+            except Exception:
+                pass  # Preserve the submission error after draining all requests.
+            finally:
+                self.framework.free_tensor_memory(gbuf, self.device)
+                self.gbuf = None
+            raise
         return gbuf
+
+    def finish_io(self) -> None:
+        if self._fallback is not None:
+            try:
+                self._fallback.finish_io()
+            finally:
+                self._fallback = None
+            return
+        error = None
+        for req in self.copy_reqs:
+            try:
+                if self.reader.wait_read(req) < 0:
+                    raise RuntimeError(f"wait_io: wait_gds_read failed, request={req}")
+            except Exception as exc:
+                if error is None:
+                    error = exc
+        self.copy_reqs.clear()
+        for offset in self._registered_offsets:
+            try:
+                if self.gbuf is not None and self.gbuf.cufile_deregister(offset) < 0:
+                    raise RuntimeError("wait_io: deregister_buffer failed")
+            except Exception as exc:
+                if error is None:
+                    error = exc
+        self._registered_offsets.clear()
+        self.fh = None
+        if error is not None:
+            raise error
 
     def wait_io(
         self,
@@ -172,21 +266,7 @@ class GdsFileCopier(CopierInterface):
             # Drop the fallback copier so its bounce-buffer reader is freed.
             self._fallback = None
             return tensors
-        failed = []
-        for req, c in sorted(self.copy_reqs.items(), key=lambda x: x[0]):
-            count = self.reader.wait_read(req)
-            if count < 0:
-                failed.append(req)
-            if c != -1:
-                gbuf.cufile_deregister(c)
-        if self.fh is not None:
-            del self.fh
-            self.fh = None
-        if len(failed) > 0:
-            raise Exception(
-                f"wait_io: wait_gds_read failed, failed={failed}, reqs={self.copy_reqs}"
-            )
-        self.copy_reqs = {}
+        self.finish_io()
         if not noalign and not self.metadata.aligned and self.aligned_length > 0:
             misaligned_bytes = (
                 self.metadata.header_length % self.framework.get_device_ptr_align()

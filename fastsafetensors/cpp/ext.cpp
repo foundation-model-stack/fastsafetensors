@@ -800,7 +800,8 @@ struct nogds_file_reader::state {
         int fd;
         uintptr_t destination;
         int64_t offset, length, next = 0;
-        uint64_t remaining;
+        uint64_t remaining, prefix = 0;
+        std::vector<uint8_t> completed;
         bool failed = false;
     };
     ext_funcs_t *fns;
@@ -862,21 +863,32 @@ struct nogds_file_reader::state {
             check(fns->cudaDeviceSynchronize());
         }
     }
-    void complete(const std::shared_ptr<request> &req, bool failed) {
+    void complete(const std::shared_ptr<request> &req, uint64_t position, bool failed) {
         std::lock_guard<std::mutex> lock(mutex);
         req->failed |= failed;
-        if (--req->remaining == 0) done.notify_all();
+        const uint64_t old_prefix = req->prefix;
+        if (!req->completed.empty() && !failed) {
+            req->completed[position / block_size] = 1;
+            // Workers can finish out of order. Publish only a contiguous prefix
+            // whose DMA has completed, never merely scheduled bytes.
+            while (req->prefix < req->completed.size() && req->completed[req->prefix])
+                ++req->prefix;
+        }
+        --req->remaining;
+        if (req->remaining == 0 || req->failed || old_prefix != req->prefix)
+            done.notify_all();
     }
     void worker(size_t index) {
         bind_numa();
         const cudaError_t device_error = fns->cudaSetDevice(device);
         std::vector<std::shared_ptr<request>> pending(buffers_per_thread);
+        std::vector<uint64_t> pending_positions(buffers_per_thread);
         const size_t first_slot = index * buffers_per_thread;
         size_t slot = 0;
         auto drain = [&](size_t i) {
             if (!pending[i]) return;
             bool failed = fns->cudaStreamSynchronize(copy_streams[first_slot + i]) != cudaSuccess;
-            complete(pending[i], failed);
+            complete(pending[i], pending_positions[i], failed);
             pending[i].reset();
         };
         for (;;) {
@@ -911,8 +923,10 @@ struct nogds_file_reader::state {
                 std::fprintf(stderr, "%s\n", error.what());
                 failed = true;
             }
-            if (streams && !failed) pending[slot] = req;
-            else complete(req, failed);
+            if (streams && !failed) {
+                pending[slot] = req;
+                pending_positions[slot] = position;
+            } else complete(req, position, failed);
             slot = (slot + 1) % buffers_per_thread;
         }
     }
@@ -973,7 +987,7 @@ nogds_file_reader::nogds_file_reader(bool use_mmap, uint64_t bbuf_size_kb,
 }
 
 const int nogds_file_reader::submit_read(int fd, const gds_device_buffer &dst,
-        int64_t offset, int64_t length, uint64_t ptr_off) {
+        int64_t offset, int64_t length, uint64_t ptr_off, bool track_progress) {
     if (offset < 0 || length < 0 || offset > std::numeric_limits<int64_t>::max() - length)
         throw std::invalid_argument("invalid read offset or length");
     if (ptr_off > dst.get_length() || static_cast<uint64_t>(length) > dst.get_length() - ptr_off)
@@ -996,6 +1010,7 @@ const int nogds_file_reader::submit_read(int fd, const gds_device_buffer &dst,
     req->fd = fd; req->destination = dst.get_base_address() + ptr_off;
     req->offset = offset; req->length = length;
     req->remaining = length ? (length - 1) / s.block_size + 1 : 0;
+    if (track_progress) req->completed.resize(req->remaining, 0);
     int id;
     {
         std::lock_guard<std::mutex> lock(s.mutex);
@@ -1006,6 +1021,20 @@ const int nogds_file_reader::submit_read(int fd, const gds_device_buffer &dst,
     }
     s.ready.notify_all();
     return id;
+}
+
+const uint64_t nogds_file_reader::wait_read_prefix(int id, uint64_t length) {
+    state &s = *_state;
+    std::unique_lock<std::mutex> lock(s.mutex);
+    auto req = s.requests.at(id);
+    if (length > static_cast<uint64_t>(req->length))
+        throw std::out_of_range("read prefix out of bounds");
+    if (req->length && req->completed.empty())
+        throw std::invalid_argument("read progress was not enabled");
+    const uint64_t blocks = length ? (length - 1) / s.block_size + 1 : 0;
+    s.done.wait(lock, [&] { return req->failed || req->prefix >= blocks; });
+    if (req->failed) throw std::runtime_error("nogds read failed or truncated input");
+    return std::min<uint64_t>(req->length, req->prefix * s.block_size);
 }
 
 const uintptr_t nogds_file_reader::wait_read(int id) {
@@ -1081,6 +1110,8 @@ struct gds_file_reader::state {
         gds_file_handle fh;
         gds_device_buffer dst;
         uint64_t offset, length, file_bytes, ptr_off, next = 0, remaining;
+        uint64_t prefix = 0;
+        std::vector<uint8_t> completed;
         ssize_t bytes = 0;
         bool failed = false;
         request(const gds_file_handle &f, const gds_device_buffer &d,
@@ -1141,7 +1172,16 @@ struct gds_file_reader::state {
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 r->failed |= failed; r->bytes += bytes;
-                if (--r->remaining == 0) done.notify_all();
+                const uint64_t old_prefix = r->prefix;
+                if (!r->completed.empty() && !failed) {
+                    // cuFileRead is synchronous: its successful return fences
+                    // this block's DMA. Workers may finish out of order.
+                    r->completed[position / block] = 1;
+                    while (r->prefix < r->completed.size() && r->completed[r->prefix])
+                        ++r->prefix;
+                }
+                if (--r->remaining == 0 || r->failed || old_prefix != r->prefix)
+                    done.notify_all();
             }
         }
     }
@@ -1168,7 +1208,7 @@ gds_file_reader::~gds_file_reader() = default;
 
 const int gds_file_reader::submit_read(const gds_file_handle &fh,
         const gds_device_buffer &dst, uint64_t offset, uint64_t length,
-        uint64_t ptr_off, uint64_t file_length) {
+        uint64_t ptr_off, uint64_t file_length, bool track_progress) {
     if (offset > file_length) throw std::out_of_range("file offset out of bounds");
     if (ptr_off > dst.get_length() || length > dst.get_length() - ptr_off)
         throw std::out_of_range("destination out of bounds");
@@ -1181,6 +1221,7 @@ const int gds_file_reader::submit_read(const gds_file_handle &fh,
         throw std::runtime_error("cuFile allocator fence failed");
     auto r = std::make_shared<state::request>(fh, dst, offset, length, file_bytes,
                         ptr_off, file_bytes ? (file_bytes - 1) / s.block + 1 : 0);
+    if (track_progress) r->completed.resize(r->remaining, 0);
     int id;
     {
         std::lock_guard<std::mutex> lock(s.mutex);
@@ -1191,6 +1232,20 @@ const int gds_file_reader::submit_read(const gds_file_handle &fh,
     }
     s.ready.notify_all();
     return id;
+}
+
+const uint64_t gds_file_reader::wait_read_prefix(int id, uint64_t length) {
+    state &s = *_state;
+    std::unique_lock<std::mutex> lock(s.mutex);
+    auto r = s.requests.at(id);
+    // EOF padding is allocated for O_DIRECT, but is never readable tensor data.
+    if (length > r->file_bytes) throw std::out_of_range("read prefix out of bounds");
+    if (r->file_bytes && r->completed.empty())
+        throw std::invalid_argument("read progress was not enabled");
+    const uint64_t blocks = length ? (length - 1) / s.block + 1 : 0;
+    s.done.wait(lock, [&] { return r->failed || r->prefix >= blocks; });
+    if (r->failed) throw std::runtime_error("cuFile read failed or truncated input");
+    return std::min(r->file_bytes, r->prefix * s.block);
 }
 
 const ssize_t gds_file_reader::wait_read(int id) {
@@ -1350,6 +1405,79 @@ static std::vector<void *> g_pin_pool;
 static const size_t PIN_CHUNK = 16UL << 20;
 static const unsigned int PIN_FLAG_PORTABLE = 0x1;
 
+// Range completion for the Unified Memory O_DIRECT reader. Track selected
+// bytes rather than whole file blocks so compact, disjoint runs are supported.
+class dma_completion {
+public:
+    dma_completion(size_t base, const std::vector<size_t> &starts,
+                   const std::vector<size_t> &ends) : base(base), limit(base) {
+        if (starts.size() != ends.size()) throw std::invalid_argument("invalid DMA ranges");
+        size_t previous = base;
+        for (size_t i = 0; i < starts.size(); ++i) {
+            if (starts[i] < previous || ends[i] < starts[i])
+                throw std::invalid_argument("invalid DMA ranges");
+            previous = ends[i];
+            limit = std::max(limit, ends[i]);
+        }
+        pending.resize(limit > base ? (limit - base - 1) / PIN_CHUNK + 1 : 0, 0);
+        for (size_t r = 0; r < starts.size(); ++r)
+            visit(starts[r], ends[r], [&](size_t block, size_t bytes) { pending[block] += bytes; });
+    }
+
+    void complete(size_t start, size_t end) {
+        std::lock_guard<std::mutex> lock(mutex);
+        bool ready = false;
+        visit(start, end, [&](size_t block, size_t bytes) {
+            pending[block] -= bytes;
+            ready |= pending[block] == 0;
+        });
+        // Wait predicates change only when a block becomes fully readable.
+        if (ready) cv.notify_all();
+    }
+
+    int wait_range(size_t start, size_t end) {
+        if (start < base || end < start || end > limit)
+            throw std::out_of_range("DMA range out of bounds");
+        if (start == end) return 0;
+        const size_t first = (start - base) / PIN_CHUNK;
+        const size_t last = (end - 1 - base) / PIN_CHUNK;
+        std::unique_lock<std::mutex> lock(mutex);
+        bool ready = false;
+        cv.wait(lock, [&] {
+            ready = std::all_of(pending.begin() + first, pending.begin() + last + 1,
+                               [](size_t bytes) { return bytes == 0; });
+            return done || ready;
+        });
+        return ready ? 0 : (rc ? rc : -5);
+    }
+
+    int finish(int result) {
+        std::lock_guard<std::mutex> lock(mutex);
+        rc = result;
+        if (!rc) for (size_t bytes : pending) if (bytes) { rc = -5; break; }
+        done = true;
+        cv.notify_all();
+        return rc;
+    }
+
+private:
+    template <typename F> void visit(size_t start, size_t end, F fn) {
+        for (size_t p = start; p < end;) {
+            size_t block = (p - base) / PIN_CHUNK;
+            // Avoid overflowing base + (block + 1) * PIN_CHUNK.
+            size_t stop = p + std::min(end - p, PIN_CHUNK - (p - base) % PIN_CHUNK);
+            fn(block, stop - p);
+            p = stop;
+        }
+    }
+    size_t base, limit;
+    std::vector<size_t> pending;
+    bool done = false;
+    int rc = 0;
+    std::mutex mutex;
+    std::condition_variable cv;
+};
+
 static void *pin_acquire() {
     {
         std::lock_guard<std::mutex> lk(g_pin_mtx);
@@ -1375,7 +1503,8 @@ static int dma_load_runs(uintptr_t gbuf_dev, const std::string &path,
                          size_t header_len,
                          const std::vector<size_t> &starts,
                          const std::vector<size_t> &ends, int nthreads,
-                         int device_id) {
+                         int device_id,
+                         const std::shared_ptr<dma_completion> &completion = nullptr) {
     if (!cuda_fns.cudaHostAlloc || !cuda_fns.cudaMemcpy || !cuda_fns.cudaFreeHost
         || !cuda_fns.cudaDeviceSynchronize) {
         return -10;
@@ -1416,6 +1545,16 @@ static int dma_load_runs(uintptr_t gbuf_dev, const std::string &path,
                 pin_release(pinned);
                 return;
             }
+            cudaStream_t stream = nullptr;
+            const bool streams = completion && cuda_fns.cudaMemcpyAsync
+                && cuda_fns.cudaStreamCreateWithFlags && cuda_fns.cudaStreamSynchronize
+                && cuda_fns.cudaStreamDestroy;
+            if (streams && cuda_fns.cudaStreamCreateWithFlags(&stream, 1) != cudaSuccess) {
+                rc = -4;
+                close(fd);
+                pin_release(pinned);
+                return;
+            }
             size_t cum = 0;
             for (size_t r = 0; r < n_runs && rc.load() == 0; r++) {
                 size_t rs = starts[r], re = ends[r], rlen = re - rs;
@@ -1437,17 +1576,38 @@ static int dma_load_runs(uintptr_t gbuf_dev, const std::string &path,
                     size_t cs = fo > fstart ? fo : fstart;  // copy only [fstart,fend)
                     size_t ce = fo_end < fend ? fo_end : fend;
                     if (cs < ce) {
-                        cudaError_t e = cuda_fns.cudaMemcpy(
-                            gbuf + (cs - header_len), (char *)pinned + (cs - fo),
-                            ce - cs, cudaMemcpyHostToDevice);
+                        cudaError_t e;
+                        if (streams) {
+                            e = cuda_fns.cudaMemcpyAsync(
+                                gbuf + (cs - header_len), (char *)pinned + (cs - fo),
+                                ce - cs, cudaMemcpyHostToDevice, stream);
+                            // Fence only this worker's DMA before publishing bytes
+                            // or reusing its pinned bounce buffer.
+                            cudaError_t sync = cuda_fns.cudaStreamSynchronize(stream);
+                            if (e == cudaSuccess) e = sync;
+                        } else {
+                            e = cuda_fns.cudaMemcpy(
+                                gbuf + (cs - header_len), (char *)pinned + (cs - fo),
+                                ce - cs, cudaMemcpyHostToDevice);
+                            if (completion) {
+                                cudaError_t sync = cuda_fns.cudaDeviceSynchronize();
+                                if (e == cudaSuccess) e = sync;
+                            }
+                        }
                         if (e != cudaSuccess) { rc = -4; break; }
+                        if (completion) completion->complete(cs, ce);
                     }
                     if (fo_end >= fend) break;
                 }
             }
             // Synchronize on this thread (its current device is the target);
             // the calling thread may have a different device current.
-            cuda_fns.cudaDeviceSynchronize();
+            if (streams) {
+                // Every successful copy was fenced before publishing bytes.
+                // Drain again only on error before releasing the pinned buffer.
+                if (rc.load() != 0 && cuda_fns.cudaStreamSynchronize(stream) != cudaSuccess) rc = -4;
+                cuda_fns.cudaStreamDestroy(stream);
+            } else if (cuda_fns.cudaDeviceSynchronize() != cudaSuccess) rc = -4;
             close(fd);
             pin_release(pinned);
         });
@@ -1514,25 +1674,47 @@ PYBIND11_MODULE(__MOD_NAME__, m)
         pybind11::arg("header_len"), pybind11::arg("starts"),
         pybind11::arg("ends"), pybind11::arg("nthreads") = 8,
         pybind11::arg("device_id") = -1);
+    pybind11::class_<dma_completion, std::shared_ptr<dma_completion>>(m, "dma_completion")
+        .def(pybind11::init<size_t, const std::vector<size_t> &, const std::vector<size_t> &>())
+        .def("wait_range", &dma_completion::wait_range,
+             pybind11::call_guard<pybind11::gil_scoped_release>())
+        .def("finish", &dma_completion::finish);
+    m.def("dma_load_runs_progress",
+        [](uintptr_t ptr, const std::string &path, size_t base,
+           const std::vector<size_t> &starts, const std::vector<size_t> &ends,
+           int threads, int device, const std::shared_ptr<dma_completion> &completion) {
+            if (!completion) throw std::invalid_argument("DMA completion is required");
+            pybind11::gil_scoped_release release;
+            int rc = dma_load_runs(ptr, path, base, starts, ends, threads, device, completion);
+            return completion->finish(rc);
+        }, pybind11::arg("gbuf_dev"), pybind11::arg("path"), pybind11::arg("header_len"),
+        pybind11::arg("starts"), pybind11::arg("ends"), pybind11::arg("nthreads"),
+        pybind11::arg("device_id"), pybind11::arg("completion"));
     m.def("get_cpp_metrics", &get_cpp_metrics);
     m.def("set_gil_release", &set_gil_release);
     m.def("get_gil_release", &get_gil_release);
 
     pybind11::class_<gds_device_buffer>(m, "gds_device_buffer")
         .def(pybind11::init<const uintptr_t, const uint64_t, bool>())
-        .def("cufile_register", &gds_device_buffer::cufile_register)
-        .def("cufile_deregister", &gds_device_buffer::cufile_deregister)
-        .def("memmove", &gds_device_buffer::memmove)
+        // These GPU waits can run on a pipeline producer while the consumer
+        // still needs Python to enqueue collective operations. Do not hold
+        // the GIL across registration or in-place alignment copies.
+        .def("cufile_register", &gds_device_buffer::cufile_register,
+             pybind11::call_guard<pybind11::gil_scoped_release>())
+        .def("cufile_deregister", &gds_device_buffer::cufile_deregister,
+             pybind11::call_guard<pybind11::gil_scoped_release>())
+        .def("memmove", &gds_device_buffer::memmove,
+             pybind11::call_guard<pybind11::gil_scoped_release>())
         .def("get_base_address", &gds_device_buffer::get_base_address)
         .def("get_length", &gds_device_buffer::get_length);
 
     // Helper lambdas to conditionally apply GIL release
-    auto nogds_submit_read = [](nogds_file_reader& self, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off) {
+    auto nogds_submit_read = [](nogds_file_reader& self, const int fd, const gds_device_buffer& dst, const int64_t offset, const int64_t length, const uint64_t ptr_off, bool track_progress) {
         if (enable_gil_release) {
             pybind11::gil_scoped_release release;
-            return self.submit_read(fd, dst, offset, length, ptr_off);
+            return self.submit_read(fd, dst, offset, length, ptr_off, track_progress);
         } else {
-            return self.submit_read(fd, dst, offset, length, ptr_off);
+            return self.submit_read(fd, dst, offset, length, ptr_off, track_progress);
         }
     };
 
@@ -1550,19 +1732,23 @@ PYBIND11_MODULE(__MOD_NAME__, m)
              pybind11::arg("use_mmap"), pybind11::arg("bbuf_size_kb"),
              pybind11::arg("max_threads"), pybind11::arg("use_cuda"),
              pybind11::arg("device_id"), pybind11::arg("numa_node") = -1)
-        .def("submit_read", nogds_submit_read)
+        .def("submit_read", nogds_submit_read, pybind11::arg("fd"), pybind11::arg("dst"),
+             pybind11::arg("offset"), pybind11::arg("length"), pybind11::arg("ptr_off"),
+             pybind11::arg("track_progress") = false)
+        .def("wait_read_prefix", &nogds_file_reader::wait_read_prefix,
+             pybind11::call_guard<pybind11::gil_scoped_release>())
         .def("wait_read", nogds_wait_read);
 
     pybind11::class_<gds_file_handle>(m, "gds_file_handle")
         .def(pybind11::init<std::string, bool, bool>());
 
     // Helper lambdas for gds_file_reader to conditionally apply GIL release
-    auto gds_submit_read = [](gds_file_reader& self, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length) {
+    auto gds_submit_read = [](gds_file_reader& self, const gds_file_handle &fh, const gds_device_buffer &dst, const uint64_t offset, const uint64_t length, const uint64_t ptr_off, const uint64_t file_length, bool track_progress) {
         if (enable_gil_release) {
             pybind11::gil_scoped_release release;
-            return self.submit_read(fh, dst, offset, length, ptr_off, file_length);
+            return self.submit_read(fh, dst, offset, length, ptr_off, file_length, track_progress);
         } else {
-            return self.submit_read(fh, dst, offset, length, ptr_off, file_length);
+            return self.submit_read(fh, dst, offset, length, ptr_off, file_length, track_progress);
         }
     };
 
@@ -1580,7 +1766,11 @@ PYBIND11_MODULE(__MOD_NAME__, m)
              pybind11::arg("max_threads"), pybind11::arg("use_cuda"),
              pybind11::arg("device_id"), pybind11::arg("block_size") = 16 * 1024 * 1024,
              pybind11::arg("numa_node") = -1)
-        .def("submit_read", gds_submit_read)
+        .def("submit_read", gds_submit_read, pybind11::arg("fh"), pybind11::arg("dst"),
+             pybind11::arg("offset"), pybind11::arg("length"), pybind11::arg("ptr_off"),
+             pybind11::arg("file_length"), pybind11::arg("track_progress") = false)
+        .def("wait_read_prefix", &gds_file_reader::wait_read_prefix,
+             pybind11::call_guard<pybind11::gil_scoped_release>())
         .def("wait_read", gds_wait_read);
 
     // FGDS classes. Symbols are resolved at runtime; on platforms without
