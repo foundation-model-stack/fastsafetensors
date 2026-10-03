@@ -24,6 +24,10 @@ class FilesBufferOnDevice:
         backing allocation and stay valid after close(). Physical memory is
         released when the buffer and every exported storage reference are gone.
 
+        With borrowed_tensors=True, local tensors and derived views do not
+        retain the allocation. Complete all use, including asynchronous device
+        work, before close(). References left in Python do not postpone release.
+
     Args:
         rank_loaders (Dict<rank, list(LazyTensorFacotry)>): Tensor factories per rank, which hold device pointers for buffers.
         pg (ProcessGroupBase): process group for calling distributed ops.
@@ -33,6 +37,9 @@ class FilesBufferOnDevice:
             others raise ``ValueError`` from ``get_tensor`` / ``get_filename`` /
             ``get_shape``. Subclasses that reimplement the registration loop must
             honor this.
+
+        borrowed_tensors (bool): Whether local storage was materialized without
+            a shared owner. Selected by the loader, not changed after loading.
 
     Examples:
         See examples/run_single.py and examples/run_parallel.py.
@@ -45,8 +52,10 @@ class FilesBufferOnDevice:
         framework: FrameworkOpBase,
         auto_mem_delete: bool = True,
         keep_tensor: Optional[Callable[[str], bool]] = None,
+        borrowed_tensors: bool = False,
     ):
         self.framework = framework
+        self.borrowed_tensors = borrowed_tensors
         self.rank_loaders: Dict[int, List[LazyTensorFactory]] = rank_loaders
         self.key_to_rank_lidx: Dict[str, Tuple[int, int]] = {}
         self.instantiated: Dict[int, Dict[int, Dict[str, bool]]] = {}  # rank, key name
@@ -66,10 +75,12 @@ class FilesBufferOnDevice:
         self.auto_mem_delete = auto_mem_delete and self.pg.size() > 1
 
     def close(self):
-        """Drop the buffer's references to its backing allocations.
+        """Release this buffer's references to its backing device allocations.
 
-        Returned tensors remain valid. Physical memory is released after the
-        final exported storage reference disappears. Repeated close is safe.
+        This is a logical close: it drops the buffer-side references but leaves
+        previously returned owning tensors valid. Borrowed tensors and derived
+        views are invalid afterwards and do not postpone physical release.
+        Idempotent: safe to call repeatedly.
         """
         error = None
         for _, loaders in self.rank_loaders.items():
@@ -127,7 +138,8 @@ class FilesBufferOnDevice:
     ) -> TensorBase:
         """Return a wrapped shard of tensor_name.
 
-        The returned tensor retains its allocation and stays valid after close().
+        In owning mode, the tensor keeps its allocation alive after close().
+        In borrowed mode, finish using local views before close().
         """
         rank, lidix = self._get_rank_lidx(tensor_name)
         t = self.rank_loaders[rank][lidix].shuffle(self.pg, tensor_name, dim)
@@ -144,7 +156,8 @@ class FilesBufferOnDevice:
         partition a tensor instance with the key tensor_name at the dimension dim and return it.
         In multi-process loading, this eventually calls torch.distributed.scatter.
         A special dim is -1, which broadcast a tensor to all the ranks (== get_tensor()).
-        The returned tensor retains its allocation and stays valid after close().
+        In owning mode, the tensor keeps its allocation alive after close().
+        In borrowed mode, finish using local views before close().
         """
         return self.get_sharded_wrapped(tensor_name, dim, device, dtype).get_raw()
 
@@ -156,7 +169,8 @@ class FilesBufferOnDevice:
     ) -> TensorBase:
         """Return a wrapped tensor by name.
 
-        The returned tensor retains its allocation and stays valid after close().
+        In owning mode, the tensor keeps its allocation alive after close().
+        In borrowed mode, finish using local views before close().
         """
         return self.get_sharded_wrapped(tensor_name, -1, device, dtype)
 
@@ -171,9 +185,25 @@ class FilesBufferOnDevice:
         In multi-process loading, this eventually calls torch.distributed.broadcast.
         So, every rank will allocate the same tensor at each device memroy.
         In single-process loading, this directly instantiates a tensor from the device buffer with zero copy.
-        The returned tensor retains its allocation and stays valid after close().
+        In owning mode, the tensor keeps its allocation alive after close().
+        In borrowed mode, finish using local views before close().
         """
         return self.get_tensor_wrapped(tensor_name, device, dtype).get_raw()
+
+    def iter_local_tensors(self, tensor_names: List[str]):
+        """Yield already materialized local tensors without distributed lookup.
+
+        Ownership is selected by copy_files_to_device(borrowed_tensors=...).
+        This iterator does not change the storage's ownership.
+        """
+        if self.pg.size() != 1:
+            raise RuntimeError("iter_local_tensors requires a single-process group")
+        for name in tensor_names:
+            rank, lidx = self._get_rank_lidx(name)
+            factory = self.rank_loaders[rank][lidx]
+            if factory.wait_tensor is not None:
+                factory.wait_tensor(name)
+            yield name, factory.tensors[name].get_raw()
 
     def _broadcast_runs(
         self, tensor_names: List[str], max_bytes: int, max_tensors: int
@@ -285,7 +315,8 @@ class FilesBufferOnDevice:
         In multi-process loading, this eventually calls torch.distributed.send if the rank has the tensor instance.
         The destination rank will call torch.distributed.recv.
         Other ranks do nothing.
-        The returned tensor retains its allocation and stays valid after close().
+        In owning mode, the tensor keeps its allocation alive after close().
+        In borrowed mode, finish using local views before close().
         """
         rank, lidix = self._get_rank_lidx(tensor_name)
         t = self.rank_loaders[rank][lidix].push(self.pg, tensor_name, dst_rank, rank)
@@ -304,7 +335,8 @@ class FilesBufferOnDevice:
     ) -> TensorBase:
         """Return concatenated column shards from tensor_names.
 
-        The returned tensor retains its allocation and stays valid after close().
+        In owning mode, the tensor keeps its allocation alive after close().
+        In borrowed mode, finish using local views before close().
         """
         rank_lidixs: Dict[Tuple[int, int], List[str]] = {}
         for tensor_name in tensor_names:
@@ -343,7 +375,9 @@ class FilesBufferOnDevice:
     def as_dict(self, tensor_shard_dim: OrderedDict[str, int]) -> Dict[str, TensorBase]:
         """Return tensors keyed by name according to the requested shard dims.
 
-        Returned tensors retain their allocations and stay valid after close().
+        Returned tensors keep their backing allocation alive, so they stay
+        valid after close() in owning mode. Borrowed local views must be used
+        before close().
         """
         tensors: Dict[str, TensorBase] = {}
         for tensor_name, dim in tensor_shard_dim.items():

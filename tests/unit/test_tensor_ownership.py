@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared allocation references and owning storage lifetimes."""
+"""Shared allocation references and owning/borrowed storage lifetimes."""
 
 import gc
 
@@ -130,10 +130,17 @@ def mixed_tensors(tmp_path, framework):
 
 
 @pytest.mark.parametrize(
-    "device,overlap",
-    [("cpu", False), ("cuda:0", True)],
+    "device,borrowed,overlap",
+    [
+        ("cpu", False, False),
+        ("cuda:0", False, True),
+        ("cpu", True, True),
+        ("cuda:0", True, False),
+    ],
 )
-def test_retained_small_view_pins_allocation(mixed_tensors, device, overlap):
+def test_retained_small_view_pins_only_owning_allocation(
+    mixed_tensors, device, borrowed, overlap
+):
     import torch
 
     if device.startswith("cuda") and not torch.cuda.is_available():
@@ -142,7 +149,7 @@ def test_retained_small_view_pins_allocation(mixed_tensors, device, overlap):
     before_count, before_bytes = live_allocation_count(), live_allocation_bytes()
     loader = SafeTensorsFileLoader(None, device, nogds=True)
     loader.add_filenames({0: [path]})
-    fb = loader.copy_files_to_device(allow_inflight=overlap)
+    fb = loader.copy_files_to_device(borrowed_tensors=borrowed, allow_inflight=overlap)
     factory = fb.rank_loaders[0][0]
     allocation_bytes = factory.gbuf.get_length()
     assert allocation_bytes > 16
@@ -150,7 +157,7 @@ def test_retained_small_view_pins_allocation(mixed_tensors, device, overlap):
     assert live_allocation_bytes() == before_bytes + allocation_bytes
     acquire = fb.get_tensor
     byte_tensor, bf16_tensor = acquire("bytes"), acquire("bf16")
-    # Finish CUDA reads before closing the buffer.
+    # Finish CUDA reads of borrowed storage before closing the buffer.
     assert torch.equal(byte_tensor.cpu(), expected["bytes"])
     assert torch.equal(bf16_tensor.cpu(), expected["bf16"])
     view = byte_tensor[:16]
@@ -158,11 +165,41 @@ def test_retained_small_view_pins_allocation(mixed_tensors, device, overlap):
     loader.close()
     del byte_tensor, bf16_tensor, acquire
     gc.collect()
-    assert torch.equal(view.cpu(), expected["bytes"][:16])
-    assert live_allocation_count() == before_count + 1
-    # A 16-byte view retains the entire original allocation.
-    assert live_allocation_bytes() == before_bytes + allocation_bytes
+    if borrowed:
+        # Keep the Python view alive to prove it holds no allocation owner.
+        # Never dereference its released data.
+        assert live_allocation_count() == before_count
+        assert live_allocation_bytes() == before_bytes
+    else:
+        assert torch.equal(view.cpu(), expected["bytes"][:16])
+        assert live_allocation_count() == before_count + 1
+        # A 16-byte view retains the entire original allocation.
+        assert live_allocation_bytes() == before_bytes + allocation_bytes
     del view
     gc.collect()
     assert live_allocation_count() == before_count
     assert live_allocation_bytes() == before_bytes
+
+
+def test_ownership_mode_is_selected_per_copy(mixed_tensors):
+    import torch
+
+    path, expected = mixed_tensors
+    before = live_allocation_count()
+    loader = SafeTensorsFileLoader(None, "cpu", nogds=True)
+    loader.add_filenames({0: [path]})
+    held = []
+    for borrowed in [False, True]:
+        fb = loader.copy_files_to_device(borrowed_tensors=borrowed)
+        tensor = fb.get_tensor("bytes")
+        assert torch.equal(tensor, expected["bytes"])
+        if not borrowed:
+            held.append(tensor)
+        fb.close()
+        del tensor
+        assert live_allocation_count() == before + len(held)
+    loader.close()
+    assert torch.equal(held[0], expected["bytes"])
+    held.clear()
+    gc.collect()
+    assert live_allocation_count() == before

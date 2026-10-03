@@ -206,6 +206,7 @@ class BaseSafeTensorsFileLoader:
         use_buf_register: bool = True,
         max_copy_block_size: int = 16 * 1024 * 1024 * 1024,
         allow_inflight: bool = False,
+        borrowed_tensors: bool = False,
     ) -> FilesBufferOnDevice:
         """
         With allow_inflight=True, supporting copiers prepare AUTO dtype views
@@ -219,7 +220,12 @@ class BaseSafeTensorsFileLoader:
         Tensors created from the returned FilesBufferOnDevice take shared
         ownership of the backing storage, so they stay valid after
         FilesBufferOnDevice.close(); no clone is required to outlive the buffer.
+        With borrowed_tensors=True, local tensors and their derived views do
+        not retain the allocation. Complete all use, including asynchronous
+        device work, before closing the buffer. Requires a single-process group.
         """
+        if borrowed_tensors and self.pg.size() != 1:
+            raise ValueError("borrowed_tensors requires a single-process loader group")
         self.framework.set_device(self.device)
 
         if dtype != DType.AUTO:
@@ -278,7 +284,9 @@ class BaseSafeTensorsFileLoader:
                     need_wait.append(factory)
                 lidx += 1
             for factory in need_wait:
-                factory.wait_io(dtype=dtype, noalign=False)
+                factory.wait_io(
+                    dtype=dtype, noalign=False, borrowed_tensors=borrowed_tensors
+                )
         except BaseException:
             for loaders in factories.values():
                 for factory in loaders:
@@ -300,6 +308,7 @@ class BaseSafeTensorsFileLoader:
             pg=self.pg,
             framework=self.framework,
             keep_tensor=keep_tensor,
+            borrowed_tensors=borrowed_tensors,
         )
 
 

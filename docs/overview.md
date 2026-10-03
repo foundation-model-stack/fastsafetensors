@@ -50,6 +50,10 @@ By default, low-level tensor retrieval takes shared ownership of the backing all
 
 `ParallelLoader` preserves its existing delivery behavior: single-process outputs are cloned into independent storage. Distributed outputs own their receive or broadcast-run storage. Retaining an output does not keep its loader chunk alive, and the existing resident and yield-clone budget accounting is preserved.
 
+For explicit borrowed access, use `copy_files_to_device(borrowed_tensors=True)` in a single-process low-level loader. Tensors and derived views do not hold an allocation owner. Complete every read, including asynchronous device work, before closing the buffer; aliases left in Python do not postpone release. Owning and borrowed storage are selected at materialization, not by `detach()` or slicing an owning tensor.
+
+`ParallelLoader(..., borrowed_tensors=True, accumulate_resident=False)` likewise skips yield clones and returns non-owning views. Complete their use before requesting the next tensor or closing the iterator. Copy into independent storage if data must survive. This mode requires a single-process loader group (`pg=None` or `all_local=True`). Close the iterator on early exit before closing the loader.
+
 The loader's own `close()` releases registrations and copier resources. Close
 the low-level buffer, or exhaust/close the `ParallelLoader`/`AutoLoader` iterator,
 before closing the loader. `loader.close()` does not close an active iterator.

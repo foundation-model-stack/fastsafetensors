@@ -81,16 +81,23 @@ def delayed_load(tmp_path):
     loader.close()
 
 
-def test_ready_tensor_delivered_while_tail_is_pending(delayed_load):
+@pytest.mark.parametrize("borrowed", [False, True])
+def test_ready_tensor_delivered_while_tail_is_pending(delayed_load, borrowed):
     loader, reader = delayed_load
-    buffer = loader.copy_files_to_device(allow_inflight=True)
+    buffer = loader.copy_files_to_device(allow_inflight=True, borrowed_tensors=borrowed)
+
+    # Exercise the direct iterator used by the borrowed pipeline as well.
+    def get_tensor(name):
+        if borrowed:
+            return next(buffer.iter_local_tensors([name]))[1]
+        return buffer.get_tensor(name)
 
     try:
         # Creating all views must not wait for DMA, or make the unread tail ready.
         assert not reader.release.is_set()
-        assert buffer.get_tensor("a").item() == 123
+        assert get_tensor("a").item() == 123
         with ThreadPoolExecutor(1) as pool:
-            tail = pool.submit(buffer.get_tensor, "b")
+            tail = pool.submit(get_tensor, "b")
             assert reader.waiting.wait(5)
             assert not tail.done()
             reader.release.set()
@@ -98,8 +105,9 @@ def test_ready_tensor_delivered_while_tail_is_pending(delayed_load):
     finally:
         reader.release.set()
         buffer.close()
-    assert loader.framework.get_mem_used() > 0
-    assert tail.result().tolist() == [456, 789]
+    if not borrowed:
+        assert loader.framework.get_mem_used() > 0
+        assert tail.result().tolist() == [456, 789]
     del tail  # Future retains the exported tensor until it is released.
     gc.collect()
     assert loader.framework.get_mem_used() == 0

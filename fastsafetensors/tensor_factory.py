@@ -35,8 +35,10 @@ class LazyTensorFactory:
         self.shuffled: Dict[str, TensorBase] = {}
         self.gbuf: Optional[fstcpp.gds_device_buffer] = None
         # Shared owner of gbuf. Created in wait_io and referenced by every
-        # storage materialized from the buffer. See SharedDeviceAllocation.
+        # owning storage materialized from the buffer. Borrowed storage does
+        # not acquire a reference. See SharedDeviceAllocation.
         self.allocation: Optional[SharedDeviceAllocation] = None
+        self.borrowed_tensors = False
         self.rank = rank
         self.factory_idx_bits = factory_idx_bits
         self.lidx = lidx
@@ -65,18 +67,21 @@ class LazyTensorFactory:
         self,
         dtype: DType = DType.AUTO,
         noalign: bool = False,
+        borrowed_tensors: bool = False,
     ):
+        self.borrowed_tensors = borrowed_tensors
         if self.copier is not None and self.gbuf is not None:
             # Create the shared owner before materializing tensors so that even
             # if wait_io raises, free_dev_ptrs() can release the buffer. Owning
-            # tensors acquire a DLPack reference that retains their storage.
+            # tensors acquire a DLPack reference; borrowed tensors leave the
+            # factory as the sole owner, including when derived views survive.
             self.allocation = SharedDeviceAllocation(
                 self.gbuf,
                 self.framework,
                 self.device,
                 owns_memory=not isinstance(self.gbuf, DummyDeviceBuffer),
             )
-            owner = self.allocation
+            owner = None if borrowed_tensors else self.allocation
             if self.wait_tensor is not None and dtype == DType.AUTO:
                 self.tensors = self.copier.prepare_tensors(self.gbuf, owner=owner)
                 return
@@ -162,7 +167,7 @@ class LazyTensorFactory:
         if self.wait_tensor is not None:
             self.wait_tensor(tensor_name)
         if pg.size() == 1:
-            # Returned tensors retain their backing allocation after close.
+            # Owning tensors retain the allocation; borrowed views expire at close.
             return self.tensors[tensor_name]
         frame = self.metadata.tensors[tensor_name]
         if dim == -1:

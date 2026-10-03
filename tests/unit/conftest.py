@@ -175,7 +175,7 @@ def open_tensor_buffer(input_files, framework):
         device = f"{prefix}:{rank}"
     resources = []
 
-    def open_buffer(*, keep=None, allow_inflight=False):
+    def open_buffer(*, keep=None, borrowed=False, allow_inflight=False):
         loader = SafeTensorsFileLoader(
             SingleGroup(), device, nogds=True, framework=framework.get_name()
         )
@@ -183,7 +183,9 @@ def open_tensor_buffer(input_files, framework):
         if keep is not None:
             loader.set_tensor_filter(keep)
         loader.add_filenames({0: [input_files[0]]})
-        buffer = loader.copy_files_to_device(allow_inflight=allow_inflight)
+        buffer = loader.copy_files_to_device(
+            borrowed_tensors=borrowed, allow_inflight=allow_inflight
+        )
         resources[-1] = (loader, buffer)
         return buffer
 
