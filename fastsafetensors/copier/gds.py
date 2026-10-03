@@ -5,13 +5,17 @@ import platform
 import warnings
 from bisect import bisect_right
 from operator import itemgetter
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata, init_logger, is_gpu_found
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
-from .base import CopierInterface
+from .base import (
+    CopierInterface,
+    validated_byte_ranges,
+    validated_chunk_allocation_size,
+)
 from .nogds import load_library_func, new_nogds_file_copier
 from .registry import CopierConstructFunc, register_copier_constructor
 
@@ -46,6 +50,9 @@ class GdsFileCopier(CopierInterface):
         self._ready_prefix: Dict[int, int] = {}
         self._registered_offsets: List[int] = []
         self._fallback: Optional[CopierInterface] = None
+        self.byte_ranges: Optional[List[Tuple[int, int]]] = None
+        self._chunk_names: Optional[Set[str]] = None
+        self._chunk_allocation_size: Optional[int] = None
         # One-slot cell shared by all copiers from the same factory, so a
         # broken-GDS host builds a single nogds fallback reader (and its
         # pinned bounce buffer) per loader instead of one per file.
@@ -77,10 +84,50 @@ class GdsFileCopier(CopierInterface):
     def set_o_direct(self, enable: bool):
         self.o_direct = enable
 
+    def set_byte_ranges(self, byte_ranges: Optional[List[Tuple[int, int]]]) -> None:
+        self.byte_ranges = validated_byte_ranges(self.metadata, byte_ranges)
+
+    def set_chunk(
+        self,
+        byte_ranges: List[Tuple[int, int]],
+        names: Set[str],
+        allocation_size: Optional[int] = None,
+    ) -> None:
+        """Read selected runs into a compact, optionally budget-sized buffer.
+
+        CUDA reads pad ranges and the device pointer to I/O alignment. The
+        planner charges that padding separately from the payload budget.
+        """
+        checked = validated_byte_ranges(self.metadata, byte_ranges)
+        assert checked is not None
+        self.byte_ranges = checked
+        self._chunk_names = names
+        self._chunk_allocation_size = validated_chunk_allocation_size(
+            checked, allocation_size
+        )
+
+    @classmethod
+    def chunk_transient_multiplier(cls, paths: List[str]) -> int:
+        # Only the destination scales with the chunk span. cuFile's internal
+        # bounce cache is process-wide and charged as a fixed cost below.
+        return 1
+
+    @classmethod
+    def chunk_device_overhead(cls, paths: List[str]) -> int:
+        # Prefix, suffix, and alignment of the allocator's device pointer.
+        # A CUDA allocation need not be 4 KiB aligned. CPU/fallback reads
+        # may not need this reservation, but planning remains conservative.
+        return 3 * (fstcpp.get_alignment_size() - 1)
+
+    @classmethod
+    def fixed_device_overhead(cls, paths: List[str]) -> int:
+        return fstcpp.gds_device_cache_size()
+
     def enable_tensor_readiness(self) -> bool:
         # Relocating misaligned bytes in place can race outstanding DMA. Those
-        # files retain the whole-file wait and alignment repair before access.
-        self._readiness = self.metadata.aligned
+        # whole-file loads retain the blocking alignment repair. Partial
+        # reads expose views at their final offsets, including I/O padding.
+        self._readiness = self.metadata.aligned or self.byte_ranges is not None
         return self._readiness
 
     def prepare_tensors(
@@ -90,8 +137,12 @@ class GdsFileCopier(CopierInterface):
     ) -> Dict[str, TensorBase]:
         if self._fallback is not None:
             return self._fallback.prepare_tensors(gbuf, owner=owner)
-        return self.metadata.get_tensors(
-            gbuf, self.device, self.aligned_offset, owner=owner
+        return self.metadata._get_tensors(
+            gbuf,
+            self.device,
+            self.aligned_offset,
+            names=self._chunk_names,
+            owner=owner,
         )
 
     def wait_tensor(self, name: str) -> None:
@@ -101,8 +152,23 @@ class GdsFileCopier(CopierInterface):
         frame = self.metadata.tensors[name]
         start = self.metadata.header_length + frame.data_offsets[0]
         end = self.metadata.header_length + frame.data_offsets[1]
+        if self._chunk_names is not None and name not in self._chunk_names:
+            raise ValueError(f"tensor {name} includes unread bytes")
         if start == end:
             return
+        if self.byte_ranges is not None:
+            # Aligned I/O may fetch adjacent unselected bytes. Those bytes do
+            # not turn a skipped tensor into a requested tensor.
+            selected = start
+            index = bisect_right(self.byte_ranges, start, key=itemgetter(1))
+            while selected < end and index < len(self.byte_ranges):
+                lo, hi = self.byte_ranges[index]
+                if lo > selected:
+                    break
+                selected = min(end, hi)
+                index += 1
+            if selected != end:
+                raise ValueError(f"tensor {name} includes unread bytes")
         index = bisect_right(self._request_ranges, start, key=_request_end)
         covered = start
         while covered < end and index < len(self._request_ranges):
@@ -126,9 +192,13 @@ class GdsFileCopier(CopierInterface):
             self.device.type == DeviceType.CUDA or self.device.type == DeviceType.GPU
         )
         ALIGN: int = fstcpp.get_alignment_size()
+        partial = self.byte_ranges is not None or self._chunk_names is not None
         try:
             self.fh = fstcpp.gds_file_handle(
-                self.metadata.src, self.o_direct, dev_is_cuda
+                # CPU pread cannot handle exact unaligned runs with O_DIRECT.
+                self.metadata.src,
+                self.o_direct and (dev_is_cuda or not partial),
+                dev_is_cuda,
             )
         except RuntimeError as e:
             # cuFile can probe as available yet fail at I/O time: handle
@@ -164,67 +234,107 @@ class GdsFileCopier(CopierInterface):
                 self._fallback = new_nogds_file_copier(
                     self.device, framework=self.framework
                 )(self.metadata, self.device, self.framework)
+            if self._chunk_names is not None:
+                assert self.byte_ranges is not None
+                self._fallback.set_chunk(
+                    self.byte_ranges, self._chunk_names, self._chunk_allocation_size
+                )
+            else:
+                self._fallback.set_byte_ranges(self.byte_ranges)
             if self._readiness:
                 if not self._fallback.enable_tensor_readiness():
                     raise RuntimeError("GDS fallback does not support tensor readiness")
             return self._fallback.submit_io(use_buf_register, max_copy_block_size)
-        offset = self.metadata.header_length
-        length = self.metadata.size_bytes - self.metadata.header_length
-        head_bytes = offset % ALIGN
-        tail_bytes = (length + head_bytes) % ALIGN
-        if tail_bytes > 0:
-            tail_bytes = ALIGN - tail_bytes
-            aligned_length = length + head_bytes + tail_bytes
+        if partial:
+            runs = self.byte_ranges or []
+            aligned_offset = self.metadata.header_length
+            if self._chunk_names is not None:
+                if runs:
+                    aligned_offset = runs[0][0]
+                span = runs[-1][1] - aligned_offset if runs else 0
+            else:
+                span = self.metadata.size_bytes - aligned_offset
+            aligned_length = self._chunk_allocation_size or span
         else:
-            aligned_length = length + head_bytes
-        aligned_offset = offset - head_bytes
+            offset = self.metadata.header_length
+            length = self.metadata.size_bytes - offset
+            aligned_offset = offset - offset % ALIGN
+            aligned_length = (length + offset % ALIGN + ALIGN - 1) // ALIGN * ALIGN
+            runs = [(aligned_offset, aligned_offset + aligned_length)]
+
+        align_partial = (
+            partial and dev_is_cuda and bool(runs) and max_copy_block_size >= ALIGN
+        )
+        if align_partial:
+            aligned_offset -= aligned_offset % ALIGN
+            aligned_length += self.chunk_device_overhead([self.metadata.src])
+            padded: List[Tuple[int, int]] = []
+            for start, end in runs:
+                lo = start - start % ALIGN
+                hi = (end + ALIGN - 1) // ALIGN * ALIGN
+                # Neighboring runs can share a boundary page. Submit it once
+                # so readiness never races a second DMA to the same bytes.
+                if padded and lo <= padded[-1][1]:
+                    padded[-1] = (padded[-1][0], max(padded[-1][1], hi))
+                else:
+                    padded.append((lo, hi))
+            runs = padded
+            max_copy_block_size = max_copy_block_size // ALIGN * ALIGN
 
         gbuf = self.framework.alloc_tensor_memory(aligned_length, self.device)
         self.gbuf = gbuf
+        if align_partial:
+            # Keep ownership at the allocator's original base for free().
+            # Shift only the I/O destinations and the tensor-view mapping.
+            aligned_offset -= (-gbuf.get_base_address()) % ALIGN
         self.aligned_offset = aligned_offset
         self.aligned_length = aligned_length
         try:
-            if use_buf_register:
-                count = 0
-                while count < aligned_length:
-                    req_len = min(aligned_length - count, max_copy_block_size)
-                    if gbuf.cufile_register(count, req_len) < 0:
-                        raise RuntimeError(
-                            f"submit_io: register_buffer failed, offset={count}, length={req_len}"
+            for start, end in runs:
+                count = start
+                while count < end:
+                    req_len = min(end - count, max_copy_block_size)
+                    ptr_off = count - aligned_offset
+                    # Each native request uses this exact pointer as its cuFile
+                    # base. Register that base, not a different enclosing run.
+                    # Exact unaligned reads (e.g. very small block limits)
+                    # still use cuFile's cache and remain unregistered.
+                    if use_buf_register and (
+                        not partial
+                        or (
+                            count % ALIGN == 0
+                            and req_len % ALIGN == 0
+                            and (gbuf.get_base_address() + ptr_off) % ALIGN == 0
                         )
-                    self._registered_offsets.append(count)
-                    count += req_len
-            count = 0
-            while count < aligned_length:
-                req_len = min(aligned_length - count, max_copy_block_size)
-                args = (
-                    self.fh,
-                    gbuf,
-                    aligned_offset + count,
-                    req_len,
-                    count,
-                    self.metadata.size_bytes,
-                )
-                req = (
-                    self.reader.submit_read(*args, True)
-                    if self._readiness
-                    else self.reader.submit_read(*args)
-                )
-                if req < 0:
-                    raise RuntimeError(f"submit_io: submit_gds_read failed, err={req}")
-                self.copy_reqs.append(req)
-                if self._readiness:
-                    self._request_ranges.append(
-                        (
-                            req,
-                            aligned_offset + count,
-                            min(
-                                aligned_offset + count + req_len,
-                                self.metadata.size_bytes,
-                            ),
-                        )
+                    ):
+                        if gbuf.cufile_register(ptr_off, req_len) < 0:
+                            raise RuntimeError(
+                                f"submit_io: register_buffer failed, offset={ptr_off}, length={req_len}"
+                            )
+                        self._registered_offsets.append(ptr_off)
+                    args = (
+                        self.fh,
+                        gbuf,
+                        count,
+                        req_len,
+                        ptr_off,
+                        self.metadata.size_bytes,
                     )
-                count += req_len
+                    req = (
+                        self.reader.submit_read(*args, True)
+                        if self._readiness
+                        else self.reader.submit_read(*args)
+                    )
+                    if req < 0:
+                        raise RuntimeError(
+                            f"submit_io: submit_gds_read failed, err={req}"
+                        )
+                    self.copy_reqs.append(req)
+                    if self._readiness:
+                        self._request_ranges.append(
+                            (req, count, min(count + req_len, self.metadata.size_bytes))
+                        )
+                    count += req_len
         except BaseException:
             try:
                 self.finish_io()
@@ -252,6 +362,8 @@ class GdsFileCopier(CopierInterface):
                 if error is None:
                     error = exc
         self.copy_reqs.clear()
+        self._request_ranges.clear()
+        self._ready_prefix.clear()
         for offset in self._registered_offsets:
             try:
                 if self.gbuf is not None and self.gbuf.cufile_deregister(offset) < 0:
@@ -279,7 +391,13 @@ class GdsFileCopier(CopierInterface):
             self._fallback = None
             return tensors
         self.finish_io()
-        if not noalign and not self.metadata.aligned and self.aligned_length > 0:
+        if (
+            not noalign
+            and not self.metadata.aligned
+            and self.aligned_length > 0
+            and self.byte_ranges is None
+            and self._chunk_names is None
+        ):
             misaligned_bytes = (
                 self.metadata.header_length % self.framework.get_device_ptr_align()
             )
@@ -301,8 +419,13 @@ class GdsFileCopier(CopierInterface):
                 count += l
             self.framework.free_tensor_memory(tmp_gbuf, self.device)
             self.aligned_offset += misaligned_bytes
-        return self.metadata.get_tensors(
-            gbuf, self.device, self.aligned_offset, dtype=dtype, owner=owner
+        return self.metadata._get_tensors(
+            gbuf,
+            self.device,
+            self.aligned_offset,
+            dtype=dtype,
+            names=self._chunk_names,
+            owner=owner,
         )
 
 
@@ -323,13 +446,15 @@ def new_gds_file_copier(
     device: Device,
     bbuf_size_kb: int = 16 * 1024,
     max_threads: int = 16,
+    device_memory_budget: Optional[int] = None,
     **kwargs,
 ) -> CopierConstructFunc:
     framework = kwargs.get("framework")
     # Capability checks depend on symbols resolved by load_library_func().
     load_library_func(framework)
+    is_hip = fstcpp.is_hip_found()
 
-    # On Linux, check for GDS device nodes before calling init_gds(), which
+    # On NVIDIA Linux hosts, check for GDS device nodes before init_gds(), which
     # invokes cuFileDriverOpen(). On hosts where the nvidia-fs kernel module
     # is loaded but /dev/nvidia-fs* device nodes are missing (common in
     # containers without device mapping), cuFileDriverOpen()'s error path
@@ -337,9 +462,10 @@ def new_gds_file_copier(
     # corrupts subsequent subprocess calls (e.g., nvcc JIT compilation in
     # DeepGEMM). Windows and macOS never have this device node, so the check
     # is Linux-only to avoid spurious warnings and skipping init_gds on
-    # platforms where the cuFile codepath is never reached.
+    # platforms where the cuFile codepath is never reached. AMD hipFile does
+    # not use /dev/nvidia-fs0 and must not be gated on this NVIDIA-only node.
     gds_device_available = True
-    if platform.system() == "Linux":
+    if platform.system() == "Linux" and not is_hip:
         gds_device_available = os.path.exists("/dev/nvidia-fs0")
         if not gds_device_available:
             warnings.warn(
@@ -379,6 +505,21 @@ def new_gds_file_copier(
                 UserWarning,
             )
             nogds = True
+
+    if (
+        not nogds
+        and device_memory_budget is not None
+        and is_hip
+        and not fstcpp.is_hipfile_memory_budget_supported()
+    ):
+        # Select the actual copier before planning: its transient and fixed
+        # costs must be used with the original budget, including on UMA hosts.
+        warnings.warn(
+            "AMD hipFile memory accounting is unavailable for this version; "
+            "falling back to nogds while preserving device_memory_budget.",
+            UserWarning,
+        )
+        nogds = True
 
     if gds_device_available and not nogds:
         init_gds(framework)

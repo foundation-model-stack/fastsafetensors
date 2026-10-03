@@ -33,7 +33,7 @@ monotonically with ``R``, so every live buffer span is ``<= B[i]``. With at
 most ``depth * transient_multiplier`` buffers plus one yield clone alive on
 any one rank,
 
-    peak <= R[G(i)+1]
+    peak <= R[G(i)+1] + depth * chunk_overhead
             + (depth * transient_multiplier + yield_clone) * B[i]
          <= budget   (by choice of B[i]).
 
@@ -267,6 +267,7 @@ def plan_file_budgets(
     transient_multiplier: int = 1,
     group_size: int = 1,
     account_for_yield_clone: bool = False,
+    chunk_overhead: int = 0,
 ) -> List[int]:
     """Per-file chunk budgets satisfying the peak-memory bound.
 
@@ -296,7 +297,8 @@ def plan_file_budgets(
     ``group_size - 1`` files whenever shard sizes are uneven.
 
     ``account_for_yield_clone`` reserves one chunk budget for a non-resident
-    yielded tensor clone.
+    yielded tensor clone. ``chunk_overhead`` reserves additional bytes per
+    live I/O chunk (such as alignment padding), but not per yield clone.
 
     Returns one budget per file; feed each to
     ``SafeTensorsMetadata.plan_chunks``. A budget >= the file's span yields a
@@ -313,6 +315,8 @@ def plan_file_budgets(
         raise ValueError(
             f"transient_multiplier must be >= 1, got {transient_multiplier}"
         )
+    if chunk_overhead < 0:
+        raise ValueError(f"chunk_overhead must be non-negative, got {chunk_overhead}")
     if group_size < 1:
         raise ValueError(f"group_size must be >= 1, got {group_size}")
     eff_depth = _effective_depth(depth, transient_multiplier, account_for_yield_clone)
@@ -320,15 +324,17 @@ def plan_file_budgets(
     budgets = []
     for i, st in enumerate(stats):
         resident = group_resident[i] if accumulate_resident else 0
-        b = (device_memory_budget - resident) // eff_depth
+        padding = depth * chunk_overhead if st.kept_bytes else 0
+        b = (device_memory_budget - resident - padding) // eff_depth
         if max_batch_bytes is not None:
             b = min(b, max_batch_bytes)
         if b < st.largest_tensor:
-            required = resident + eff_depth * st.largest_tensor
+            required = resident + eff_depth * st.largest_tensor + padding
             raise BudgetInfeasibleError(
                 f"Model does not fit device_memory_budget: loading '{st.path}' "
                 f"needs >= {required} bytes ({resident} resident + {eff_depth} x "
-                f"{st.largest_tensor} transient), budget is {device_memory_budget}. "
+                f"{st.largest_tensor} transient + {padding} chunk overhead), "
+                f"budget is {device_memory_budget}. "
                 + (
                     # Already as shallow as a load gets: ParallelLoader clamps
                     # to this, so queue_size is a spent lever by now.
@@ -352,6 +358,7 @@ def fit_queue_size(
     transient_multiplier: int = 1,
     group_size: int = 1,
     account_for_yield_clone: bool = False,
+    chunk_overhead: int = 0,
 ) -> Optional[int]:
     """The deepest queue size ``<= requested`` whose plan fits the budget.
 
@@ -371,15 +378,15 @@ def fit_queue_size(
         raise ValueError(
             f"transient_multiplier must be >= 1, got {transient_multiplier}"
         )
+    if chunk_overhead < 0:
+        raise ValueError(f"chunk_overhead must be non-negative, got {chunk_overhead}")
     if group_size < 1:
         raise ValueError(f"group_size must be >= 1, got {group_size}")
     if device_memory_budget <= 0:
         return None
     group_resident = _group_resident(stats, group_size)
-    # Largest eff_depth every file can afford. The plan's test,
-    # (budget - resident) // eff_depth >= largest, is exactly
-    # budget - resident >= largest * eff_depth for eff_depth >= 1, so this
-    # inverts with no floor-division slack either way.
+    # Largest load depth every file can afford. Each live chunk carries
+    # multiplier * largest + overhead; a yield clone carries only largest.
     cap = None  # None: no kept tensor constrains the depth
     for i, st in enumerate(stats):
         if st.largest_tensor <= 0:
@@ -392,18 +399,14 @@ def fit_queue_size(
             group_resident[i] if accumulate_resident else 0
         )
         # Floors to <= 0 when even one buffer does not fit (headroom may be
-        # negative once resident alone overruns the budget); `room` below turns
+        # negative once resident alone overruns the budget); `base` below turns
         # that into None, so no separate guard is needed here.
-        limit = headroom // st.largest_tensor
+        headroom -= int(account_for_yield_clone) * st.largest_tensor
+        limit = headroom // (transient_multiplier * st.largest_tensor + chunk_overhead)
         cap = limit if cap is None else min(cap, limit)
     if cap is None:
         return requested
-    # eff_depth = load_depth(qs, group) * multiplier + clone <= cap, solved for
-    # the load_depth term, then inverted.
-    room = cap - int(account_for_yield_clone)
-    if room < transient_multiplier:
-        return None  # not even one live buffer fits alongside the clone
-    base = room // transient_multiplier - (1 if group_size > 1 else 0)
+    base = cap - (1 if group_size > 1 else 0)
     if base < 1:
         return None
     # Not injective at the bottom: queue_size=-1 and no queue at all both give

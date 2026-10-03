@@ -117,7 +117,7 @@ class CopierInterface(ABC):
 
         The default implementation validates the runs but reads the whole file,
         so the byte-range filter is a correct no-op on copiers that don't
-        implement partial reads. Range-capable copiers (``nogds``, ``unified``)
+        implement partial reads. Range-capable copiers (``gds``, ``nogds``, ``unified``)
         override this to read only the given runs, leaving the rest of the
         device buffer uninitialized (so skipped tensors must not be requested).
         Build runs with ``SafeTensorsMetadata.select_byte_ranges``; ``None``
@@ -138,12 +138,12 @@ class CopierInterface(ABC):
         Unlike ``set_byte_ranges``, a chunk plan cannot be a no-op: silently
         loading the whole file per chunk-batch would break the memory bound
         and multiply full-file reads, so the default refuses. Partial-read
-        copiers (``nogds``, ``unified``) override this.
+        copiers (``gds``, ``nogds``, ``unified``) override this.
         """
         raise NotImplementedError(
             f"sub-file chunking (max_batch_bytes) requires a copier that "
             f"overrides set_chunk; {type(self).__name__} loads whole files. "
-            f"Use the nogds or unified copier, or unset max_batch_bytes."
+            f"Use the gds, nogds or unified copier, or unset max_batch_bytes."
         )
 
     @classmethod
@@ -161,9 +161,18 @@ class CopierInterface(ABC):
         raise NotImplementedError(
             f"device_memory_budget needs a copier that overrides "
             f"chunk_transient_multiplier; {cls.__name__} does not implement "
-            f"sub-file chunking. Use the nogds or unified copier, or unset "
+            f"sub-file chunking. Use the gds, nogds or unified copier, or unset "
             f"device_memory_budget."
         )
+
+    @classmethod
+    def chunk_device_overhead(cls, paths: List[str]) -> int:
+        """Extra device bytes per live chunk, independent of its payload span.
+
+        For example, aligned I/O may need padding around the chunk and its
+        device pointer. Yield clones do not carry this padding.
+        """
+        return 0
 
     @classmethod
     def fixed_device_overhead(cls, paths: List[str]) -> int:
@@ -178,7 +187,7 @@ class CopierInterface(ABC):
         raise NotImplementedError(
             f"device_memory_budget needs a copier that overrides "
             f"fixed_device_overhead; {cls.__name__} does not implement "
-            f"sub-file chunking. Use the nogds or unified copier, or unset "
+            f"sub-file chunking. Use the gds, nogds or unified copier, or unset "
             f"device_memory_budget."
         )
 

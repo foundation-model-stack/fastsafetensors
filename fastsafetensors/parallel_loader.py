@@ -343,6 +343,7 @@ class PipelineParallel:
             copier = self.loader.copier_class
             paths = [f for f, _ in metas]
             multiplier = copier.chunk_transient_multiplier(paths)
+            chunk_overhead = copier.chunk_device_overhead(paths)
             fixed_overhead = copier.fixed_device_overhead(paths)
             effective_budget = self.device_memory_budget - fixed_overhead
             if effective_budget <= 0:
@@ -367,6 +368,7 @@ class PipelineParallel:
                 transient_multiplier=multiplier,
                 group_size=batch_size,
                 account_for_yield_clone=account_for_yield_clone,
+                chunk_overhead=chunk_overhead,
             )
             if fitted is None:
                 # No depth fits. Plan serially anyway, so the error reports the
@@ -394,6 +396,7 @@ class PipelineParallel:
                     transient_multiplier=multiplier,
                     group_size=batch_size,
                     account_for_yield_clone=account_for_yield_clone,
+                    chunk_overhead=chunk_overhead,
                 )
             except BudgetInfeasibleError as e:
                 if not fixed_overhead:
@@ -940,6 +943,7 @@ class ParallelLoader(PipelineParallel):
             debug_log=debug_log,
             framework=framework,
             use_fgds=use_fgds,
+            device_memory_budget=device_memory_budget,
             **kwargs,
         )
         super().__init__(

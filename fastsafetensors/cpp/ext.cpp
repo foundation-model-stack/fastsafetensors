@@ -226,6 +226,13 @@ static bool cufile_found = false;
 
 static int cufile_ver = 0;
 
+// hipFile has a separate version ABI and an error struct with two fields.
+// Its AMD driver-property API is a stub, and its properties layout differs
+// from CUfileDrvProps_t, so never resolve it into the cuFile function pointer.
+struct hipFileError_t { int err; int hip_drv_err; };
+static unsigned hipfile_major = 0, hipfile_minor = 0, hipfile_patch = 0;
+static bool hipfile_version_known = false;
+
 // FGDS (FGDS_LIB) function pointers and availability flag. Resolved at
 // runtime in load_fgds_library() (called on demand by the FGDS copier path);
 // never linked at build time. fgds_found mirrors cufile_found for capability
@@ -376,12 +383,15 @@ static void load_library_functions(const std::string& cudart_override = "") {
     const char* gdsLib = is_hip_runtime ? HIPFILE_LIB : CUFILE_LIB;
 #endif
     cufile_found = false;
+    cufile_ver = 0;
+    hipfile_major = hipfile_minor = hipfile_patch = 0;
+    hipfile_version_known = false;
+    cuda_fns.cuFileDriverGetProperties = nullptr;
     if (gpu_found && gdsLib) {
         const bool is_hip = is_hip_runtime;
         void* handle_gds = dlopen(gdsLib, mode);
         if (handle_gds) {
             if (!is_hip) {
-                // Only cuFile exposes a version query; hipFile does not.
                 CUfileError_t (*cuFileGetVersion)(int *);
                 mydlsym(&cuFileGetVersion, handle_gds, CUFILE_SYM_GET_VERSION);
                 if (cuFileGetVersion) {
@@ -394,9 +404,20 @@ static void load_library_functions(const std::string& cudart_override = "") {
                 if (cufile_ver == 0) {
                     fprintf(stderr, "[WARN] %s is loaded but its version is unknown", gdsLib);
                 }
+            } else {
+                hipFileError_t (*hipFileGetVersion)(unsigned *, unsigned *, unsigned *) = nullptr;
+                mydlsym(&hipFileGetVersion, handle_gds, HIPFILE_SYM_GET_VERSION);
+                if (hipFileGetVersion) {
+                    hipFileError_t err = hipFileGetVersion(&hipfile_major, &hipfile_minor, &hipfile_patch);
+                    hipfile_version_known = err.err == 0 && err.hip_drv_err == 0;
+                }
             }
             mydlsym(&cuda_fns.cuFileDriverOpen, handle_gds, is_hip ? HIPFILE_SYM_DRIVER_OPEN : CUFILE_SYM_DRIVER_OPEN);
             mydlsym(&cuda_fns.cuFileDriverClose, handle_gds, is_hip ? HIPFILE_SYM_DRIVER_CLOSE : CUFILE_SYM_DRIVER_CLOSE);
+            // NVIDIA budgeted loads reserve the configured device cache.
+            // AMD hipFile uses direct GPU I/O or a host-side fallback buffer.
+            if (!is_hip)
+                mydlsym(&cuda_fns.cuFileDriverGetProperties, handle_gds, CUFILE_SYM_DRIVER_GET_PROPERTIES);
             mydlsym(&cuda_fns.cuFileDriverSetMaxDirectIOSize, handle_gds, is_hip ? HIPFILE_SYM_DRIVER_SET_MAX_DIO_SIZE : CUFILE_SYM_DRIVER_SET_MAX_DIO_SIZE);
             mydlsym(&cuda_fns.cuFileDriverSetMaxPinnedMemSize, handle_gds, is_hip ? HIPFILE_SYM_DRIVER_SET_MAX_PIN_SIZE : CUFILE_SYM_DRIVER_SET_MAX_PIN_SIZE);
             mydlsym(&cuda_fns.cuFileBufRegister, handle_gds, is_hip ? HIPFILE_SYM_BUF_REGISTER : CUFILE_SYM_BUF_REGISTER);
@@ -414,8 +435,10 @@ static void load_library_functions(const std::string& cudart_override = "") {
             } else {
                 if (init_log) {
                     if (is_hip) {
-                        // hipFile has no version query (see above).
-                        fprintf(stderr, "[DEBUG] loaded: %s\n", gdsLib);
+                        if (hipfile_version_known)
+                            fprintf(stderr, "[DEBUG] loaded: %s (ver: %u.%u.%u)\n", gdsLib, hipfile_major, hipfile_minor, hipfile_patch);
+                        else
+                            fprintf(stderr, "[DEBUG] loaded: %s (version unknown; budgeted loads use nogds)\n", gdsLib);
                     } else {
                         fprintf(stderr, "[DEBUG] loaded: %s (ver: %d.%d.%d)\n", gdsLib, cufile_ver / 1000, (cufile_ver % 1000) / 10, cufile_ver % 10);
                     }
@@ -652,6 +675,35 @@ int close_gds()
             std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
     }
     return 0;
+}
+
+bool is_hipfile_memory_budget_supported()
+{
+    return is_hip_runtime && cufile_found && hipfile_version_known
+        && hipfile_major == 0 && hipfile_minor >= 2 && hipfile_minor <= 4;
+}
+
+uint64_t gds_device_cache_size()
+{
+    if (!cufile_found) return 0; // CPU reader has no device-side cache.
+    if (is_hip_runtime) {
+        // Audited AMD hipFile 0.2--0.4 synchronous reads allocate no extra
+        // VRAM cache: fastpath writes into the destination; fallback uses
+        // mmap'd host memory. Registration tracks only pointer/range metadata.
+        // Keep the version guard: a failed query or a future implementation
+        // must not silently become a zero-byte device-memory reservation.
+        if (!is_hipfile_memory_budget_supported())
+            throw std::runtime_error("GDS memory budgeting requires a known AMD hipFile version in 0.2.x--0.4.x; use nogds or unset device_memory_budget");
+        return 0;
+    }
+    if (!cuda_fns.cuFileDriverGetProperties)
+        throw std::runtime_error("GDS memory budgeting requires cuFileDriverGetProperties");
+    CUfileDrvProps_t props{};
+    CUfileError_t err = cuda_fns.cuFileDriverGetProperties(&props);
+    if (err.err != CU_FILE_SUCCESS)
+        throw std::runtime_error("GDS device cache size query failed, err=" + std::to_string(err.err));
+    // The driver reports its configured device cache capacity in KiB.
+    return static_cast<uint64_t>(props.max_device_cache_size) * 1024;
 }
 
 std::string get_device_pci_bus(int deviceId) {
@@ -1646,6 +1698,8 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     m.def("get_alignment_size", &get_alignment_size);
     m.def("is_gds_supported", &is_gds_supported);
     m.def("init_gds", &init_gds);
+    m.def("gds_device_cache_size", &gds_device_cache_size);
+    m.def("is_hipfile_memory_budget_supported", &is_hipfile_memory_budget_supported);
     m.def("close_gds", &close_gds);
     m.def("is_fgds_found", &is_fgds_found);
     m.def("load_fgds_library", &load_fgds_library);
