@@ -259,11 +259,14 @@ class FrameworkOpBase(ABC, Generic[T, K]):
         device: Device,
         copy_start_offset: int,
         names: Optional[Set[str]],
+        owner=None,
     ) -> Optional[Iterator[Tuple[str, T]]]:
         """Optionally create views sharing storage within a loader buffer.
 
-        Return None to use per-tensor DLPack conversion. Views do not own the
-        allocation and must not outlive the loader buffer, as on that path.
+        Return None to use per-tensor DLPack conversion. Without an owner,
+        views borrow the allocation and must not outlive the loader buffer.
+        With an owner, attach it to the shared storage so every exported tensor
+        and derived view keeps the backing allocation alive.
         """
         return None
 

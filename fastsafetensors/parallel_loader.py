@@ -219,7 +219,7 @@ class PipelineParallel:
         # next. Holding several at once overruns that reservation.
         self.resident_tensor = resident_tensor
 
-        # Single-process yields borrow the file buffer and require a clone.
+        # Single-process outputs remain independent clones of the file buffer.
         self.need_clone = pg.size() == 1
         if broadcast_run_bytes < 0 or broadcast_run_tensors < 0:
             raise ValueError("broadcast run limits must be non-negative")

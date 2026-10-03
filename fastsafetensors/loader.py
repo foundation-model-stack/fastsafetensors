@@ -216,9 +216,9 @@ class BaseSafeTensorsFileLoader:
         trigger copying all the files to device buffers.
         At this moment, we do not instantiate tensors but just creating copies at device buffers with or without GDS.
         Users can instantiate and/or partition tensors with FilesBufferOnDevice returned by this function.
-        The returned FilesBufferOnDevice owns the backing storage for tensors
-        created from it. Clone/copy those tensors before FilesBufferOnDevice.close()
-        if the tensor data must outlive the buffer.
+        Tensors created from the returned FilesBufferOnDevice take shared
+        ownership of the backing storage, so they stay valid after
+        FilesBufferOnDevice.close(); no clone is required to outlive the buffer.
         """
         self.framework.set_device(self.device)
 
@@ -391,9 +391,9 @@ class fastsafe_open:
     """
     Opens a safetensors lazily and returns tensors as asked
     This is an enhanced version of safe_open in the original safetensors library to consume file list
-    Tensors returned from this context are valid only while the context stays
-    open. Clone/copy returned tensors before leaving the with block if the
-    tensor data must be reused after __exit__ closes the backing buffer.
+    Tensors returned from this context take shared ownership of their backing
+    buffer, so they remain valid after the with block exits; no clone is
+    required to reuse the data afterwards.
 
     Args:
         filenames (:obj:`str`|`list[str]`|`dict[int, str]`): The filename(s) or rank-file map to open
@@ -444,16 +444,16 @@ class fastsafe_open:
     def get_tensor_wrapped(self, name: str) -> TensorBase:
         """Return a wrapped tensor by name.
 
-        Clone/copy the returned tensor before leaving the context manager if
-        the tensor data must be used after the context closes.
+        The returned tensor keeps its backing buffer alive, so it stays valid
+        after the context closes.
         """
         return self.fb.get_tensor_wrapped(name)
 
     def get_tensor(self, name: str) -> Any:
         """Return a tensor by name.
 
-        Clone/copy the returned tensor before leaving the context manager if
-        the tensor data must be used after the context closes.
+        The returned tensor keeps its backing buffer alive, so it stays valid
+        after the context closes.
         """
         return self.get_tensor_wrapped(name).get_raw()
 

@@ -4,7 +4,7 @@ import os
 import sys
 from bisect import bisect_right
 from operator import itemgetter
-from typing import Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 from .. import cpp as fstcpp
 from ..common import (
@@ -21,6 +21,9 @@ from .base import (
     validated_chunk_allocation_size,
 )
 from .registry import CopierConstructFunc, register_copier_constructor
+
+if TYPE_CHECKING:
+    from ..allocation import SharedDeviceAllocation
 
 _request_end = itemgetter(2)
 
@@ -60,11 +63,15 @@ class NoGdsFileCopier(CopierInterface):
         self._readiness = True
         return True
 
-    def prepare_tensors(self, gbuf: fstcpp.gds_device_buffer) -> Dict[str, TensorBase]:
+    def prepare_tensors(
+        self,
+        gbuf: fstcpp.gds_device_buffer,
+        owner: Optional["SharedDeviceAllocation"] = None,
+    ) -> Dict[str, TensorBase]:
         # AUTO view construction does not access tensor contents. Online dtype
         # conversion still uses blocking wait_io, since it reads/writes bytes.
         return self.metadata._get_tensors(
-            gbuf, self.device, self._base_off, names=self._chunk_names
+            gbuf, self.device, self._base_off, names=self._chunk_names, owner=owner
         )
 
     def wait_tensor(self, name: str) -> None:
@@ -192,10 +199,16 @@ class NoGdsFileCopier(CopierInterface):
         gbuf: fstcpp.gds_device_buffer,
         dtype: DType = DType.AUTO,
         noalign: bool = False,
+        owner: Optional["SharedDeviceAllocation"] = None,
     ) -> Dict[str, TensorBase]:
         self.finish_io()
         return self.metadata._get_tensors(
-            gbuf, self.device, self._base_off, dtype=dtype, names=self._chunk_names
+            gbuf,
+            self.device,
+            self._base_off,
+            dtype=dtype,
+            names=self._chunk_names,
+            owner=owner,
         )
 
     def finish_io(self) -> None:

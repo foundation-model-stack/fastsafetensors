@@ -161,3 +161,36 @@ def fstcpp_log() -> None:
 @pytest.fixture(scope="function")
 def tmp_dir() -> str:
     return TMP_DIR
+
+
+@pytest.fixture
+def open_tensor_buffer(input_files, framework):
+    """Open a local buffer and close every resource even if an assertion fails."""
+    from fastsafetensors import SafeTensorsFileLoader
+
+    rank = int(os.environ.get("RANK", "0"))
+    device = "cpu"
+    if is_gpu_found():
+        prefix = "cuda" if framework.get_name() == "pytorch" else "gpu"
+        device = f"{prefix}:{rank}"
+    resources = []
+
+    def open_buffer(*, keep=None, allow_inflight=False):
+        loader = SafeTensorsFileLoader(
+            SingleGroup(), device, nogds=True, framework=framework.get_name()
+        )
+        resources.append((loader, None))
+        if keep is not None:
+            loader.set_tensor_filter(keep)
+        loader.add_filenames({0: [input_files[0]]})
+        buffer = loader.copy_files_to_device(allow_inflight=allow_inflight)
+        resources[-1] = (loader, buffer)
+        return buffer
+
+    yield open_buffer
+    for loader, buffer in reversed(resources):
+        try:
+            if buffer is not None:
+                buffer.close()
+        finally:
+            loader.close()

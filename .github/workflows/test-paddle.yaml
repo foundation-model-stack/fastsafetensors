@@ -48,6 +48,7 @@ jobs:
           mkdir -p /tmp/pytest-log
           export TEST_FASTSAFETENSORS_FRAMEWORK=paddle
           COVERAGE_FILE=.coverage_0 pytest -s --cov=${LIBDIR} test_fastsafetensors.py > /tmp/pytest-log/0.log 2>&1
+          COVERAGE_FILE=.coverage_own pytest -s --cov=${LIBDIR} test_tensor_ownership.py > /tmp/pytest-log/tensor_ownership.log 2>&1
           COVERAGE_FILE=.coverage_ep pytest -s --cov=${LIBDIR} test_ep_slice.py > /tmp/pytest-log/ep_slice.log 2>&1
           COVERAGE_FILE=.coverage_config pytest -s --cov=${LIBDIR} test_config.py > /tmp/pytest-log/config.log 2>&1
           COVERAGE_FILE=.coverage_planner pytest -s --cov=${LIBDIR} test_planner.py > /tmp/pytest-log/planner.log 2>&1

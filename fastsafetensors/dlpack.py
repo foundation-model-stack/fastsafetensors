@@ -5,9 +5,13 @@
 # to add from_cuda_buffer()
 
 import ctypes
-from typing import Dict, List, Union
+import sys
+from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 from .st_types import Device, DeviceType, DType
+
+if TYPE_CHECKING:
+    from .allocation import SharedDeviceAllocation
 
 _c_str_dltensor = b"dltensor"
 
@@ -101,9 +105,21 @@ class c_DLDataType(ctypes.Structure):
 
 
 class _Holder:
-    def __init__(self, shape: List[int], strides: List[int]):
+    def __init__(
+        self,
+        shape: List[int],
+        strides: List[int],
+        owner: Optional["SharedDeviceAllocation"] = None,
+    ):
         self.shape = (ctypes.c_int64 * len(shape))(*shape)
         self.strides = (ctypes.c_int64 * len(strides))(*strides)
+        # Shared owner of the backing device allocation (a
+        # SharedDeviceAllocation, or None for tensors not backed by a managed
+        # buffer). Held so the buffer outlives this tensor; released by the
+        # DLPack deleter when the consumer framework destroys the storage.
+        self.owner = owner
+        if owner is not None:
+            owner.acquire()
 
     def _as_manager_ctx(self) -> ctypes.c_void_p:
         py_obj = ctypes.py_object(self)
@@ -178,8 +194,9 @@ class DLManagedTensor(ctypes.Structure):
         strides: List[int],
         dtype: DType,
         dev: Device,
+        owner: Optional["SharedDeviceAllocation"] = None,
     ):
-        holder = _Holder(shape, strides)
+        holder = _Holder(shape, strides, owner)
         self.dl_tensor = DLTensor(dev_ptr, dev, dtype, holder)
         self.manager_ctx = holder._as_manager_ctx()
         self.deleter = _numpy_buffer_deleter
@@ -220,6 +237,17 @@ def _numpy_buffer_deleter(handle: Union[int, ctypes.c_void_p]) -> None:
         dl_managed_tensor.manager_ctx, ctypes.POINTER(ctypes.py_object)
     )
     py_obj = py_obj_ptr.contents
+    # Release the shared allocation reference this tensor held before dropping
+    # the holder. The holder is kept alive by the manager_ctx incref, so
+    # reading it here (before Py_DecRef) is safe. release() is idempotent and
+    # frees the backing memory only once the last reference is gone.
+    holder = py_obj.value
+    owner = getattr(holder, "owner", None)
+    # Skip the release during interpreter shutdown: freeing device memory then
+    # is pointless (the process/CUDA context tears it down anyway) and the
+    # framework's free path may touch already-finalized module globals.
+    if owner is not None and not sys.is_finalizing():
+        owner.release()
     ctypes.pythonapi.Py_DecRef(py_obj)
     ctypes.pythonapi.Py_DecRef(ctypes.py_object(py_obj_ptr))
     ctypes.pythonapi.PyMem_RawFree(handle)
@@ -238,10 +266,15 @@ def _numpy_pycapsule_deleter(handle: ctypes.c_void_p) -> None:
 
 
 def from_cuda_buffer(
-    dev_ptr: int, shape: List[int], strides: List[int], dtype: DType, dev: Device
+    dev_ptr: int,
+    shape: List[int],
+    strides: List[int],
+    dtype: DType,
+    dev: Device,
+    owner: Optional["SharedDeviceAllocation"] = None,
 ):
     size = ctypes.c_size_t(ctypes.sizeof(DLManagedTensor))
     dl_managed_tensor = DLManagedTensor.from_address(
         ctypes.pythonapi.PyMem_RawMalloc(size)
     )
-    return dl_managed_tensor.as_py(dev_ptr, shape, strides, dtype, dev)
+    return dl_managed_tensor.as_py(dev_ptr, shape, strides, dtype, dev, owner)

@@ -46,6 +46,7 @@ jobs:
           mkdir -p /tmp/pytest-log
           export TEST_FASTSAFETENSORS_FRAMEWORK=pytorch
           COVERAGE_FILE=.coverage_0 pytest -s --cov=${LIBDIR} test_fastsafetensors.py > /tmp/pytest-log/0.log 2>&1
+          COVERAGE_FILE=.coverage_own pytest -s --cov=${LIBDIR} test_tensor_ownership.py > /tmp/pytest-log/tensor_ownership.log 2>&1
           COVERAGE_FILE=.coverage_ep pytest -s --cov=${LIBDIR} test_ep_slice.py > /tmp/pytest-log/ep_slice.log 2>&1
           COVERAGE_FILE=.coverage_rob pytest -s --cov=${LIBDIR} test_robustness.py > /tmp/pytest-log/robustness.log 2>&1
           COVERAGE_FILE=.coverage_config pytest -s --cov=${LIBDIR} test_config.py > /tmp/pytest-log/config.log 2>&1
@@ -102,6 +103,7 @@ jobs:
           cd tests/unit
           LIBDIR=$(python -c "import os, tempfile; os.chdir(tempfile.gettempdir()); import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))")
           COVERAGE_FILE=.coverage_0 pytest -s --cov="${LIBDIR}" test_fastsafetensors.py -k "not test_init_gds and not test_close_gds and not test_GdsFileCopier and not test_SafeTensorsFileLoader and not test_SafeTensorsFileLoader_copier_selection and not test_FgdsFileCopier" > "${LOGDIR}/0.log" 2>&1
+          COVERAGE_FILE=.coverage_own pytest -s --cov="${LIBDIR}" test_tensor_ownership.py > "${LOGDIR}/tensor_ownership.log" 2>&1
           COVERAGE_FILE=.coverage_3fs pytest -s --cov="${LIBDIR}" threefs > "${LOGDIR}/threefs.log" 2>&1
           coverage combine .coverage_*
           coverage html -d "${LOGDIR}/htmlcov"

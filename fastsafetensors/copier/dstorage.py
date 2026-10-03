@@ -175,11 +175,11 @@ class DStorageFileCopier(CopierInterface):
 
         return gbuf
 
-    def wait_io(self, gbuf, dtype=DType.AUTO, noalign=False):
+    def wait_io(self, gbuf, dtype=DType.AUTO, noalign=False, owner=None):
         if self.fh:
             self.fh.close()
         return self.metadata.get_tensors(
-            gbuf, self.device, self.metadata.header_length, dtype=dtype
+            gbuf, self.device, self.metadata.header_length, dtype=dtype, owner=owner
         )
 
 

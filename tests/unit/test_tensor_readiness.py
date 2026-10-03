@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
+import gc
 import json
 import os
 import struct
@@ -83,6 +84,7 @@ def delayed_load(tmp_path):
 def test_ready_tensor_delivered_while_tail_is_pending(delayed_load):
     loader, reader = delayed_load
     buffer = loader.copy_files_to_device(allow_inflight=True)
+
     try:
         # Creating all views must not wait for DMA, or make the unread tail ready.
         assert not reader.release.is_set()
@@ -96,6 +98,10 @@ def test_ready_tensor_delivered_while_tail_is_pending(delayed_load):
     finally:
         reader.release.set()
         buffer.close()
+    assert loader.framework.get_mem_used() > 0
+    assert tail.result().tolist() == [456, 789]
+    del tail  # Future retains the exported tensor until it is released.
+    gc.collect()
     assert loader.framework.get_mem_used() == 0
 
 
@@ -296,7 +302,7 @@ def test_inflight_materialization_failure_frees_buffer(input_files, monkeypatch)
     with closing(SafeTensorsFileLoader(None, "cpu", nogds=True)) as loader:
         loader.add_filenames({0: input_files})
 
-        def fail(self, buffer):
+        def fail(self, buffer, owner=None):
             raise RuntimeError("view construction failed")
 
         monkeypatch.setattr(NoGdsFileCopier, "prepare_tensors", fail)
@@ -657,6 +663,9 @@ def test_gds_ready_tensor_and_close_with_pending_tail(delayed_gds, monkeypatch):
         assert not deregistered
         reader.release.set()
         closed.result(timeout=5)
+    assert tail.result().tolist() == [456, 456]
+    del tail
+    gc.collect()
     assert deregistered == [0]
     assert copiers[0].fh is None and not copiers[0].copy_reqs
     assert loader.framework.get_mem_used() == 0

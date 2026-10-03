@@ -20,9 +20,9 @@ class FilesBufferOnDevice:
         They synchornously wait all the workers to execute copies among processes.
 
         Users should create this instance with SafeTensorsFileLoader.copy_files_to_device().
-        Tensors returned from this buffer are valid only while the buffer stays open.
-        Clone/copy returned tensors before close() if the tensor data must be used
-        after this buffer is closed.
+        Returned tensors and their derived views share ownership of their
+        backing allocation and stay valid after close(). Physical memory is
+        released when the buffer and every exported storage reference are gone.
 
     Args:
         rank_loaders (Dict<rank, list(LazyTensorFacotry)>): Tensor factories per rank, which hold device pointers for buffers.
@@ -66,10 +66,10 @@ class FilesBufferOnDevice:
         self.auto_mem_delete = auto_mem_delete and self.pg.size() > 1
 
     def close(self):
-        """Release the backing device buffers.
+        """Drop the buffer's references to its backing allocations.
 
-        Any tensor returned from this FilesBufferOnDevice becomes invalid after
-        close() unless the caller cloned/copied it to independent storage.
+        Returned tensors remain valid. Physical memory is released after the
+        final exported storage reference disappears. Repeated close is safe.
         """
         error = None
         for _, loaders in self.rank_loaders.items():
@@ -127,8 +127,7 @@ class FilesBufferOnDevice:
     ) -> TensorBase:
         """Return a wrapped shard of tensor_name.
 
-        The returned tensor must not be used after close() unless the caller
-        cloned/copied it to independent storage.
+        The returned tensor retains its allocation and stays valid after close().
         """
         rank, lidix = self._get_rank_lidx(tensor_name)
         t = self.rank_loaders[rank][lidix].shuffle(self.pg, tensor_name, dim)
@@ -145,8 +144,7 @@ class FilesBufferOnDevice:
         partition a tensor instance with the key tensor_name at the dimension dim and return it.
         In multi-process loading, this eventually calls torch.distributed.scatter.
         A special dim is -1, which broadcast a tensor to all the ranks (== get_tensor()).
-        The returned tensor must not be used after close() unless the caller
-        cloned/copied it to independent storage.
+        The returned tensor retains its allocation and stays valid after close().
         """
         return self.get_sharded_wrapped(tensor_name, dim, device, dtype).get_raw()
 
@@ -158,8 +156,7 @@ class FilesBufferOnDevice:
     ) -> TensorBase:
         """Return a wrapped tensor by name.
 
-        The returned tensor must not be used after close() unless the caller
-        cloned/copied it to independent storage.
+        The returned tensor retains its allocation and stays valid after close().
         """
         return self.get_sharded_wrapped(tensor_name, -1, device, dtype)
 
@@ -174,8 +171,7 @@ class FilesBufferOnDevice:
         In multi-process loading, this eventually calls torch.distributed.broadcast.
         So, every rank will allocate the same tensor at each device memroy.
         In single-process loading, this directly instantiates a tensor from the device buffer with zero copy.
-        The returned tensor must not be used after close() unless the caller
-        cloned/copied it to independent storage.
+        The returned tensor retains its allocation and stays valid after close().
         """
         return self.get_tensor_wrapped(tensor_name, device, dtype).get_raw()
 
@@ -289,8 +285,7 @@ class FilesBufferOnDevice:
         In multi-process loading, this eventually calls torch.distributed.send if the rank has the tensor instance.
         The destination rank will call torch.distributed.recv.
         Other ranks do nothing.
-        The returned tensor must not be used after close() unless the caller
-        cloned/copied it to independent storage.
+        The returned tensor retains its allocation and stays valid after close().
         """
         rank, lidix = self._get_rank_lidx(tensor_name)
         t = self.rank_loaders[rank][lidix].push(self.pg, tensor_name, dst_rank, rank)
@@ -309,8 +304,7 @@ class FilesBufferOnDevice:
     ) -> TensorBase:
         """Return concatenated column shards from tensor_names.
 
-        The returned tensor must not be used after close() unless the caller
-        cloned/copied it to independent storage.
+        The returned tensor retains its allocation and stays valid after close().
         """
         rank_lidixs: Dict[Tuple[int, int], List[str]] = {}
         for tensor_name in tensor_names:
@@ -349,8 +343,7 @@ class FilesBufferOnDevice:
     def as_dict(self, tensor_shard_dim: OrderedDict[str, int]) -> Dict[str, TensorBase]:
         """Return tensors keyed by name according to the requested shard dims.
 
-        Returned tensors must not be used after close() unless the caller
-        cloned/copied them to independent storage.
+        Returned tensors retain their allocations and stay valid after close().
         """
         tensors: Dict[str, TensorBase] = {}
         for tensor_name, dim in tensor_shard_dim.items():

@@ -206,6 +206,7 @@ class FgdsFileCopier(CopierInterface):
         gbuf: _cpp.gds_device_buffer,
         dtype: DType = DType.AUTO,
         noalign: bool = False,
+        owner=None,
     ) -> Dict[str, TensorBase]:
         # Device-buffer layout:
         #   [aligned_offset,  header_length)  head padding (inside file; required)
@@ -267,7 +268,7 @@ class FgdsFileCopier(CopierInterface):
         self.copy_reqs = {}
 
         return self.metadata.get_tensors(
-            gbuf, self.device, self.aligned_offset, dtype=dtype
+            gbuf, self.device, self.aligned_offset, dtype=dtype, owner=owner
         )
 
 

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import os
 
 import pytest
@@ -70,6 +71,10 @@ def test_ThreeFSLoader(fstcpp_log, input_files, framework):
 
     bufs.close()
     loader.close()
+    # The last zero-copy tensor keeps its buffer alive past close under shared
+    # ownership; drop it before asserting release.
+    del actual
+    gc.collect()
     assert framework.get_mem_used() == 0
 
 
@@ -100,4 +105,8 @@ def test_ThreeFSLoader_multiple_files(fstcpp_log, input_files, framework):
 
     bufs.close()
     loader.close()
+    # The last zero-copy tensor keeps its buffer alive past close under shared
+    # ownership; drop it before asserting release.
+    del actual
+    gc.collect()
     assert framework.get_mem_used() == 0
