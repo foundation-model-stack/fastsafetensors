@@ -149,6 +149,7 @@ class PipelineParallel:
         broadcast_run_bytes: int = 16 << 20,
         broadcast_run_tensors: int = 64,
         overlap_io: bool = True,
+        borrowed_tensors: bool = False,
         **kwargs,
     ):
 
@@ -219,8 +220,20 @@ class PipelineParallel:
         # next. Holding several at once overruns that reservation.
         self.resident_tensor = resident_tensor
 
-        # Single-process yields borrow the file buffer and require a clone.
-        self.need_clone = pg.size() == 1
+        if borrowed_tensors and accumulate_resident:
+            raise ValueError(
+                "borrowed_tensors requires accumulate_resident=False because "
+                "yielded tensors must not be retained after the iterator advances"
+            )
+        if borrowed_tensors and (pg.size() != 1 or loader.pg.size() != 1):
+            raise ValueError(
+                "borrowed_tensors requires a single-process loader group "
+                "(ParallelLoader(all_local=True) or pg=None)"
+            )
+        self.borrowed_tensors = borrowed_tensors
+        # Preserve independent outputs and the existing clone budget by default.
+        # Only an explicit borrowed mode exports the raw loader storage.
+        self.need_clone = pg.size() == 1 and not borrowed_tensors
         if broadcast_run_bytes < 0 or broadcast_run_tensors < 0:
             raise ValueError("broadcast run limits must be non-negative")
         self.broadcast_run_bytes = broadcast_run_bytes
@@ -558,7 +571,10 @@ class PipelineParallel:
             with TimingContext(
                 "copy_files_to_device", self._log_message, batch_id
             ) as timer:
-                fb = self.loader.copy_files_to_device(allow_inflight=self.overlap_io)
+                fb = self.loader.copy_files_to_device(
+                    allow_inflight=self.overlap_io,
+                    borrowed_tensors=self.borrowed_tensors,
+                )
             copy_time = timer.elapsed_ms
 
             # Get tensor keys
@@ -639,7 +655,9 @@ class PipelineParallel:
             with TimingContext(
                 "get_tensor", self._log_message, batch.batch_id
             ) as timer:
-                if self._coalesce_broadcasts:
+                if self.borrowed_tensors:
+                    weights = batch.fb.iter_local_tensors(batch.keys)
+                elif self._coalesce_broadcasts:
                     weights = batch.fb._iter_tensors(
                         batch.keys,
                         self.broadcast_run_bytes,
@@ -721,6 +739,12 @@ class PipelineParallel:
         Yields:
             Tuple[str, Any]: Key-value pairs of tensor names and framework
             tensors (e.g. torch.Tensor for the pytorch framework)
+
+        Warning:
+            With borrowed_tensors=True, tensors and derived views do not own
+            the load buffer. Complete all use, including asynchronous device
+            work, before advancing or closing the iterator. Copy into independent
+            storage to retain data. Close the iterator on early exit.
         """
         self._log_message("Starting ParallelLoader iterate_weights")
 
@@ -827,6 +851,13 @@ class ParallelLoader(PipelineParallel):
                          retain whole-batch waits. False disables this overlap.
         use_fgds (bool): If True, use FGDS (alternative GPU Direct Storage) instead
                         of cuFile GDS. When FGDS is unavailable, falls back to nogds.
+        borrowed_tensors (bool): Skip yield clones and return non-owning views.
+                         Complete all use, including asynchronous device work,
+                         before advancing or closing the iterator. Requires
+                         accumulate_resident=False and a single-process loader
+                         group (pg=None or all_local=True). Defaults to False,
+                         preserving independent outputs and yield-clone budgets.
+                         Available through the direct Python API.
         broadcast_run_bytes (int): Maximum bytes per coalesced PyTorch broadcast
                          (default 16 MiB). A larger individual tensor is sent alone.
                          Zero disables coalescing. Identical on every rank.
@@ -873,6 +904,7 @@ class ParallelLoader(PipelineParallel):
         broadcast_run_bytes: int = 16 << 20,
         broadcast_run_tensors: int = 64,
         overlap_io: bool = True,
+        borrowed_tensors: bool = False,
         **kwargs,
     ):
         """Initialize PipelineParallelLoader with a pre-configured SafeTensorsFileLoader.
@@ -926,5 +958,6 @@ class ParallelLoader(PipelineParallel):
             broadcast_run_bytes=broadcast_run_bytes,
             broadcast_run_tensors=broadcast_run_tensors,
             overlap_io=overlap_io,
+            borrowed_tensors=borrowed_tensors,
             **kwargs,
         )

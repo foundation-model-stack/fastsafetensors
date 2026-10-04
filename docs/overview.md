@@ -42,21 +42,36 @@ nodes remain available if the preferred node is full. Set `set_numa=False`
 to retain inherited placement; CPU readers and unavailable NUMA support also
 retain inherited placement.
 
-After creating a `SafeTensorsFileLoader` instance, first map target files and a rank using the `.add_filenames()` method. Then, call `.copy_files_to_device()` to trigger the actual file copies on aggregated GPU memory fragments and directly instantiate a group of tensors. Once the files are loaded, you can retrieve a tensor using the `.get_tensor()` method. Additionally, you can obtain sharded tensors by `.get_sharded()`, which internally runs collective operations in `torch.distributed`.
+After creating a `SafeTensorsFileLoader` instance, map files to ranks with `.add_filenames()`, then call `.copy_files_to_device()` to load them and return a `FilesBufferOnDevice`. Retrieve whole tensors with `.get_tensor()` or distributed slices with `.get_sharded()`.
 
-Important: the loader's own `.close()` does not free the device memory that holds loaded tensors (the *load buffers*). Close the object that owns them:
+## Lifetime contract
 
-- `SafeTensorsFileLoader`: `.copy_files_to_device()` returns a `FilesBufferOnDevice`, whose `.close()` frees the load buffers. Tensors from it may borrow those buffers, so clone any tensor you need to keep after closing it, and close it before the loader. The loader's `.close()` releases only host-side state (file registrations, the copier and its host bounce buffers), and the loader cannot be used afterwards.
-- `ParallelLoader` and `AutoLoader`: the `iterate_weights()` iterator owns the load buffers. It frees each batch's buffers once it moves past that batch's last tensor, and the rest when it is exhausted or closed. If the loop can stop early (`break`, `return`, an exception), close the iterator, e.g. `with contextlib.closing(loader.iterate_weights()) as weights:`, before calling `loader.close()`. Yielded tensors are independent copies and stay valid.
+By default, low-level tensor retrieval takes shared ownership of the backing allocation. Tensors and derived views stay valid after the buffer's `.close()`, which drops its own references. The allocation is released when its last owner disappears. A small view can retain an entire file or chunk allocation; `tensor.numel() * tensor.element_size()` does not describe all the memory it retains.
 
-To check for leaks, call `get_framework_op("pytorch").get_mem_used()` (from `fastsafetensors.frameworks`). It returns the bytes of load buffers not yet freed, summed over every loader in the process, so it reads 0 once all are closed. It is not total GPU memory: yielded tensors, pinned host buffers and PyTorch's allocator cache are not counted.
+`ParallelLoader` preserves its existing delivery behavior: single-process outputs are cloned into independent storage. Distributed outputs own their receive or broadcast-run storage. Retaining an output does not keep its loader chunk alive, and the existing resident and yield-clone budget accounting is preserved.
 
-`fastsafe_open` is an easier entrypoint. You can force GDS off and run in fallback mode if `nogds=True`. Leaving the `with` block closes its buffer, so, as with `FilesBufferOnDevice` above, clone any tensor you use outside the block. (This memory model may be simplified in future releases.)
+For explicit borrowed access, use `copy_files_to_device(borrowed_tensors=True)` in a single-process low-level loader. Tensors and derived views do not hold an allocation owner. Complete every read, including asynchronous device work, before closing the buffer; aliases left in Python do not postpone release. Owning and borrowed storage are selected at materialization, not by `detach()` or slicing an owning tensor.
+
+`ParallelLoader(..., borrowed_tensors=True, accumulate_resident=False)` likewise skips yield clones and returns non-owning views. Complete their use before requesting the next tensor or closing the iterator. Copy into independent storage if data must survive. This mode requires a single-process loader group (`pg=None` or `all_local=True`). Close the iterator on early exit before closing the loader.
+
+The loader's own `close()` releases registrations and copier resources. Close
+the low-level buffer, or exhaust/close the `ParallelLoader`/`AutoLoader` iterator,
+before closing the loader. `loader.close()` does not close an active iterator.
+
+`live_allocation_count()` / `live_allocation_bytes()` report the load allocations
+fastsafetensors still owns, including allocations retained by exported owning
+storage. They exclude independent clones, other framework tensors, pinned host
+pools and allocator caches. `get_framework_op("pytorch").get_mem_used()` likewise
+tracks load-buffer bytes, rather than total GPU memory. In owning mode, closing
+every buffer is not enough to return these counters to zero: release all owning
+tensors and their derived storage too.
+
+`fastsafe_open` is an easier entrypoint. You can force GDS off and run in fallback mode if `nogds=True`.
 
 ```python
 with fastsafe_open(filenames=[filename], nogds=True, device="cpu", debug_log=True) as f:
     for key in f.keys():
-        t = f.get_tensor(key).clone().detach() # clone if t is used outside
+        t = f.get_tensor(key)  # stays valid after the block; no clone needed
 ```
 
 # AutoLoader configuration

@@ -206,6 +206,7 @@ class BaseSafeTensorsFileLoader:
         use_buf_register: bool = True,
         max_copy_block_size: int = 16 * 1024 * 1024 * 1024,
         allow_inflight: bool = False,
+        borrowed_tensors: bool = False,
     ) -> FilesBufferOnDevice:
         """
         With allow_inflight=True, supporting copiers prepare AUTO dtype views
@@ -216,10 +217,15 @@ class BaseSafeTensorsFileLoader:
         trigger copying all the files to device buffers.
         At this moment, we do not instantiate tensors but just creating copies at device buffers with or without GDS.
         Users can instantiate and/or partition tensors with FilesBufferOnDevice returned by this function.
-        The returned FilesBufferOnDevice owns the backing storage for tensors
-        created from it. Clone/copy those tensors before FilesBufferOnDevice.close()
-        if the tensor data must outlive the buffer.
+        Tensors created from the returned FilesBufferOnDevice take shared
+        ownership of the backing storage, so they stay valid after
+        FilesBufferOnDevice.close(); no clone is required to outlive the buffer.
+        With borrowed_tensors=True, local tensors and their derived views do
+        not retain the allocation. Complete all use, including asynchronous
+        device work, before closing the buffer. Requires a single-process group.
         """
+        if borrowed_tensors and self.pg.size() != 1:
+            raise ValueError("borrowed_tensors requires a single-process loader group")
         self.framework.set_device(self.device)
 
         if dtype != DType.AUTO:
@@ -278,7 +284,9 @@ class BaseSafeTensorsFileLoader:
                     need_wait.append(factory)
                 lidx += 1
             for factory in need_wait:
-                factory.wait_io(dtype=dtype, noalign=False)
+                factory.wait_io(
+                    dtype=dtype, noalign=False, borrowed_tensors=borrowed_tensors
+                )
         except BaseException:
             for loaders in factories.values():
                 for factory in loaders:
@@ -300,6 +308,7 @@ class BaseSafeTensorsFileLoader:
             pg=self.pg,
             framework=self.framework,
             keep_tensor=keep_tensor,
+            borrowed_tensors=borrowed_tensors,
         )
 
 
@@ -391,9 +400,9 @@ class fastsafe_open:
     """
     Opens a safetensors lazily and returns tensors as asked
     This is an enhanced version of safe_open in the original safetensors library to consume file list
-    Tensors returned from this context are valid only while the context stays
-    open. Clone/copy returned tensors before leaving the with block if the
-    tensor data must be reused after __exit__ closes the backing buffer.
+    Tensors returned from this context take shared ownership of their backing
+    buffer, so they remain valid after the with block exits; no clone is
+    required to reuse the data afterwards.
 
     Args:
         filenames (:obj:`str`|`list[str]`|`dict[int, str]`): The filename(s) or rank-file map to open
@@ -444,16 +453,16 @@ class fastsafe_open:
     def get_tensor_wrapped(self, name: str) -> TensorBase:
         """Return a wrapped tensor by name.
 
-        Clone/copy the returned tensor before leaving the context manager if
-        the tensor data must be used after the context closes.
+        The returned tensor keeps its backing buffer alive, so it stays valid
+        after the context closes.
         """
         return self.fb.get_tensor_wrapped(name)
 
     def get_tensor(self, name: str) -> Any:
         """Return a tensor by name.
 
-        Clone/copy the returned tensor before leaving the context manager if
-        the tensor data must be used after the context closes.
+        The returned tensor keeps its backing buffer alive, so it stays valid
+        after the context closes.
         """
         return self.get_tensor_wrapped(name).get_raw()
 

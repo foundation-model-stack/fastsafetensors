@@ -16,7 +16,7 @@ import os
 import threading
 from bisect import bisect_right
 from operator import itemgetter
-from typing import Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata, get_fs_type, init_logger
@@ -28,6 +28,9 @@ from .base import (
     validated_chunk_allocation_size,
 )
 from .registry import CopierConstructFunc, register_copier_constructor
+
+if TYPE_CHECKING:
+    from ..allocation import SharedDeviceAllocation
 
 logger = init_logger(__name__)
 
@@ -143,9 +146,13 @@ class UnifiedMemCopier(CopierInterface):
         )
         return self._readiness
 
-    def prepare_tensors(self, gbuf: fstcpp.gds_device_buffer) -> Dict[str, TensorBase]:
+    def prepare_tensors(
+        self,
+        gbuf: fstcpp.gds_device_buffer,
+        owner: Optional["SharedDeviceAllocation"] = None,
+    ) -> Dict[str, TensorBase]:
         return self.metadata._get_tensors(
-            gbuf, self.device, self._base_off, names=self._chunk_names
+            gbuf, self.device, self._base_off, names=self._chunk_names, owner=owner
         )
 
     def wait_tensor(self, name: str) -> None:
@@ -376,6 +383,7 @@ class UnifiedMemCopier(CopierInterface):
         gbuf: fstcpp.gds_device_buffer,
         dtype: DType = DType.AUTO,
         noalign: bool = False,
+        owner: Optional["SharedDeviceAllocation"] = None,
     ) -> Dict[str, TensorBase]:
         self.finish_io()
         self.framework.synchronize(self.device)
@@ -385,7 +393,12 @@ class UnifiedMemCopier(CopierInterface):
         # address. The copy_start_offset=header_length cancels out in get_tensors'
         # pointer arithmetic, giving correct offsets. No memmove fixup needed.
         tensors = self.metadata._get_tensors(
-            gbuf, self.device, self._base_off, dtype=dtype, names=self._chunk_names
+            gbuf,
+            self.device,
+            self._base_off,
+            dtype=dtype,
+            names=self._chunk_names,
+            owner=owner,
         )
 
         # Release the pinned mmap pages

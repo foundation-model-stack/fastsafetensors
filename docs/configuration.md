@@ -183,6 +183,21 @@ storage released before requesting the next tensor. Under broadcast, the
 predicate must give identical results on every rank and depend only on the
 tensor name. Passing it with `accumulate_resident=False` raises `ValueError`.
 
+Direct Python API users can opt into `ParallelLoader(...,
+borrowed_tensors=True, accumulate_resident=False)` for a single-process loader
+group (`pg=None` or `all_local=True`). This skips yield clones and their planner
+reservation. Returned tensors and derived views do not retain loader memory;
+complete all use, including asynchronous device reads, before advancing or
+closing the iterator. Copy into independent storage to retain data. The default
+is `False`, preserving independent outputs and the existing memory accounting.
+This option is not exposed by `AutoLoader` configuration.
+
+Low-level `copy_files_to_device()` returns shared-owning tensors by default;
+`copy_files_to_device(borrowed_tensors=True)` selects non-owning storage valid
+until buffer close. Holding a small owning view retains the complete allocation.
+See [Lifetime contract](./overview.md#lifetime-contract) for both modes and the
+live-allocation metrics.
+
 ## Configuration Examples
 
 ### 1. Minimal — All Defaults (no config file needed)

@@ -5,7 +5,7 @@ import platform
 import warnings
 from bisect import bisect_right
 from operator import itemgetter
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata, init_logger, is_gpu_found
@@ -14,6 +14,9 @@ from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface
 from .nogds import load_library_func, new_nogds_file_copier
 from .registry import CopierConstructFunc, register_copier_constructor
+
+if TYPE_CHECKING:
+    from ..allocation import SharedDeviceAllocation
 
 logger = init_logger(__name__)
 _request_end = itemgetter(2)
@@ -80,10 +83,16 @@ class GdsFileCopier(CopierInterface):
         self._readiness = self.metadata.aligned
         return self._readiness
 
-    def prepare_tensors(self, gbuf: fstcpp.gds_device_buffer) -> Dict[str, TensorBase]:
+    def prepare_tensors(
+        self,
+        gbuf: fstcpp.gds_device_buffer,
+        owner: Optional["SharedDeviceAllocation"] = None,
+    ) -> Dict[str, TensorBase]:
         if self._fallback is not None:
-            return self._fallback.prepare_tensors(gbuf)
-        return self.metadata.get_tensors(gbuf, self.device, self.aligned_offset)
+            return self._fallback.prepare_tensors(gbuf, owner=owner)
+        return self.metadata.get_tensors(
+            gbuf, self.device, self.aligned_offset, owner=owner
+        )
 
     def wait_tensor(self, name: str) -> None:
         if self._fallback is not None:
@@ -260,9 +269,12 @@ class GdsFileCopier(CopierInterface):
         gbuf: fstcpp.gds_device_buffer,
         dtype: DType = DType.AUTO,
         noalign: bool = False,
+        owner: Optional["SharedDeviceAllocation"] = None,
     ) -> Dict[str, TensorBase]:
         if self._fallback is not None:
-            tensors = self._fallback.wait_io(gbuf, dtype=dtype, noalign=noalign)
+            tensors = self._fallback.wait_io(
+                gbuf, dtype=dtype, noalign=noalign, owner=owner
+            )
             # Drop the fallback copier so its bounce-buffer reader is freed.
             self._fallback = None
             return tensors
@@ -290,7 +302,7 @@ class GdsFileCopier(CopierInterface):
             self.framework.free_tensor_memory(tmp_gbuf, self.device)
             self.aligned_offset += misaligned_bytes
         return self.metadata.get_tensors(
-            gbuf, self.device, self.aligned_offset, dtype=dtype
+            gbuf, self.device, self.aligned_offset, dtype=dtype, owner=owner
         )
 
 

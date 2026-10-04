@@ -369,6 +369,7 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
         device: Device,
         copy_start_offset: int,
         names: Optional[Set[str]],
+        owner=None,
     ) -> Iterator[Tuple[str, TorchTensor]]:
         """Amortize DLPack conversion over tensors with a common storage dtype."""
         from ..dlpack import from_cuda_buffer
@@ -399,7 +400,7 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
                 typed_address = base_address + shift
                 elements = (buffer_end - typed_address) // itemsize
                 capsule = from_cuda_buffer(
-                    typed_address, [elements], [1], disk_dtype, device
+                    typed_address, [elements], [1], disk_dtype, device, owner
                 )
                 bases[key] = (typed_address, torch.from_dlpack(capsule))
             typed_address, raw_base = bases[key]

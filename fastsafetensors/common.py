@@ -7,12 +7,15 @@ import re
 import sys
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Set, Tuple
 
 from . import cpp as fstcpp
 from .dlpack import from_cuda_buffer
 from .frameworks import FrameworkOpBase, TensorBase
 from .st_types import Device, DType
+
+if TYPE_CHECKING:
+    from .allocation import SharedDeviceAllocation
 
 
 def init_logger(name: str):
@@ -390,9 +393,10 @@ class SafeTensorsMetadata:
         device: Device,
         copy_start_offset: int,
         dtype: DType = DType.AUTO,
+        owner: Optional["SharedDeviceAllocation"] = None,
     ) -> Dict[str, TensorBase]:
         """Instantiate every tensor in this shard from the device buffer."""
-        return self._get_tensors(gbuf, device, copy_start_offset, dtype)
+        return self._get_tensors(gbuf, device, copy_start_offset, dtype, owner=owner)
 
     def _get_tensors(
         self,
@@ -401,6 +405,7 @@ class SafeTensorsMetadata:
         copy_start_offset: int,
         dtype: DType = DType.AUTO,
         names: Optional[Set[str]] = None,
+        owner: Optional["SharedDeviceAllocation"] = None,
     ) -> Dict[str, TensorBase]:
         # ``names`` restricts instantiation to that subset of tensors. Required
         # when ``gbuf`` is a compacted chunk buffer (holding only some tensors'
@@ -410,7 +415,7 @@ class SafeTensorsMetadata:
         # tensor has nothing to share and is cheaper on the portable path.
         if dtype == DType.AUTO and len(self.tensors if names is None else names) > 1:
             views = self.framework.iter_buffer_views(
-                self, gbuf, device, copy_start_offset, names
+                self, gbuf, device, copy_start_offset, names, owner=owner
             )
             if views is not None:
                 return dict(views)
@@ -434,6 +439,7 @@ class SafeTensorsMetadata:
                 dl_strides,
                 disk_dtype,
                 device,
+                owner,
             )
             t2 = self.framework.from_dlpack(dl_tensor, device, disk_dtype)
             if disk_dtype != t.dtype:
@@ -460,6 +466,7 @@ class SafeTensorsMetadata:
                     t.strides,
                     conv_dtype,
                     device,
+                    owner,
                 )
                 t2 = self.framework.from_dlpack(dl_tensor, device, conv_dtype)
                 if dtype != conv_dtype:

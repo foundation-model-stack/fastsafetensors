@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface, DummyDeviceBuffer
+
+if TYPE_CHECKING:
+    from ..allocation import SharedDeviceAllocation
 
 
 class ExampleCopier(CopierInterface):
@@ -29,6 +32,7 @@ class ExampleCopier(CopierInterface):
         gbuf: fstcpp.gds_device_buffer,
         dtype: DType = DType.AUTO,
         noalign: bool = False,
+        owner: Optional["SharedDeviceAllocation"] = None,
     ) -> Dict[str, TensorBase]:
         # get tensor
         res: Dict[str, TensorBase] = {}

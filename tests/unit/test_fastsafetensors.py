@@ -749,6 +749,10 @@ def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:
         bufs.get_filename("aaaaaaaaaaaaa")
     bufs.close()
     loader.close()
+    # The last-returned zero-copy tensor keeps its buffer alive past close()
+    # under the shared-ownership contract; drop it before asserting release.
+    del actual
+    gc.collect()
     assert framework.get_mem_used() == 0
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
@@ -771,6 +775,10 @@ def test_SafeTensorsFileLoaderNoGds(fstcpp_log, input_files, framework) -> None:
         assert framework.is_equal(actual, exp)
     bufs.close()
     loader.close()
+    # as_dict returns zero-copy tensors; they keep the buffer alive past close()
+    # until dropped (shared-ownership contract).
+    del tensors, actual
+    gc.collect()
     assert framework.get_mem_used() == 0
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
@@ -798,6 +806,9 @@ def test_SafeTensorsFileLoader_fgds(fstcpp_log, input_files, framework) -> None:
         assert framework.is_equal(actual, exp)
     bufs.close()
     loader.close()
+    assert framework.get_mem_used() > 0
+    assert framework.is_equal(actual, exp)
+    del actual
     assert framework.get_mem_used() == 0
     # When FGDS is truly active (Linux + libfgds.so present + GPU), no bounce
     # buffer is used. When it falls back to nogds (e.g. Windows or libfgds
@@ -820,6 +831,9 @@ def test_fastsafe_open_use_fgds(fstcpp_log, input_files, framework) -> None:
         for k in f.keys():
             t = f.get_tensor_wrapped(k)
             assert framework.is_equal(t, tensors[k])
+    assert framework.get_mem_used() > 0
+    assert framework.is_equal(t, tensors[k])
+    del t
     assert framework.get_mem_used() == 0
     if _fgds_available():
         assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
@@ -935,8 +949,11 @@ def test_iterate_weights_early_close_releases_buffers(
         assert framework.get_mem_used() > 0
     assert framework.get_mem_used() == 0
     assert "iterate_weights closed early: 0 of" in capsys.readouterr().out
-    # The yielded tensor does not depend on the freed load buffers.
+    # Default outputs are independent clones: they survive iterator close
+    # without retaining the loader allocation.
     assert bool((tensor == expected).all())
+    del tensor
+    assert framework.get_mem_used() == 0
 
     loader.close()
     loader.close()
@@ -972,6 +989,11 @@ def test_fastsafe_open(fstcpp_log, input_files, framework) -> None:
     tensors = load_safetensors_file(input_files[0], device, framework)
     for k, t in weight_iterator():
         assert framework.is_equal(t, tensors[k])
+    # The generator's context has closed, but the last yielded zero-copy tensor
+    # is still bound here and keeps its buffer alive; drop it before the
+    # release assertion below.
+    del t, tensors
+    gc.collect()
 
     with fastsafe_open(
         input_files[0],
@@ -999,6 +1021,10 @@ def test_fastsafe_open(fstcpp_log, input_files, framework) -> None:
 
                 assert isinstance(t, paddle.Tensor)
             break
+    # t is a zero-copy tensor that outlives the context; drop it before the
+    # release assertion.
+    del t
+    gc.collect()
     assert framework.get_mem_used() == 0
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
@@ -1308,6 +1334,9 @@ def test_as_dict_partial_request_close_frees_buffers(
         assert fb.rank_loaders[0][0].gbuf is not None
 
         fb.close()
+        # a0 is zero-copy; drop it so its shared buffer reference is released.
+        del tensors
+        gc.collect()
     finally:
         loader.close()
     assert framework.get_mem_used() == 0
@@ -1661,7 +1690,7 @@ def test_shared_views_preserve_offsets_shapes_and_storage(
     )
 
     # The optional hook's fallback must give the same values and ordering.
-    monkeypatch.setattr(framework, "iter_buffer_views", lambda *args: None)
+    monkeypatch.setattr(framework, "iter_buffer_views", lambda *args, **kwargs: None)
     portable = metadata._get_tensors(gbuf, view_device, offset, names=selected)
     assert list(portable) == list(views)
     for name in views:

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Dict
+from typing import TYPE_CHECKING, Dict, Optional
 
 from fastsafetensors import cpp as fstcpp
 from fastsafetensors.common import SafeTensorsMetadata, init_logger
@@ -11,6 +11,9 @@ from fastsafetensors.copier.registry import (
 )
 from fastsafetensors.frameworks import FrameworkOpBase, TensorBase
 from fastsafetensors.st_types import Device, DType
+
+if TYPE_CHECKING:
+    from fastsafetensors.allocation import SharedDeviceAllocation
 
 logger = init_logger(__name__)
 
@@ -63,10 +66,11 @@ class ThreeFSFileCopier(CopierInterface):
         gbuf: fstcpp.gds_device_buffer,
         dtype: DType = DType.AUTO,
         noalign: bool = False,
+        owner: Optional["SharedDeviceAllocation"] = None,
     ) -> Dict[str, TensorBase]:
         # read_chunked is synchronous; data is fully read in submit_io
         return self.metadata.get_tensors(
-            gbuf, self.device, self.metadata.header_length, dtype=dtype
+            gbuf, self.device, self.metadata.header_length, dtype=dtype, owner=owner
         )
 
 

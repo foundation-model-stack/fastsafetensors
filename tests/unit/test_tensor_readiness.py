@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
+import gc
 import json
 import os
 import struct
@@ -80,15 +81,23 @@ def delayed_load(tmp_path):
     loader.close()
 
 
-def test_ready_tensor_delivered_while_tail_is_pending(delayed_load):
+@pytest.mark.parametrize("borrowed", [False, True])
+def test_ready_tensor_delivered_while_tail_is_pending(delayed_load, borrowed):
     loader, reader = delayed_load
-    buffer = loader.copy_files_to_device(allow_inflight=True)
+    buffer = loader.copy_files_to_device(allow_inflight=True, borrowed_tensors=borrowed)
+
+    # Exercise the direct iterator used by the borrowed pipeline as well.
+    def get_tensor(name):
+        if borrowed:
+            return next(buffer.iter_local_tensors([name]))[1]
+        return buffer.get_tensor(name)
+
     try:
         # Creating all views must not wait for DMA, or make the unread tail ready.
         assert not reader.release.is_set()
-        assert buffer.get_tensor("a").item() == 123
+        assert get_tensor("a").item() == 123
         with ThreadPoolExecutor(1) as pool:
-            tail = pool.submit(buffer.get_tensor, "b")
+            tail = pool.submit(get_tensor, "b")
             assert reader.waiting.wait(5)
             assert not tail.done()
             reader.release.set()
@@ -96,6 +105,11 @@ def test_ready_tensor_delivered_while_tail_is_pending(delayed_load):
     finally:
         reader.release.set()
         buffer.close()
+    if not borrowed:
+        assert loader.framework.get_mem_used() > 0
+        assert tail.result().tolist() == [456, 789]
+    del tail  # Future retains the exported tensor until it is released.
+    gc.collect()
     assert loader.framework.get_mem_used() == 0
 
 
@@ -296,7 +310,7 @@ def test_inflight_materialization_failure_frees_buffer(input_files, monkeypatch)
     with closing(SafeTensorsFileLoader(None, "cpu", nogds=True)) as loader:
         loader.add_filenames({0: input_files})
 
-        def fail(self, buffer):
+        def fail(self, buffer, owner=None):
             raise RuntimeError("view construction failed")
 
         monkeypatch.setattr(NoGdsFileCopier, "prepare_tensors", fail)
@@ -657,6 +671,9 @@ def test_gds_ready_tensor_and_close_with_pending_tail(delayed_gds, monkeypatch):
         assert not deregistered
         reader.release.set()
         closed.result(timeout=5)
+    assert tail.result().tolist() == [456, 456]
+    del tail
+    gc.collect()
     assert deregistered == [0]
     assert copiers[0].fh is None and not copiers[0].copy_reqs
     assert loader.framework.get_mem_used() == 0
