@@ -148,7 +148,7 @@ def test_chunk_plan_requires_set_chunk(input_files, framework):
     names, ranges = chunk
     loader._set_chunk_plan({input_files[0]: (names, ranges, None)})
 
-    class _NoChunkCopier(CopierInterface):  # e.g. gds/dstorage: no set_chunk override
+    class _NoChunkCopier(CopierInterface):  # e.g. dstorage: no set_chunk override
         def __init__(self, metadata):
             self.metadata = metadata
 
