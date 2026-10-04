@@ -52,11 +52,10 @@ def test_pipeline_depth_mapping():
 def test_chunk_transient_multiplier_default_refuses():
     # Like set_chunk, the interface default refuses rather than guessing, so a
     # copier that cannot chunk can never silently under-count the plan.
-    from fastsafetensors.copier import CopierInterface, GdsFileCopier
+    from fastsafetensors.copier import CopierInterface
 
-    for cls in (CopierInterface, GdsFileCopier):
-        with pytest.raises(NotImplementedError, match="chunk_transient_multiplier"):
-            cls.chunk_transient_multiplier(["f0"])
+    with pytest.raises(NotImplementedError, match="chunk_transient_multiplier"):
+        CopierInterface.chunk_transient_multiplier(["f0"])
     with pytest.raises(NotImplementedError, match="fixed_device_overhead"):
         CopierInterface.fixed_device_overhead(["f0"])
 
@@ -102,6 +101,7 @@ def test_chunking_copiers_declare_their_transient_cost():
     # budget on the default CPU path without failing anything else.
     assert get_copier_class("nogds").chunk_transient_multiplier(["f0"]) == 1
     assert get_copier_class("nogds").fixed_device_overhead(["f0"]) == 0
+    assert get_copier_class("gds").chunk_transient_multiplier(["f0"]) == 1
 
 
 def test_copier_class_follows_factory_fallback():
@@ -369,6 +369,30 @@ def test_empty_kept_file_contributes_nothing():
     assert budgets[2] == 20 * GiB - 8 * GiB
 
 
+@pytest.mark.parametrize("clone", [False, True])
+@pytest.mark.parametrize("multiplier", [1, 2])
+def test_chunk_padding_changes_queue_fit_without_padding_yield_clone(clone, multiplier):
+    stats = [_st("f", 8 * MiB, largest=2 * MiB)]
+    padding = 12285
+    budget = 8 * MiB + 2 * (multiplier * 2 * MiB + padding) + int(clone) * 2 * MiB
+    kwargs = dict(
+        chunk_overhead=padding,
+        transient_multiplier=multiplier,
+        account_for_yield_clone=clone,
+    )
+    assert fit_queue_size(4, stats, budget, **kwargs) == 0
+    assert plan_file_budgets(stats, budget, depth=2, **kwargs) == [2 * MiB]
+    assert fit_queue_size(4, stats, budget - 1, **kwargs) == -1
+    with pytest.raises(BudgetInfeasibleError):
+        plan_file_budgets(stats, budget - 1, depth=2, **kwargs)
+
+
+def test_empty_file_needs_no_chunk_padding():
+    stats = [FileWeightStats("empty", 0, 0, 0)]
+    assert fit_queue_size(4, stats, 1, chunk_overhead=12285) == 4
+    assert plan_file_budgets(stats, 1, depth=6, chunk_overhead=12285) == [0]
+
+
 # ---- simulation property test: replay the plan, assert peak <= budget ----
 
 
@@ -391,6 +415,7 @@ def _simulate_peak(
     accumulate_resident=True,
     multiplier=1,
     account_for_yield_clone=False,
+    chunk_overhead=0,
 ):
     """Replay the load and return the worst peak on any single rank.
 
@@ -432,7 +457,12 @@ def _simulate_peak(
         recv = max((sz for _, sz in batches[k].values()), default=0)
         for r in batches[k]:
             own = sum(b[r][1] for b in batches[start : k + 1] if r in b)
-            live = multiplier * own + (recv if group_size > 1 else 0)
+            live_chunks = sum(r in b for b in batches[start : k + 1])
+            live = (
+                multiplier * own
+                + live_chunks * chunk_overhead
+                + (recv if group_size > 1 else 0)
+            )
             if account_for_yield_clone:
                 live += stats[batches[k][r][0]].largest_tensor
             peak = max(peak, resident + live)
@@ -464,6 +494,7 @@ def test_simulation_peak_within_budget():
         # The planner accepts any combination, so vary it freely: one
         # hand-checked case aside, this is the clone term's only coverage.
         clone = rng.random() < 0.5
+        overhead = rng.choice([0, 0, 12285])
         max_largest = max(s.largest_tensor for s in stats)
         # Headroom is sometimes too small for the largest-tensor floor, so the
         # planner has to refuse rather than hand back an unusable budget.
@@ -481,6 +512,7 @@ def test_simulation_peak_within_budget():
                 transient_multiplier=mult,
                 group_size=group_size,
                 account_for_yield_clone=clone,
+                chunk_overhead=overhead,
             )
         except BudgetInfeasibleError:
             infeasible += 1
@@ -495,6 +527,7 @@ def test_simulation_peak_within_budget():
                 transient_multiplier=mult,
                 group_size=group_size,
                 account_for_yield_clone=clone,
+                chunk_overhead=overhead,
             )
             assert fitted is None or fitted < qs, (trial, fitted, qs)
             if fitted is not None:
@@ -507,6 +540,7 @@ def test_simulation_peak_within_budget():
                     transient_multiplier=mult,
                     group_size=group_size,
                     account_for_yield_clone=clone,
+                    chunk_overhead=overhead,
                 )
                 with pytest.raises(BudgetInfeasibleError):
                     plan_file_budgets(
@@ -517,6 +551,7 @@ def test_simulation_peak_within_budget():
                         transient_multiplier=mult,
                         group_size=group_size,
                         account_for_yield_clone=clone,
+                        chunk_overhead=overhead,
                     )
             continue
         # Feasible: the clamp must leave the request untouched.
@@ -529,6 +564,7 @@ def test_simulation_peak_within_budget():
                 transient_multiplier=mult,
                 group_size=group_size,
                 account_for_yield_clone=clone,
+                chunk_overhead=overhead,
             )
             == qs
         ), (trial, qs)
@@ -547,6 +583,7 @@ def test_simulation_peak_within_budget():
             accumulate_resident=acc,
             multiplier=mult,
             account_for_yield_clone=clone,
+            chunk_overhead=overhead,
         )
         # acc=True: resident + transient <= budget. acc=False: the plan bounds
         # the transient side only (destinations preallocated), and the sim

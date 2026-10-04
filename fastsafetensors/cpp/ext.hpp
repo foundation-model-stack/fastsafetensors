@@ -105,6 +105,7 @@ typedef struct CUfileDrvProps {
     unsigned int max_device_cache_size;
     unsigned int per_buffer_cache_size;
     unsigned int max_pinned_memory_size;
+    unsigned int max_batch_io_size;
     unsigned int max_batch_io_timeout_msecs;
  } CUfileDrvProps_t;
 
@@ -115,6 +116,8 @@ bool get_gil_release();
 void init_gil_release_from_env();
 int init_gds();
 int close_gds();
+uint64_t gds_device_cache_size();
+bool is_hipfile_memory_budget_supported();
 std::string get_device_pci_bus(int deviceId);
 int set_numa_node(int numa_node);
 pybind11::bytes read_buffer(uintptr_t _dst, uint64_t length);
@@ -262,6 +265,7 @@ public:
 typedef struct ext_funcs {
     CUfileError_t (*cuFileDriverOpen)();
     CUfileError_t (*cuFileDriverClose)();
+    CUfileError_t (*cuFileDriverGetProperties)(CUfileDrvProps_t *);
     CUfileError_t (*cuFileDriverSetMaxDirectIOSize)(size_t);
     CUfileError_t (*cuFileDriverSetMaxPinnedMemSize)(size_t);
     CUfileError_t (*cuFileBufRegister)(const void *, size_t, int);

@@ -116,8 +116,8 @@ per-tensor broadcasts, which synchronize the whole device and limit this overlap
 
 ## Bounded Device Memory
 
-`max_batch_bytes` caps each sub-file chunk. It must be at least as large as
-the largest selected tensor because tensors are not split across chunks.
+`max_batch_bytes` caps each sub-file chunk's payload span. It must be at least
+as large as the largest selected tensor because tensors are not split across chunks.
 
 With `max_batch_bytes` or `device_memory_budget`, each distinct shard's header
 is parsed once and reused for planning and subsequent chunk batches. Keep the
@@ -146,16 +146,51 @@ the configured worker limit, even if fewer buffers have been allocated so far.
 If the pool was already populated before measuring free memory, this subtraction
 can count its bytes again. Reserve any post-load conversion memory separately.
 
+The GDS copier supports both chunk limits and device memory budgets. CUDA
+partial reads round file ranges to 4 KiB boundaries, coalesce overlapping
+boundary pages, and align the I/O destination pointer. Tensor views skip the
+padding, so no alignment-repair scratch is needed. Rounded reads can fetch
+adjacent unselected bytes, but do not expose unselected tensors. The planner
+reserves up to 12 KiB per live chunk for file-boundary and pointer padding.
+CPU reads and very small I/O block limits retain exact-range reads. With
+`use_chunk_budget_as_allocation_size: true`, the payload allocation uses the
+planned budget; alignment padding is additional and separately budgeted.
+cuFile can still use its internal GPU bounce cache;
+the loader reserves the configured cache capacity reported by
+`cuFileDriverGetProperties` as fixed device overhead, including when buffer
+registration is disabled. This reservation is conservative for aligned,
+registered reads and CPU loads on a host with cuFile loaded. As with the unified
+pool, an already allocated cache may be counted again when budgeting from free
+memory. NVIDIA runtimes that cannot report their cache capacity reject device
+memory budgeting. On AMD, hipFile 0.2.x--0.4.x synchronous reads have no extra
+GPU bounce cache: direct reads use the destination buffer, and fallback reads
+use host memory (16 MiB per active call). The loader checks `hipFileGetVersion`
+and reserves zero fixed GPU cache bytes for these versions without calling the
+unimplemented `hipFileDriverGetProperties`. With `device_memory_budget` set,
+unknown or unsupported hipFile versions automatically select nogds (or unified
+on shared-memory systems) before planning. The original budget, chunk limits,
+and tensor selection are preserved, and the planner accounts for the selected
+copier's actual costs. If that plan cannot fit, it raises `BudgetInfeasibleError`.
+Without a device memory budget, ordinary hipFile loads remain available.
+Chunk alignment padding is still charged. This zero-cache policy concerns
+discrete GPU memory; account separately for host buffers on systems where host
+and device memory share capacity, and for HIP runtime/context allocations.
+A file-handle failure that falls back to nogds preserves the
+selected ranges, chunk names, and allocation size.
+
 This estimates one loader's configured pool, not the process-wide high-water
 mark. Account separately for memory retained by earlier loads with more workers
 or used by concurrent loaders. Custom chunk-capable copiers using
 `device_memory_budget` must implement both `chunk_transient_multiplier(paths)`
-and `fixed_device_overhead(paths)`.
+and `fixed_device_overhead(paths)`. Copiers needing extra bytes per live chunk
+override `chunk_device_overhead(paths)`; the default is zero. This overhead is
+charged on top of each chunk's span, but not on yield clones.
 
 `use_chunk_budget_as_allocation_size: true` allocates each chunk buffer at its
-planner budget instead of its exact byte span. The loader still reads only the
-selected byte ranges. Stable allocation sizes improve caching-allocator reuse
-and require either `max_batch_bytes` or `device_memory_budget`. Custom copiers
+planner budget instead of its exact byte span. Readers may add the budgeted
+alignment padding described above. Stable allocation sizes improve
+caching-allocator reuse and require either `max_batch_bytes` or
+`device_memory_budget`. Custom copiers
 must support `set_chunk(byte_ranges, names, allocation_size)` to use this option.
 Legacy two-argument `set_chunk` implementations are supported only when
 `use_chunk_budget_as_allocation_size` is disabled; enabling it raises `TypeError`.
