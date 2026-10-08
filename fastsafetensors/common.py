@@ -95,23 +95,18 @@ _warned_odirect_fs: Set[str] = set()
 ODIRECT_HINT = "set FASTSAFETENSORS_ODIRECT=0 to use buffered reads"
 
 
-def is_odirect_enabled(
-    path: str, override_env: Optional[str] = None, buffered_ram_fs: bool = False
-) -> bool:
+def is_odirect_enabled(path: str, buffered_ram_fs: bool = False) -> bool:
     """Select direct I/O by default on local or unknown filesystems.
 
-    FASTSAFETENSORS_ODIRECT=1/0 overrides the filesystem policy. An optional
-    copier-specific environment variable takes precedence over that shared
-    switch. ``buffered_ram_fs`` also reads tmpfs and ramfs buffered. Platforms
+    FASTSAFETENSORS_ODIRECT=1/0 overrides the filesystem policy for every
+    copier. ``buffered_ram_fs`` also reads tmpfs and ramfs buffered. Platforms
     without O_DIRECT use buffered I/O. This is a policy check, not a probe of
     whether this particular file accepts direct I/O; copiers that open with
     O_DIRECT fall back to buffered reads when the filesystem rejects it.
     """
     if not getattr(os, "O_DIRECT", 0):
         return False
-    override = os.environ.get(override_env) if override_env is not None else None
-    if override is None:
-        override = os.environ.get("FASTSAFETENSORS_ODIRECT")
+    override = os.environ.get("FASTSAFETENSORS_ODIRECT")
     if override is not None:
         return override == "1"
     fstype = get_fs_type(path)

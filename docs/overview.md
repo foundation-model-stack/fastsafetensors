@@ -40,9 +40,8 @@ kernel readahead and client caching. The nogds copier also reads RAM-backed
 filesystems (tmpfs, ramfs) buffered, since its bounce buffers gain nothing from
 bypassing a page cache that is the storage itself. Set
 `FASTSAFETENSORS_ODIRECT=0` to opt into buffered reads, or
-`FASTSAFETENSORS_ODIRECT=1` to force direct I/O regardless of filesystem type.
-`FASTSAFETENSORS_NOGDS_ODIRECT=0/1` is a nogds-specific override and takes
-precedence over the shared setting. Filesystem selection follows symlinks to
+`FASTSAFETENSORS_ODIRECT=1` to force direct I/O regardless of filesystem type;
+the one switch covers both copiers. Filesystem selection follows symlinks to
 the checkpoint's actual location. The selection does not probe whether the
 file accepts `O_DIRECT`. When a filesystem rejects it with `EINVAL`, the nogds
 copier warns once and continues buffered: a rejected open is retried without

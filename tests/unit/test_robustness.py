@@ -161,21 +161,15 @@ def test_odirect_network_notice_is_shared(monkeypatch, caplog):
     monkeypatch.setattr(common, "get_fs_type", lambda p: "nfs4")
     monkeypatch.setattr(common, "_warned_odirect_fs", set())
     monkeypatch.delenv("FASTSAFETENSORS_ODIRECT", raising=False)
-    monkeypatch.delenv("FASTSAFETENSORS_NOGDS_ODIRECT", raising=False)
     with caplog.at_level(logging.INFO, logger="fastsafetensors.common"):
         assert not unified.is_odirect_enabled("/mnt/nfs/f")
-        assert not common.is_odirect_enabled(
-            "/mnt/nfs/f", "FASTSAFETENSORS_NOGDS_ODIRECT"
-        )
+        assert not common.is_odirect_enabled("/mnt/nfs/f", buffered_ram_fs=True)
     assert caplog.text.count("using buffered reads") == 1
 
 
 @pytest.mark.parametrize("fstype", ["xfs", "nfs4", "tmpfs"])
 @pytest.mark.parametrize("shared", [None, "0", "1"])
-@pytest.mark.parametrize("legacy", [None, "0", "1"])
-def test_nogds_open_uses_shared_odirect_policy(
-    monkeypatch, tmp_path, fstype, shared, legacy
-):
+def test_nogds_open_uses_shared_odirect_policy(monkeypatch, tmp_path, fstype, shared):
     from fastsafetensors import common
     from fastsafetensors.copier import nogds
     from fastsafetensors.st_types import Device
@@ -183,14 +177,10 @@ def test_nogds_open_uses_shared_odirect_policy(
     direct_flag = 0x4000
     monkeypatch.setattr(common.os, "O_DIRECT", direct_flag, raising=False)
     monkeypatch.setattr(common, "get_fs_type", lambda p: fstype)
-    for name, value in (
-        ("FASTSAFETENSORS_ODIRECT", shared),
-        ("FASTSAFETENSORS_NOGDS_ODIRECT", legacy),
-    ):
-        if value is None:
-            monkeypatch.delenv(name, raising=False)
-        else:
-            monkeypatch.setenv(name, value)
+    if shared is None:
+        monkeypatch.delenv("FASTSAFETENSORS_ODIRECT", raising=False)
+    else:
+        monkeypatch.setenv("FASTSAFETENSORS_ODIRECT", shared)
     path = tmp_path / "checkpoint"
     path.write_bytes(b"weights")
     original_open = os.open
@@ -207,8 +197,8 @@ def test_nogds_open_uses_shared_odirect_policy(
     copier = nogds.NoGdsFileCopier(metadata, Device.from_str("cpu"), None, None)
     try:
         assert os.read(copier.fd, 7) == b"weights"
-        expected = legacy if legacy is not None else shared
-        enabled = expected == "1" if expected is not None else fstype == "xfs"
+        # The shared switch wins; otherwise only xfs (local) reads direct.
+        enabled = shared == "1" if shared is not None else fstype == "xfs"
         assert bool(opened_flags[0] & direct_flag) == enabled
     finally:
         os.close(copier.fd)
@@ -238,7 +228,6 @@ def test_nogds_open_falls_back_when_odirect_rejected(monkeypatch, tmp_path, capl
     monkeypatch.setattr(common.os, "O_DIRECT", direct_flag, raising=False)
     monkeypatch.setattr(common, "get_fs_type", lambda p: "ext4")
     monkeypatch.delenv("FASTSAFETENSORS_ODIRECT", raising=False)
-    monkeypatch.delenv("FASTSAFETENSORS_NOGDS_ODIRECT", raising=False)
     original_open = os.open
     opened_flags = []
 
@@ -268,7 +257,6 @@ def test_nogds_open_keeps_other_errors(monkeypatch, tmp_path):
     monkeypatch.setattr(common.os, "O_DIRECT", direct_flag, raising=False)
     monkeypatch.setattr(common, "get_fs_type", lambda p: "ext4")
     monkeypatch.delenv("FASTSAFETENSORS_ODIRECT", raising=False)
-    monkeypatch.delenv("FASTSAFETENSORS_NOGDS_ODIRECT", raising=False)
 
     def open_file(path, flags, mode):
         raise OSError(errno.EACCES, "Permission denied")
@@ -286,7 +274,7 @@ def test_nogds_read_failure_names_odirect(monkeypatch, tmp_path, direct):
 
     if not getattr(os, "O_DIRECT", 0):
         pytest.skip("O_DIRECT unavailable")
-    monkeypatch.setenv("FASTSAFETENSORS_NOGDS_ODIRECT", "1" if direct else "0")
+    monkeypatch.setenv("FASTSAFETENSORS_ODIRECT", "1" if direct else "0")
     copier = _nogds_copier_on(tmp_path, monkeypatch, os.open)
     if direct and not nogds._fd_is_odirect(copier.fd):
         os.close(copier.fd)
