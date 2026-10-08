@@ -58,7 +58,7 @@ class DelayedReader:
 
 
 @pytest.fixture
-def delayed_load(tmp_path):
+def delayed_load(tmp_path, monkeypatch):
     import torch
     from safetensors.torch import save_file
 
@@ -70,6 +70,8 @@ def delayed_load(tmp_path):
         },
         str(path),
     )
+    # The mock uses Python's unaligned pread; native reader tests cover O_DIRECT.
+    monkeypatch.setenv("FASTSAFETENSORS_NOGDS_ODIRECT", "0")
     reader = DelayedReader()
     loader = SafeTensorsFileLoader(None, "cpu", nogds=True)
     loader.copier_constructor = lambda meta, device, fw: NoGdsFileCopier(

@@ -11,6 +11,7 @@ from ..common import (
     SafeTensorsMetadata,
     get_device_numa_node,
     is_gpu_found,
+    is_odirect_enabled,
     resolve_runtime_lib_name,
 )
 from ..frameworks import FrameworkOpBase, TensorBase
@@ -40,6 +41,8 @@ class NoGdsFileCopier(CopierInterface):
         self.metadata = metadata
         self.reader = reader
         flags = os.O_RDONLY
+        if is_odirect_enabled(metadata.src, "FASTSAFETENSORS_NOGDS_ODIRECT"):
+            flags |= getattr(os, "O_DIRECT", 0)
         # On Windows, O_RDONLY defaults to text mode which translates \r\n
         # and stops at 0x1A (Ctrl+Z), corrupting binary tensor data.
         if sys.platform == "win32" and hasattr(os, "O_BINARY"):

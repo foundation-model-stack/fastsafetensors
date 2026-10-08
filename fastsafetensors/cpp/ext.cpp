@@ -860,7 +860,7 @@ struct nogds_file_reader::state {
     int device, numa_node;
     bool use_mmap, streams;
     static constexpr size_t buffers_per_thread = 2;
-    uint64_t block_size, allocation_size = 0;
+    uint64_t block_size, buffer_stride, allocation_size = 0;
     void *allocation = nullptr;
     std::vector<cudaStream_t> copy_streams;
     std::vector<std::thread> workers;
@@ -885,6 +885,7 @@ struct nogds_file_reader::state {
     void read(const request &req, int64_t position, int64_t length,
               char *bounce, cudaStream_t stream) {
         const int64_t offset = req.offset + position;
+        int64_t source_skip = 0;
         if (use_mmap) {
 #ifdef _MSC_VER
             constexpr int granularity = 65536;
@@ -898,20 +899,31 @@ struct nogds_file_reader::state {
             std::memcpy(bounce, static_cast<char *>(source) + offset - map_offset, length);
             munmap(source, map_length);
         } else {
+            int64_t read_offset = offset, read_length = length;
+#ifndef _MSC_VER
+            if ((fcntl(req.fd, F_GETFL) & O_DIRECT) != 0) {
+                source_skip = offset % ALIGN;
+                read_offset -= source_skip;
+                read_length = ((length + source_skip + ALIGN - 1) / ALIGN) * ALIGN;
+            }
+#endif
             int64_t got;
             do {
 #ifdef _MSC_VER
                 std::lock_guard<std::mutex> file_lock(file_mutex);
 #endif
-                got = pread(req.fd, bounce, length, offset);
+                got = pread(req.fd, bounce, read_length, read_offset);
             } while (got < 0 && errno == EINTR);
-            if (got != length) throw std::runtime_error("nogds read failed or truncated input");
+            // The aligned final read may extend past EOF; all requested tensor
+            // bytes must nevertheless be present.
+            if (got < length + source_skip)
+                throw std::runtime_error("nogds read failed or truncated input");
         }
         void *destination = reinterpret_cast<void *>(req.destination + position);
         if (streams) {
-            check(fns->cudaMemcpyAsync(destination, bounce, length, cudaMemcpyHostToDevice, stream));
+            check(fns->cudaMemcpyAsync(destination, bounce + source_skip, length, cudaMemcpyHostToDevice, stream));
         } else {
-            check(fns->cudaMemcpy(destination, bounce, length, cudaMemcpyHostToDevice));
+            check(fns->cudaMemcpy(destination, bounce + source_skip, length, cudaMemcpyHostToDevice));
             check(fns->cudaDeviceSynchronize());
         }
     }
@@ -967,7 +979,7 @@ struct nogds_file_reader::state {
             try {
                 check(device_error);
                 const size_t i = first_slot + slot;
-                read(*req, position, length, static_cast<char *>(allocation) + block_size * i, copy_streams[i]);
+                read(*req, position, length, static_cast<char *>(allocation) + buffer_stride * i, copy_streams[i]);
             } catch (const std::exception &error) {
                 // Drain any queued DMA before either source or destination reuse.
                 if (streams) fns->cudaStreamSynchronize(copy_streams[first_slot + slot]);
@@ -1012,7 +1024,8 @@ nogds_file_reader::nogds_file_reader(bool use_mmap, uint64_t bbuf_size_kb,
     s.block_size = ((bbuf_size_kb + slots - 1) / slots) * 1024;
     s.use_mmap = use_mmap;
     state::check(s.fns->cudaSetDevice(device_id));
-    s.allocation_size = s.block_size * slots;
+    s.buffer_stride = ((s.block_size + ALIGN - 1) / ALIGN) * ALIGN + 2 * ALIGN;
+    s.allocation_size = s.buffer_stride * slots;
     // Allocate on a temporary GPU-local thread without changing the caller's
     // CPU affinity or memory policy. Prefer the node, allowing OOM fallback.
     cudaError_t allocation_error = cudaSuccess;

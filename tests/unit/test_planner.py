@@ -181,7 +181,7 @@ def test_unified_fixed_pool_path_selection_and_worker_clamp(monkeypatch):
     from fastsafetensors.copier import UnifiedMemCopier, unified
 
     monkeypatch.setattr(fstcpp, "dma_load_runs", object(), raising=False)
-    monkeypatch.setattr(unified, "_odirect_ok", lambda path: path == "direct")
+    monkeypatch.setattr(unified, "is_odirect_enabled", lambda path: path == "direct")
     monkeypatch.delenv("FASTSAFETENSORS_DMA_THREADS", raising=False)
     assert UnifiedMemCopier.fixed_device_overhead(["direct"]) == 128 * MiB
     monkeypatch.setenv("FASTSAFETENSORS_DMA_THREADS", "1")

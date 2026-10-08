@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Robustness tests: filesystem-aware I/O paths and graceful degradation."""
 
+import os
+from types import SimpleNamespace
+
 import pytest
 
 from fastsafetensors.common import get_fs_type
@@ -109,26 +112,99 @@ def test_explicit_dstorage_configuration_error_does_not_fall_back(
 
 
 def test_odirect_gating(monkeypatch):
-    from fastsafetensors.copier import unified
+    from fastsafetensors import common
 
+    monkeypatch.setattr(common.os, "O_DIRECT", 0x4000, raising=False)
     monkeypatch.delenv("FASTSAFETENSORS_ODIRECT", raising=False)
-    monkeypatch.setattr(unified, "get_fs_type", lambda p: "nfs4")
-    assert unified._odirect_ok("/mnt/nfs/f") is False
-    monkeypatch.setattr(unified, "get_fs_type", lambda p: "ext4")
-    assert unified._odirect_ok("/data/f") is True
-    monkeypatch.setattr(unified, "get_fs_type", lambda p: "")  # unknown: allow
-    assert unified._odirect_ok("/x") is True
+    monkeypatch.setattr(common, "get_fs_type", lambda p: "nfs4")
+    assert common.is_odirect_enabled("/mnt/nfs/f") is False
+    monkeypatch.setattr(common, "get_fs_type", lambda p: "ext4")
+    assert common.is_odirect_enabled("/data/f") is True
+    monkeypatch.setattr(common, "get_fs_type", lambda p: "")  # unknown: allow
+    assert common.is_odirect_enabled("/x") is True
 
 
 def test_odirect_env_override(monkeypatch):
+    from fastsafetensors import common
+
+    monkeypatch.setattr(common.os, "O_DIRECT", 0x4000, raising=False)
+    monkeypatch.setattr(common, "get_fs_type", lambda p: "nfs4")
+    monkeypatch.setenv("FASTSAFETENSORS_ODIRECT", "1")
+    assert common.is_odirect_enabled("/mnt/nfs/f") is True  # forced on
+    monkeypatch.setattr(common, "get_fs_type", lambda p: "ext4")
+    monkeypatch.setenv("FASTSAFETENSORS_ODIRECT", "0")
+    assert common.is_odirect_enabled("/data/f") is False  # forced off
+
+
+def test_odirect_unavailable(monkeypatch):
+    from fastsafetensors import common
+
+    monkeypatch.delattr(common.os, "O_DIRECT", raising=False)
+    monkeypatch.setenv("FASTSAFETENSORS_ODIRECT", "1")
+    assert common.is_odirect_enabled("/data/f") is False
+
+
+def test_odirect_network_notice_is_shared(monkeypatch, caplog):
+    import logging
+
+    from fastsafetensors import common
     from fastsafetensors.copier import unified
 
-    monkeypatch.setattr(unified, "get_fs_type", lambda p: "nfs4")
-    monkeypatch.setenv("FASTSAFETENSORS_ODIRECT", "1")
-    assert unified._odirect_ok("/mnt/nfs/f") is True  # forced on
-    monkeypatch.setattr(unified, "get_fs_type", lambda p: "ext4")
-    monkeypatch.setenv("FASTSAFETENSORS_ODIRECT", "0")
-    assert unified._odirect_ok("/data/f") is False  # forced off
+    monkeypatch.setattr(common.os, "O_DIRECT", 0x4000, raising=False)
+    monkeypatch.setattr(common, "get_fs_type", lambda p: "nfs4")
+    monkeypatch.setattr(common, "_warned_odirect_fs", set())
+    monkeypatch.delenv("FASTSAFETENSORS_ODIRECT", raising=False)
+    monkeypatch.delenv("FASTSAFETENSORS_NOGDS_ODIRECT", raising=False)
+    with caplog.at_level(logging.INFO, logger="fastsafetensors.common"):
+        assert not unified.is_odirect_enabled("/mnt/nfs/f")
+        assert not common.is_odirect_enabled(
+            "/mnt/nfs/f", "FASTSAFETENSORS_NOGDS_ODIRECT"
+        )
+    assert caplog.text.count("using buffered reads") == 1
+
+
+@pytest.mark.parametrize("fstype", ["xfs", "nfs4"])
+@pytest.mark.parametrize("shared", [None, "0", "1"])
+@pytest.mark.parametrize("legacy", [None, "0", "1"])
+def test_nogds_open_uses_shared_odirect_policy(
+    monkeypatch, tmp_path, fstype, shared, legacy
+):
+    from fastsafetensors import common
+    from fastsafetensors.copier import nogds
+    from fastsafetensors.st_types import Device
+
+    direct_flag = 0x4000
+    monkeypatch.setattr(common.os, "O_DIRECT", direct_flag, raising=False)
+    monkeypatch.setattr(common, "get_fs_type", lambda p: fstype)
+    for name, value in (
+        ("FASTSAFETENSORS_ODIRECT", shared),
+        ("FASTSAFETENSORS_NOGDS_ODIRECT", legacy),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    path = tmp_path / "checkpoint"
+    path.write_bytes(b"weights")
+    original_open = os.open
+    opened_flags = []
+
+    def open_file(path, flags, mode):
+        opened_flags.append(flags)
+        # Exercise the real descriptor lifecycle without requiring the test
+        # filesystem to support direct I/O; the C++ reader tests cover it.
+        return original_open(path, flags & ~direct_flag, mode)
+
+    monkeypatch.setattr(nogds.os, "open", open_file)
+    metadata = SimpleNamespace(src=str(path), header_length=0)
+    copier = nogds.NoGdsFileCopier(metadata, Device.from_str("cpu"), None, None)
+    try:
+        assert os.read(copier.fd, 7) == b"weights"
+        expected = legacy if legacy is not None else shared
+        enabled = expected == "1" if expected is not None else fstype == "xfs"
+        assert bool(opened_flags[0] & direct_flag) == enabled
+    finally:
+        os.close(copier.fd)
 
 
 # ---- chunk plans must fail loudly on copiers without set_chunk ----

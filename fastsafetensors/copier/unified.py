@@ -19,7 +19,7 @@ from operator import itemgetter
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 from .. import cpp as fstcpp
-from ..common import SafeTensorsMetadata, get_fs_type, init_logger
+from ..common import SafeTensorsMetadata, is_odirect_enabled
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import (
@@ -32,29 +32,6 @@ from .registry import CopierConstructFunc, register_copier_constructor
 if TYPE_CHECKING:
     from ..allocation import SharedDeviceAllocation
 
-logger = init_logger(__name__)
-
-# O_DIRECT bypasses the page cache, which wins on local block devices but
-# forfeits kernel readahead / client caching on network filesystems, where the
-# buffered mmap + pin path performs better. Gate the fast path by fs type;
-# FASTSAFETENSORS_ODIRECT=1/0 forces it on/off regardless.
-_NETWORK_FS = {
-    "nfs",
-    "nfs4",
-    "cifs",
-    "smb3",
-    "smbfs",
-    "sshfs",
-    "fuse.sshfs",
-    "lustre",
-    "gpfs",
-    "beegfs",
-    "glusterfs",
-    "ceph",
-    "9p",
-    "virtiofs",
-}
-_warned_fs: set = set()
 _DMA_THREADS_ENV = "FASTSAFETENSORS_DMA_THREADS"
 _DMA_THREADS_DEFAULT = 8
 # Keep in sync with PIN_CHUNK in cpp/ext.cpp.
@@ -66,29 +43,12 @@ def _dma_threads_from_env() -> int:
     return int(os.environ.get(_DMA_THREADS_ENV, str(_DMA_THREADS_DEFAULT)))
 
 
-def _odirect_ok(path: str) -> bool:
-    override = os.environ.get("FASTSAFETENSORS_ODIRECT")
-    if override is not None:
-        return override == "1"
-    fstype = get_fs_type(path)
-    if fstype in _NETWORK_FS:
-        if fstype not in _warned_fs:
-            _warned_fs.add(fstype)
-            logger.info(
-                "checkpoint on network filesystem (%s): using buffered reads "
-                "instead of O_DIRECT (set FASTSAFETENSORS_ODIRECT=1 to force)",
-                fstype,
-            )
-        return False
-    return True
-
-
 def _odirect_reader_usable(path: str) -> bool:
     """Whether ``submit_io`` can use the O_DIRECT reader for this path."""
     return (
         getattr(fstcpp, "dma_load_runs", None) is not None
         and _dma_threads_from_env() > 0
-        and _odirect_ok(path)
+        and is_odirect_enabled(path)
     )
 
 
@@ -141,7 +101,7 @@ class UnifiedMemCopier(CopierInterface):
         self._readiness = (
             self.device.type != DeviceType.CPU
             and self._dma_threads > 0
-            and _odirect_ok(self.metadata.src)
+            and is_odirect_enabled(self.metadata.src)
             and hasattr(fstcpp, "dma_load_runs_progress")
         )
         return self._readiness
@@ -286,12 +246,12 @@ class UnifiedMemCopier(CopierInterface):
         # into gbuf (byte F -> gbuf[F - base_off]), bypassing the page cache and
         # single-thread pin. Works for both full and compact-chunk buffers.
         # FASTSAFETENSORS_DMA_THREADS=0 disables it (falls back to mmap + pin);
-        # network filesystems fall back automatically (see _odirect_ok).
+        # Network filesystems use the shared buffered-I/O policy.
         dma_load_runs = getattr(fstcpp, "dma_load_runs", None)
         if (
             dma_load_runs is not None
             and self._dma_threads > 0
-            and _odirect_ok(self.metadata.src)
+            and is_odirect_enabled(self.metadata.src)
         ):
             starts = [s for s, _ in runs]
             ends = [e for _, e in runs]
