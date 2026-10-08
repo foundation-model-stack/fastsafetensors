@@ -66,6 +66,54 @@ def get_fs_type(path: str, mounts_file: str = "/proc/mounts") -> str:
         return ""
 
 
+# Preserve kernel readahead and client caching on network filesystems.
+_NETWORK_FS = {
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb3",
+    "smbfs",
+    "sshfs",
+    "fuse.sshfs",
+    "lustre",
+    "gpfs",
+    "beegfs",
+    "glusterfs",
+    "ceph",
+    "9p",
+    "virtiofs",
+}
+_warned_odirect_fs: Set[str] = set()
+
+
+def is_odirect_enabled(path: str, override_env: Optional[str] = None) -> bool:
+    """Select direct I/O by default on local or unknown filesystems.
+
+    FASTSAFETENSORS_ODIRECT=1/0 overrides the filesystem policy. An optional
+    copier-specific environment variable takes precedence over that shared
+    switch. Platforms without O_DIRECT use buffered I/O. This is a policy
+    check, not a probe of whether this particular file accepts direct I/O.
+    """
+    if not getattr(os, "O_DIRECT", 0):
+        return False
+    override = os.environ.get(override_env) if override_env is not None else None
+    if override is None:
+        override = os.environ.get("FASTSAFETENSORS_ODIRECT")
+    if override is not None:
+        return override == "1"
+    fstype = get_fs_type(path)
+    if fstype in _NETWORK_FS:
+        if fstype not in _warned_odirect_fs:
+            _warned_odirect_fs.add(fstype)
+            init_logger(__name__).info(
+                "checkpoint on network filesystem (%s): using buffered reads "
+                "instead of O_DIRECT (set FASTSAFETENSORS_ODIRECT=1 to force)",
+                fstype,
+            )
+        return False
+    return True
+
+
 def get_device_numa_node(device: Optional[int]) -> Optional[int]:
     if device is None or not sys.platform.startswith("linux"):
         return None

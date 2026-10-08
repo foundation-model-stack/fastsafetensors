@@ -34,6 +34,16 @@ buffers. For example, 8 workers and `bbuf_size_kb=256*1024` provide sixteen
 16 MiB slots. Closing the loader drains outstanding copies and releases its
 workers, streams and host buffers.
 
+The nogds and unified-memory copiers prefer `O_DIRECT` on platforms that expose
+the flag, except on known network filesystems where buffered I/O preserves
+kernel readahead and client caching. Set `FASTSAFETENSORS_ODIRECT=0` to opt into
+buffered reads, or `FASTSAFETENSORS_ODIRECT=1` to force direct I/O regardless of
+filesystem type. The existing `FASTSAFETENSORS_NOGDS_ODIRECT=0/1` setting remains
+a nogds-specific override and takes precedence over the shared setting.
+Filesystem selection follows symlinks to the checkpoint's actual location.
+This selection does not probe whether the file accepts `O_DIRECT`; unsupported
+direct opens or reads still report their errors.
+
 On Linux with libnuma and known GPU NUMA topology, `set_numa=True` places
 nogds workers on the GPU's CPU node and prefers that node for their memory.
 Pinned host buffers are allocated on a separate thread with the same policy,

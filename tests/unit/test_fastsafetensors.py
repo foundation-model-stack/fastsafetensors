@@ -1809,7 +1809,7 @@ def test_explicit_dtype_conversion_keeps_portable_path(
 
 @pytest.mark.parametrize("target", ["cpu", "cuda:0"])
 @pytest.mark.parametrize("threads", [1, 3])
-@pytest.mark.parametrize("mode", ["buffered", "mmap"])
+@pytest.mark.parametrize("mode", ["buffered", "mmap", "direct"])
 def test_nogds_single_request_splits_and_drains(tmp_path, target, threads, mode):
     import torch
 
@@ -1822,7 +1822,12 @@ def test_nogds_single_request_splits_and_drains(tmp_path, target, threads, mode)
     buffer = fstcpp.gds_device_buffer(
         output.data_ptr(), output.numel(), target != "cpu"
     )
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    if mode == "direct" and not getattr(os, "O_DIRECT", 0):
+        pytest.skip("O_DIRECT unavailable")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    if mode == "direct":
+        flags |= os.O_DIRECT
+    fd = os.open(path, flags)
     before = fstcpp.get_cpp_metrics().bounce_buffer_bytes
     reader = fstcpp.nogds_file_reader(mode == "mmap", 7, threads, target != "cpu", 0)
     try:
@@ -1844,7 +1849,7 @@ def test_nogds_single_request_splits_and_drains(tmp_path, target, threads, mode)
 
 
 @pytest.mark.parametrize("target", ["cpu", "cuda:0"])
-@pytest.mark.parametrize("mode", ["buffered", "mmap"])
+@pytest.mark.parametrize("mode", ["buffered", "mmap", "direct"])
 def test_nogds_truncation_and_next_request(tmp_path, target, mode):
     import torch
 
@@ -1856,7 +1861,12 @@ def test_nogds_truncation_and_next_request(tmp_path, target, mode):
     buffer = fstcpp.gds_device_buffer(
         output.data_ptr(), output.numel(), target != "cpu"
     )
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    if mode == "direct" and not getattr(os, "O_DIRECT", 0):
+        pytest.skip("O_DIRECT unavailable")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    if mode == "direct":
+        flags |= os.O_DIRECT
+    fd = os.open(path, flags)
     reader = fstcpp.nogds_file_reader(mode == "mmap", 7, 3, target != "cpu", 0)
     try:
         if mode == "mmap":
