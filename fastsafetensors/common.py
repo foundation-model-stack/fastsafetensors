@@ -83,31 +83,39 @@ _NETWORK_FS = {
     "9p",
     "virtiofs",
 }
+# RAM-backed filesystems: the page cache is the storage, so a bounce-buffer
+# reader gains nothing from O_DIRECT, and tmpfs rejects it before Linux 6.6.
+# Only copiers that opt in (nogds) read these buffered; the unified copier's
+# multithreaded direct reader is unmeasured there and keeps its default.
+_RAM_FS = {"tmpfs", "ramfs"}
 _warned_odirect_fs: Set[str] = set()
 
+# Appended to read failures on an O_DIRECT descriptor, so the user can tell a
+# direct-I/O rejection from a truncated or unreadable file.
+ODIRECT_HINT = "set FASTSAFETENSORS_ODIRECT=0 to use buffered reads"
 
-def is_odirect_enabled(path: str, override_env: Optional[str] = None) -> bool:
+
+def is_odirect_enabled(path: str, buffered_ram_fs: bool = False) -> bool:
     """Select direct I/O by default on local or unknown filesystems.
 
-    FASTSAFETENSORS_ODIRECT=1/0 overrides the filesystem policy. An optional
-    copier-specific environment variable takes precedence over that shared
-    switch. Platforms without O_DIRECT use buffered I/O. This is a policy
-    check, not a probe of whether this particular file accepts direct I/O.
+    FASTSAFETENSORS_ODIRECT=1/0 overrides the filesystem policy for every
+    copier. ``buffered_ram_fs`` also reads tmpfs and ramfs buffered. Platforms
+    without O_DIRECT use buffered I/O. This is a policy check, not a probe of
+    whether this particular file accepts direct I/O; copiers that open with
+    O_DIRECT fall back to buffered reads when the filesystem rejects it.
     """
     if not getattr(os, "O_DIRECT", 0):
         return False
-    override = os.environ.get(override_env) if override_env is not None else None
-    if override is None:
-        override = os.environ.get("FASTSAFETENSORS_ODIRECT")
+    override = os.environ.get("FASTSAFETENSORS_ODIRECT")
     if override is not None:
         return override == "1"
     fstype = get_fs_type(path)
-    if fstype in _NETWORK_FS:
+    if fstype in _NETWORK_FS or (buffered_ram_fs and fstype in _RAM_FS):
         if fstype not in _warned_odirect_fs:
             _warned_odirect_fs.add(fstype)
             init_logger(__name__).info(
-                "checkpoint on network filesystem (%s): using buffered reads "
-                "instead of O_DIRECT (set FASTSAFETENSORS_ODIRECT=1 to force)",
+                "checkpoint on %s: using buffered reads instead of O_DIRECT "
+                "(set FASTSAFETENSORS_ODIRECT=1 to force)",
                 fstype,
             )
         return False

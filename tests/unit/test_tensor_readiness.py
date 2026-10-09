@@ -71,7 +71,7 @@ def delayed_load(tmp_path, monkeypatch):
         str(path),
     )
     # The mock uses Python's unaligned pread; native reader tests cover O_DIRECT.
-    monkeypatch.setenv("FASTSAFETENSORS_NOGDS_ODIRECT", "0")
+    monkeypatch.setenv("FASTSAFETENSORS_ODIRECT", "0")
     reader = DelayedReader()
     loader = SafeTensorsFileLoader(None, "cpu", nogds=True)
     loader.copier_constructor = lambda meta, device, fw: NoGdsFileCopier(

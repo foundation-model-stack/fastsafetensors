@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import errno
 import os
 import sys
 from bisect import bisect_right
@@ -8,8 +9,10 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 from .. import cpp as fstcpp
 from ..common import (
+    ODIRECT_HINT,
     SafeTensorsMetadata,
     get_device_numa_node,
+    init_logger,
     is_gpu_found,
     is_odirect_enabled,
     resolve_runtime_lib_name,
@@ -27,6 +30,46 @@ if TYPE_CHECKING:
     from ..allocation import SharedDeviceAllocation
 
 _request_end = itemgetter(2)
+logger = init_logger(__name__)
+_warned_odirect_rejected = False
+
+
+def _open_checkpoint(path: str, flags: int, direct: bool) -> int:
+    """Open ``path`` for reading, with O_DIRECT when ``direct`` is set.
+
+    The filesystem policy in ``is_odirect_enabled`` cannot know whether this
+    particular file accepts direct I/O; tmpfs before Linux 6.6 and some FUSE
+    filesystems refuse it at open with EINVAL. Fall back to a buffered
+    descriptor in that case, as the gds and unified copiers do, instead of
+    failing a load that worked before O_DIRECT became the default.
+    """
+    global _warned_odirect_rejected
+    o_direct = getattr(os, "O_DIRECT", 0)
+    if direct and o_direct:
+        try:
+            return os.open(path, flags | o_direct, 0o644)
+        except OSError as error:
+            if error.errno != errno.EINVAL:
+                raise
+            if not _warned_odirect_rejected:
+                _warned_odirect_rejected = True
+                logger.warning(
+                    "filesystem rejected O_DIRECT for %s: using buffered reads",
+                    path,
+                )
+    return os.open(path, flags, 0o644)
+
+
+def _fd_is_odirect(fd: int) -> bool:
+    o_direct = getattr(os, "O_DIRECT", 0)
+    if not o_direct or sys.platform == "win32":
+        return False
+    import fcntl
+
+    try:
+        return bool(fcntl.fcntl(fd, fcntl.F_GETFL) & o_direct)
+    except OSError:
+        return False
 
 
 class NoGdsFileCopier(CopierInterface):
@@ -41,13 +84,15 @@ class NoGdsFileCopier(CopierInterface):
         self.metadata = metadata
         self.reader = reader
         flags = os.O_RDONLY
-        if is_odirect_enabled(metadata.src, "FASTSAFETENSORS_NOGDS_ODIRECT"):
-            flags |= getattr(os, "O_DIRECT", 0)
         # On Windows, O_RDONLY defaults to text mode which translates \r\n
         # and stops at 0x1A (Ctrl+Z), corrupting binary tensor data.
         if sys.platform == "win32" and hasattr(os, "O_BINARY"):
             flags |= os.O_BINARY
-        self.fd = os.open(metadata.src, flags, 0o644)
+        self.fd = _open_checkpoint(
+            metadata.src,
+            flags,
+            is_odirect_enabled(metadata.src, buffered_ram_fs=True),
+        )
         if self.fd < 0:
             raise Exception(
                 f"NoGdsFileCopier.__init__: failed to open, file={metadata.src}"
@@ -225,11 +270,15 @@ class NoGdsFileCopier(CopierInterface):
         self.reqs.clear()
         self._request_ranges.clear()
         self._ready_prefix.clear()
+        # Check the live flag, not the open-time choice: the native reader
+        # clears O_DIRECT on the descriptor when direct reads are rejected.
+        direct = self.fd >= 0 and len(failed) > 0 and _fd_is_odirect(self.fd)
         if self.fd >= 0:
             os.close(self.fd)
             self.fd = -1
         if len(failed) > 0:
-            raise Exception(f"wait_io: wait_nogds_read failed, reqs={failed}")
+            hint = f" (reads used O_DIRECT; {ODIRECT_HINT})" if direct else ""
+            raise Exception(f"wait_io: wait_nogds_read failed, reqs={failed}{hint}")
 
 
 _loaded_library = False

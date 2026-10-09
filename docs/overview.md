@@ -35,14 +35,20 @@ buffers. For example, 8 workers and `bbuf_size_kb=256*1024` provide sixteen
 workers, streams and host buffers.
 
 The nogds and unified-memory copiers prefer `O_DIRECT` on platforms that expose
-the flag, except on known network filesystems where buffered I/O preserves
-kernel readahead and client caching. Set `FASTSAFETENSORS_ODIRECT=0` to opt into
-buffered reads, or `FASTSAFETENSORS_ODIRECT=1` to force direct I/O regardless of
-filesystem type. The existing `FASTSAFETENSORS_NOGDS_ODIRECT=0/1` setting remains
-a nogds-specific override and takes precedence over the shared setting.
-Filesystem selection follows symlinks to the checkpoint's actual location.
-This selection does not probe whether the file accepts `O_DIRECT`; unsupported
-direct opens or reads still report their errors.
+the flag, except on known network filesystems, where buffered I/O preserves
+kernel readahead and client caching. The nogds copier also reads RAM-backed
+filesystems (tmpfs, ramfs) buffered, since its bounce buffers gain nothing from
+bypassing a page cache that is the storage itself. Set
+`FASTSAFETENSORS_ODIRECT=0` to opt into buffered reads, or
+`FASTSAFETENSORS_ODIRECT=1` to force direct I/O regardless of filesystem type;
+the one switch covers both copiers. Filesystem selection follows symlinks to
+the checkpoint's actual location. The selection does not probe whether the
+file accepts `O_DIRECT`. When a filesystem rejects it with `EINVAL`, the nogds
+copier warns once and continues buffered: a rejected open is retried without
+the flag, and a rejected read clears the flag on the descriptor and retries,
+so a filesystem outside the lists does not fail a load that buffered I/O
+would have completed. Other read failures on an `O_DIRECT` descriptor name
+the flag and the `FASTSAFETENSORS_ODIRECT=0` switch in their error message.
 
 On Linux with libnuma and known GPU NUMA topology, `set_numa=True` places
 nogds workers on the GPU's CPU node and prefers that node for their memory.

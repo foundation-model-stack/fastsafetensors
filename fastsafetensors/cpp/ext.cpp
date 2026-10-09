@@ -104,9 +104,6 @@ static inline int munmap(void* addr, size_t /*length*/) {
 // to text mode, which translates CRLF and treats Ctrl-Z as EOF unless binary
 // mode is requested explicitly.
 #define O_RDONLY (_O_RDONLY | _O_BINARY)
-#ifndef O_DIRECT
-#define O_DIRECT 0
-#endif
 #else
 #include <unistd.h>
 #include <sys/mman.h>
@@ -128,6 +125,11 @@ static inline int munmap(void* addr, size_t /*length*/) {
 #include "ext.hpp"
 
 #define ALIGN 4096
+// Windows and non-Linux POSIX lack O_DIRECT; a zero flag keeps every
+// `flags & O_DIRECT` test false and every `| O_DIRECT` a no-op.
+#ifndef O_DIRECT
+#define O_DIRECT 0
+#endif
 
 #ifdef _MSC_VER
 void init_dstorage_bindings(pybind11::module_&);
@@ -900,8 +902,11 @@ struct nogds_file_reader::state {
             munmap(source, map_length);
         } else {
             int64_t read_offset = offset, read_length = length;
+            bool direct = false;
 #ifndef _MSC_VER
-            if ((fcntl(req.fd, F_GETFL) & O_DIRECT) != 0) {
+            const int flags = fcntl(req.fd, F_GETFL);
+            direct = flags >= 0 && (flags & O_DIRECT) != 0;
+            if (direct) {
                 source_skip = offset % ALIGN;
                 read_offset -= source_skip;
                 read_length = ((length + source_skip + ALIGN - 1) / ALIGN) * ALIGN;
@@ -914,10 +919,33 @@ struct nogds_file_reader::state {
 #endif
                 got = pread(req.fd, bounce, read_length, read_offset);
             } while (got < 0 && errno == EINTR);
+            int read_errno = got < 0 ? errno : 0;
+#ifndef _MSC_VER
+            if (got < 0 && read_errno == EINVAL && direct
+                    && fcntl(req.fd, F_SETFL, flags & ~O_DIRECT) == 0) {
+                // The filesystem accepted O_DIRECT at open but refuses direct
+                // reads. Clear the flag on the shared descriptor (every worker
+                // and the Python side see the change) and retry buffered with
+                // the exact range, as a buffered load would have issued.
+                static std::atomic<bool> warned{false};
+                if (!warned.exchange(true))
+                    std::fprintf(stderr, "[WARN] filesystem rejected O_DIRECT reads: falling back to buffered reads\n");
+                direct = false;
+                source_skip = 0;
+                do {
+                    got = pread(req.fd, bounce, length, offset);
+                } while (got < 0 && errno == EINTR);
+                read_errno = got < 0 ? errno : 0;
+            }
+#endif
             // The aligned final read may extend past EOF; all requested tensor
             // bytes must nevertheless be present.
-            if (got < length + source_skip)
-                throw std::runtime_error("nogds read failed or truncated input");
+            if (got < length + source_skip) {
+                std::string what = "nogds read failed or truncated input";
+                if (got < 0) what += std::string(": ") + std::strerror(read_errno);
+                if (direct) what += " (reads used O_DIRECT; set FASTSAFETENSORS_ODIRECT=0 to use buffered reads)";
+                throw std::runtime_error(what);
+            }
         }
         void *destination = reinterpret_cast<void *>(req.destination + position);
         if (streams) {
