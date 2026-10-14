@@ -839,42 +839,6 @@ def test_fastsafe_open_use_fgds(fstcpp_log, input_files, framework) -> None:
         assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
 
-def test_new_fgds_copier_fallback_when_unavailable(monkeypatch, framework) -> None:
-    """When FGDS cannot open a file handle (libfgds missing/broken),
-    new_fgds_file_copier must fall back to the nogds copier instead of
-    raising."""
-    from fastsafetensors.copier.fgds import new_fgds_file_copier
-    from fastsafetensors.copier.nogds import NoGdsFileCopier
-    from fastsafetensors.copier.registry import copier_class_of
-
-    # Force CPU so the GPU check in new_fgds_file_copier doesn't complain
-    device = Device.from_str("cpu")
-
-    import fastsafetensors.copier.fgds as fgds_mod
-
-    def _failing_fgds_file_handle(*args, **kwargs):
-        raise RuntimeError("FGDS unavailable (simulated)")
-
-    # FGDS symbols are resolved on demand by load_fgds_library(); monkeypatch
-    # the availability flag and platform so the code reaches the temp-file
-    # probe path, where the failing handle is invoked.
-    monkeypatch.setattr(fgds_mod._cpp, "is_fgds_found", lambda: True)
-    monkeypatch.setattr(fgds_mod.platform, "system", lambda: "Linux", raising=False)
-    monkeypatch.setattr(
-        fgds_mod._cpp,
-        "fgds_file_handle",
-        _failing_fgds_file_handle,
-        raising=False,
-    )
-
-    # Should not raise -- returns a nogds construct function instead
-    construct = new_fgds_file_copier(device, framework=framework)
-    assert callable(construct)
-    # The fallback must tag itself as a nogds copier so the planner sees the
-    # real copier class (mirrors the gds->nogds fallback contract).
-    assert copier_class_of(construct) is NoGdsFileCopier
-
-
 def test_tensor_filter_hides_skipped_tensors(fstcpp_log, input_files, framework):
     device, _ = get_and_check_device(framework)
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)

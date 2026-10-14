@@ -56,14 +56,8 @@ def get_fgds_device_id(device: Device) -> int:
     except ValueError:
         pass
 
-    # Try UUID or PCI bus ID lookup via framework
-    try:
-        # Try to get framework to resolve UUID/PCI to physical device ID
-        # Framework may provide helper for this, fallback if not
-        return logical_idx
-    except Exception:
-        # Fallback to logical index to avoid crashing
-        return logical_idx
+    # No UUID/PCI resolver is available here; retain the logical index.
+    return logical_idx
 
 
 class FgdsFileCopier(CopierInterface):
@@ -120,6 +114,8 @@ class FgdsFileCopier(CopierInterface):
     def submit_io(
         self, use_buf_register: bool, max_copy_block_size: int
     ) -> _cpp.gds_device_buffer:
+        if max_copy_block_size <= 0:
+            raise ValueError("max_copy_block_size must be positive")
         offset = self.metadata.header_length
         length = self.metadata.size_bytes - self.metadata.header_length
         head_bytes = offset % ALIGN
@@ -145,38 +141,34 @@ class FgdsFileCopier(CopierInterface):
         if aligned_length < ALLOC_MINIMAL:
             reg_length = (aligned_length + ALLOC_MINIMAL - 1) & ~(ALLOC_MINIMAL - 1)
 
-        gbuf = self.framework.alloc_tensor_memory(reg_length, self.device)
-        self.gbuf = gbuf
-        gbuf_ptr = gbuf.get_base_address()
-
-        result = _cpp.fgds_regmem(self.device_id, gbuf_ptr, reg_length, None)
-        if result != 0:
-            # GPU memory registration is required for FGDS DMA; proceeding
-            # with an unregistered buffer can cause silent data corruption
-            # or GPU page faults.  Tear down and raise so the loader can
-            # fall back to the no-GDS (pinned bounce-buffer) copier.
-            warnings.warn(
-                f"fgds_regmem failed with error code: {result}; " "aborting FGDS path.",
-                UserWarning,
-            )
-            self.registered_memory = None
-            self._cleanup(free_gbuf=False)
-            self.framework.free_tensor_memory(gbuf, self.device)
-            self.gbuf = None
-            raise RuntimeError(
-                f"fgds_regmem failed (error code {result}); "
-                "cannot continue with unregistered GPU buffer."
-            )
-        self.registered_memory = (self.device_id, gbuf_ptr, reg_length)
-
-        self.copy_reqs = {}
-        count = 0
         try:
+            gbuf = self.framework.alloc_tensor_memory(reg_length, self.device)
+            self.gbuf = gbuf
+            gbuf_ptr = gbuf.get_base_address()
+
+            result = _cpp.fgds_regmem(self.device_id, gbuf_ptr, reg_length, None)
+            if result != 0:
+                # Registration is required for FGDS DMA even when the caller
+                # disables the optional registration used by other copiers.
+                warnings.warn(
+                    f"fgds_regmem failed with error code: {result}; aborting FGDS path.",
+                    UserWarning,
+                )
+                raise RuntimeError(
+                    f"fgds_regmem failed (error code {result}); "
+                    "cannot continue with unregistered GPU buffer."
+                )
+            self.registered_memory = (self.device_id, gbuf_ptr, reg_length)
+
+            self.copy_reqs = {}
+            count = 0
+            # libfgds applies ptr_off to this base address internally.
+            # Advancing both the pointer and ptr_off would skip/corrupt data.
+            dev_buf = _cpp.fgds_device_buffer(gbuf_ptr, reg_length)
             while count < aligned_length:
                 req_len = aligned_length - count
                 if req_len > max_copy_block_size:
                     req_len = max_copy_block_size
-                dev_buf = _cpp.fgds_device_buffer(gbuf_ptr + count, req_len)
                 req_id = self.fgds_reader.submit_read(
                     self.fgds_handle, dev_buf, aligned_offset + count, req_len, count
                 )
@@ -191,9 +183,7 @@ class FgdsFileCopier(CopierInterface):
                     self.fgds_reader.wait_read(req_id)
                 except Exception:
                     pass
-            self._cleanup(free_gbuf=False)
-            self.framework.free_tensor_memory(gbuf, self.device)
-            self.gbuf = None
+            self._cleanup(free_gbuf=True)
             raise
 
         self.aligned_offset = aligned_offset
@@ -208,6 +198,12 @@ class FgdsFileCopier(CopierInterface):
         noalign: bool = False,
         owner=None,
     ) -> Dict[str, TensorBase]:
+        self.finish_io()
+        return self.metadata.get_tensors(
+            gbuf, self.device, self.aligned_offset, dtype=dtype, owner=owner
+        )
+
+    def finish_io(self) -> None:
         # Device-buffer layout:
         #   [aligned_offset,  header_length)  head padding (inside file; required)
         #   [header_length,   size_bytes)    tensor data (required)
@@ -236,9 +232,18 @@ class FgdsFileCopier(CopierInterface):
             req_info[req_id] = (self.aligned_offset + ptr_off, req_len)
 
         failed_reqs: List[int] = []
+        first_error: Optional[Exception] = None
+        req_ids = sorted(self.copy_reqs.keys())
         try:
-            for req_id in sorted(self.copy_reqs.keys()):
-                nread = self.fgds_reader.wait_read(req_id)
+            for req_id in req_ids:
+                try:
+                    nread = self.fgds_reader.wait_read(req_id)
+                except Exception as e:
+                    # Drain the remaining writes before deregistering memory
+                    # or closing the file, even when one native wait raises.
+                    if first_error is None:
+                        first_error = e
+                    continue
                 if nread < 0:
                     failed_reqs.append(req_id)
                     continue
@@ -254,22 +259,16 @@ class FgdsFileCopier(CopierInterface):
             # error, so we don't leak GPU mappings or fd's.
             self._cleanup(free_gbuf=False)
 
+        # Once submit_io returns, the caller owns gbuf (including on failure).
+        # LazyTensorFactory's SharedDeviceAllocation must release it exactly
+        # once; freeing it here would double-free on loader cleanup.
+        if first_error is not None:
+            raise first_error
         if failed_reqs:
-            # The device buffer is incomplete; free it rather than handing
-            # garbage-backed tensors to the caller.
-            if self.gbuf is not None:
-                self.framework.free_tensor_memory(self.gbuf, self.device)
-                self.gbuf = None
-            raise Exception(
+            raise RuntimeError(
                 f"wait_io: fgds_read failed, failed_reqs={failed_reqs}, "
-                f"reqs={sorted(self.copy_reqs.keys())}"
+                f"reqs={req_ids}"
             )
-
-        self.copy_reqs = {}
-
-        return self.metadata.get_tensors(
-            gbuf, self.device, self.aligned_offset, dtype=dtype, owner=owner
-        )
 
 
 # Tracks devices for which init_fgds() has been called, so atexit can pair
