@@ -101,8 +101,10 @@ def expert_parallel_filter_from_env() -> Optional[Callable[[str], bool]]:
             import torch.distributed as dist
 
             if dist.is_available() and dist.is_initialized():
-                ep_size = dist.get_world_size()
-                ep_rank = dist.get_rank()
+                if ep_size <= 0:
+                    ep_size = dist.get_world_size()
+                if ep_rank < 0:
+                    ep_rank = dist.get_rank()
         except Exception:
             pass
     if ep_size <= 0:
