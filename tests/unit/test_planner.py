@@ -2,6 +2,7 @@
 """Tests for the static fit planner (per-file declining chunk budgets)."""
 
 import random
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,11 +16,42 @@ from fastsafetensors._planner import (
     has_non_resident,
     load_depth,
     pipeline_depth,
+    plan_chunks,
     plan_file_budgets,
 )
 
 GiB = 1024**3
 MiB = 1024**2
+
+
+@pytest.mark.parametrize("budget", [7, 8, 16])
+def test_plan_chunks_preserves_atomic_tensors_and_budget(budget):
+    meta = SimpleNamespace(
+        header_length=64,
+        tensors={
+            "a": SimpleNamespace(data_offsets=[0, 8]),
+            "skip": SimpleNamespace(data_offsets=[8, 24]),
+            "b": SimpleNamespace(data_offsets=[24, 32]),
+            "empty": SimpleNamespace(data_offsets=[32, 32]),
+        },
+    )
+    if budget < 8:
+        with pytest.raises(ValueError, match="smaller than tensor 'a'"):
+            plan_chunks(meta, budget, keep_tensor=lambda n: n != "skip")
+        return
+    chunks = plan_chunks(meta, budget, keep_tensor=lambda n: n != "skip", merge_gap=0)
+    assert [names for names, _ in chunks] == [{"a"}, {"b", "empty"}]
+    assert [runs for _, runs in chunks] == [[(64, 72)], [(88, 96)]]
+    assert all(runs[-1][1] - runs[0][0] <= budget for _, runs in chunks)
+
+
+def test_plan_chunks_empty_tensors_have_no_read_ranges():
+    meta = SimpleNamespace(
+        header_length=64,
+        tensors={"empty": SimpleNamespace(data_offsets=[0, 0])},
+    )
+    assert plan_chunks(meta, 0) == [({"empty"}, [])]
+    assert plan_chunks(meta, 8, keep_tensor=lambda n: False) == []
 
 
 def _st(path, kept, span=None, largest=None):

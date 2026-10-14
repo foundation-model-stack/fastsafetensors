@@ -443,7 +443,9 @@ class PipelineParallel:
                     if j < len(chunks):
                         names, ranges = chunks[j]
                         allocation_size = (
-                            budget if self.use_chunk_budget_as_allocation_size else None
+                            budget
+                            if ranges and self.use_chunk_budget_as_allocation_size
+                            else None
                         )
                         spec.append((f, names, ranges, allocation_size))
                     else:

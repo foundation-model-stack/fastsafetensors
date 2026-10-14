@@ -479,6 +479,19 @@ class SafeTensorsMetadata:
         for tensor_name, t in self.tensors.items():
             if names is not None and tensor_name not in names:
                 continue
+            if t.data_offsets[0] == t.data_offsets[1]:
+                if dtype != DType.AUTO and self.framework.get_dtype_size(
+                    dtype
+                ) > self.framework.get_dtype_size(t.dtype):
+                    raise Exception(
+                        f"Online type conversion to larger sizes is not supported ({t.dtype} -> {dtype})"
+                    )
+                ret[tensor_name] = self.framework.get_empty_tensor(
+                    t.shape, t.dtype if dtype == DType.AUTO else dtype, device
+                )
+                if dtype != DType.AUTO:
+                    t.dtype = dtype
+                continue
             dst_dev_ptr = (
                 gbuf.get_base_address()
                 + self.header_length

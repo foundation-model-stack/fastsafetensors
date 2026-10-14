@@ -231,8 +231,8 @@ class UnifiedMemCopier(CopierInterface):
         if self._chunk_names is not None:
             # Compact chunk: allocate only the runs' span and map gbuf[0] to the
             # first run's start, so peak memory tracks the chunk, not the shard.
-            base_off = min(s for s, _ in runs)
-            chunk_span = max(e for _, e in runs) - base_off
+            base_off = min((s for s, _ in runs), default=header_length)
+            chunk_span = max((e for _, e in runs), default=base_off) - base_off
             alloc_length = self._chunk_allocation_size or chunk_span
         else:
             base_off = header_length
@@ -241,6 +241,8 @@ class UnifiedMemCopier(CopierInterface):
 
         # Allocate CUDA buffer via framework's allocator (proper lifecycle)
         gbuf = self.framework.alloc_tensor_memory(alloc_length, self.device)
+        if not runs:
+            return gbuf
 
         # Fast path: multithreaded O_DIRECT reader copies only the runs straight
         # into gbuf (byte F -> gbuf[F - base_off]), bypassing the page cache and

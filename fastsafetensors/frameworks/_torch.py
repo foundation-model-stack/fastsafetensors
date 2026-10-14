@@ -380,6 +380,9 @@ class TorchOp(FrameworkOpBase[TorchTensor, TorchProcessGroup]):
         for name, frame in metadata.tensors.items():
             if names is not None and name not in names:
                 continue
+            if frame.data_offsets[0] == frame.data_offsets[1]:
+                yield name, self.get_empty_tensor(frame.shape, frame.dtype, device)
+                continue
             tensor_address = (
                 base_address
                 + metadata.header_length
