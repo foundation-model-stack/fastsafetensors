@@ -45,29 +45,10 @@ jobs:
           LIBDIR=`python3 -c "import os; os.chdir('/tmp'); import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))"`
           mkdir -p /tmp/pytest-log
           export TEST_FASTSAFETENSORS_FRAMEWORK=pytorch
-          COVERAGE_FILE=.coverage_0 pytest -s --cov=${LIBDIR} test_fastsafetensors.py > /tmp/pytest-log/0.log 2>&1
-          COVERAGE_FILE=.coverage_own pytest -s --cov=${LIBDIR} test_tensor_ownership.py > /tmp/pytest-log/tensor_ownership.log 2>&1
-          COVERAGE_FILE=.coverage_borrowed pytest -s --cov=${LIBDIR} test_borrowed_tensors.py > /tmp/pytest-log/borrowed_tensors.log 2>&1
-          COVERAGE_FILE=.coverage_ep pytest -s --cov=${LIBDIR} test_ep_slice.py > /tmp/pytest-log/ep_slice.log 2>&1
-          COVERAGE_FILE=.coverage_rob pytest -s --cov=${LIBDIR} test_robustness.py > /tmp/pytest-log/robustness.log 2>&1
-          COVERAGE_FILE=.coverage_config pytest -s --cov=${LIBDIR} test_config.py > /tmp/pytest-log/config.log 2>&1
-          COVERAGE_FILE=.coverage_planner pytest -s --cov=${LIBDIR} test_planner.py > /tmp/pytest-log/planner.log 2>&1
-          COVERAGE_FILE=.coverage_auto pytest -s --cov=${LIBDIR} test_auto_loader.py > /tmp/pytest-log/auto_loader.log 2>&1
-          COVERAGE_FILE=.coverage_readiness pytest -s --cov=${LIBDIR} test_tensor_readiness.py > /tmp/pytest-log/tensor_readiness.log 2>&1
-          COVERAGE_FILE=.coverage_saver pytest -s --cov=${LIBDIR} test_saver.py test_saver_helpers.py test_saver_cuda.py test_saver_frameworks.py > /tmp/pytest-log/saver.log 2>&1
-          COVERAGE_FILE=.coverage_3fs pytest -s --cov=${LIBDIR} threefs/ > /tmp/pytest-log/threefs.log 2>&1
-          COVERAGE_FILE=.coverage_1 torchrun --nnodes=1 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 test_multi.py --cov=${LIBDIR} -s test_multi.py > /tmp/pytest-log/1.log 2>&1
-          COVERAGE_FILE=.coverage_2 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 test_multi.py --cov=${LIBDIR} -s test_multi.py > /tmp/pytest-log/2.log 2>&1 &
-          COVERAGE_FILE=.coverage_3 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 test_multi.py --cov=${LIBDIR} -s test_multi.py > /tmp/pytest-log/3.log 2>&1 &
-          COVERAGE_FILE=.coverage_4 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=2 test_multi.py --cov=${LIBDIR} -s test_multi.py > /tmp/pytest-log/4.log 2>&1 &
-          COVERAGE_FILE=.coverage_5 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=3 test_multi.py --cov=${LIBDIR} -s test_multi.py > /tmp/pytest-log/5.log 2>&1
-          pids=""
-          for r in 0 1 2 3; do
-            COVERAGE_FILE=.coverage_sub$r torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1235 --node_rank=$r test_subgroup.py --cov=${LIBDIR} -s test_subgroup.py > /tmp/pytest-log/subgroup$r.log 2>&1 &
-            pids="$pids $!"
-          done
-          for p in $pids; do wait $p; done
-          wait
+          COVERAGE_FILE=.coverage_unit pytest -s --cov="${LIBDIR}" . --ignore=test_multi.py --ignore=test_subgroup.py --ignore=test_broadcast_runs.py > /tmp/pytest-log/unit.log 2>&1
+          COVERAGE_FILE=.coverage_single pytest -s --cov="${LIBDIR}" test_multi.py > /tmp/pytest-log/single.log 2>&1
+          export LIBDIR
+          torchrun --standalone --nproc_per_node=4 --no-python bash -c 'COVERAGE_FILE=.coverage_dist_$RANK pytest -s --cov="$LIBDIR" test_multi.py test_subgroup.py test_broadcast_runs.py > /tmp/pytest-log/distributed-$RANK.log 2>&1'
           coverage combine .coverage_*
           coverage html
           mv htmlcov /tmp/pytest-log

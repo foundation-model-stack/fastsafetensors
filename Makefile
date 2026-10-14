@@ -12,52 +12,41 @@ install:
 
 .PHONY: unittest unittest-parallel unittest-paddle unittest-paddle-gpu htmlcov
 
-FST_DIR := $(shell python3 -c "import os; os.chdir('/tmp'); import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))")
+FST_DIR := $(shell python3 -c "import os; import fastsafetensors; print(os.path.dirname(fastsafetensors.__file__))")
 
 unittest:
-	@FST_DIR=$(FST_DIR); \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_0 pytest -s --cov=$(FST_DIR) tests/unit/test_fastsafetensors.py && \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_1 CUDA_VISIBLE_DEVICES="" pytest -s --cov=$(FST_DIR) tests/unit/test_fastsafetensors.py && \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_13 pytest -s --cov=$(FST_DIR) tests/unit/test_ep_slice.py && \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_14 pytest -s --cov=$(FST_DIR) tests/unit/test_robustness.py && \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_15 pytest -s --cov=$(FST_DIR) tests/unit/test_config.py && \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_16 pytest -s --cov=$(FST_DIR) tests/unit/test_planner.py && \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_17 pytest -s --cov=$(FST_DIR) tests/unit/test_auto_loader.py && \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_18 pytest -s --cov=$(FST_DIR) tests/unit/test_tensor_readiness.py && \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_19 pytest -s --cov=$(FST_DIR) tests/unit/test_runtime_hint.py && \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_20 pytest -s --cov=$(FST_DIR) tests/unit/threefs/
+	@TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_unit pytest -s --cov=$(FST_DIR) tests/unit --ignore=tests/unit/test_multi.py --ignore=tests/unit/test_subgroup.py --ignore=tests/unit/test_broadcast_runs.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_cpu CUDA_VISIBLE_DEVICES="" pytest -s --cov=$(FST_DIR) tests/unit --ignore=tests/unit/test_multi.py --ignore=tests/unit/test_subgroup.py --ignore=tests/unit/test_broadcast_runs.py
 
 test-vllm:
 	@FST_DIR=$(FST_DIR); \
 	cd tests && TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_2 pytest -s --cov=$(FST_DIR) -s vllm/test_vllm.py
 
 unittest-parallel:
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_3 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 tests/unit/test_multi.py --cov=$(FST_DIR) -s tests/unit/test_multi.py > /tmp/3.log 2>&1 & \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_4 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=1 tests/unit/test_multi.py --cov=$(FST_DIR) -s tests/unit/test_multi.py > /tmp/4.log 2>&1 & \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_5 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=2 tests/unit/test_multi.py --cov=$(FST_DIR) -s tests/unit/test_multi.py > /tmp/5.log 2>&1 & \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_6 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1234 --node_rank=3 tests/unit/test_multi.py --cov=$(FST_DIR) -s tests/unit/test_multi.py > /tmp/6.log 2>&1 && \
-	wait && \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_7 torchrun --nnodes=1 --master_addr=0.0.0.0 --master_port=1234 --node_rank=0 tests/unit/test_multi.py --cov=$(FST_DIR) -s tests/unit/test_multi.py > /tmp/7.log 2>&1 & \
-	wait && \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_21 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1235 --node_rank=0 tests/unit/test_subgroup.py --cov=$(FST_DIR) -s tests/unit/test_subgroup.py > /tmp/21.log 2>&1 & \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_22 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1235 --node_rank=1 tests/unit/test_subgroup.py --cov=$(FST_DIR) -s tests/unit/test_subgroup.py > /tmp/22.log 2>&1 & \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_23 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1235 --node_rank=2 tests/unit/test_subgroup.py --cov=$(FST_DIR) -s tests/unit/test_subgroup.py > /tmp/23.log 2>&1 & \
-	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_24 torchrun --nnodes=4 --master_addr=0.0.0.0 --master_port=1235 --node_rank=3 tests/unit/test_subgroup.py --cov=$(FST_DIR) -s tests/unit/test_subgroup.py > /tmp/24.log 2>&1 && \
-	wait
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch COVERAGE_FILE=.coverage_single pytest -s --cov=$(FST_DIR) tests/unit/test_multi.py && \
+	TEST_FASTSAFETENSORS_FRAMEWORK=torch torchrun --standalone --nproc_per_node=4 --no-python bash -c 'COVERAGE_FILE=.coverage_dist_$$RANK pytest -s --cov=$(FST_DIR) tests/unit/test_multi.py tests/unit/test_subgroup.py tests/unit/test_broadcast_runs.py'
 
 unittest-paddle:
 	@FST_DIR=$(FST_DIR); \
 	TEST_FASTSAFETENSORS_FRAMEWORK=paddle COVERAGE_FILE=.coverage_8 CUDA_VISIBLE_DEVICES="" pytest -s --cov=$(FST_DIR) tests/unit/test_fastsafetensors.py && \
-	TEST_FASTSAFETENSORS_FRAMEWORK=paddle COVERAGE_FILE=.coverage_9 CUDA_VISIBLE_DEVICES="" WORLD_SIZE=2 python3 -m paddle.distributed.launch --nnodes 2 --master 127.0.0.1:1234 --rank 0 tests/unit/test_multi.py --cov=$(FST_DIR) -s tests/unit/test_multi.py > /tmp/9.log 2>&1 & \
-	TEST_FASTSAFETENSORS_FRAMEWORK=paddle COVERAGE_FILE=.coverage_10 CUDA_VISIBLE_DEVICES="" WORLD_SIZE=2 python3 -m paddle.distributed.launch --nnodes 2 --master 127.0.0.1:1234 --rank 1 tests/unit/test_multi.py --cov=$(FST_DIR) -s tests/unit/test_multi.py > /tmp/10.log 2>&1 && \
-	wait
+	TEST_FASTSAFETENSORS_FRAMEWORK=paddle COVERAGE_FILE=.coverage_paddle_regressions CUDA_VISIBLE_DEVICES="" pytest -s --cov=$(FST_DIR) tests/unit/test_chunk_loading.py tests/unit/test_metadata_validation.py tests/unit/test_pipeline_errors.py tests/unit/test_runtime_hint.py tests/unit/test_fgds.py && \
+	{ \
+		pids=""; \
+		for rank in 0 1; do \
+			TEST_FASTSAFETENSORS_FRAMEWORK=paddle COVERAGE_FILE=.coverage_paddle_dist_$$rank CUDA_VISIBLE_DEVICES="" WORLD_SIZE=2 python3 -m paddle.distributed.launch --nnodes 2 --master 127.0.0.1:1234 --rank $$rank tests/unit/test_multi.py --cov=$(FST_DIR) -s tests/unit/test_multi.py > /tmp/paddle-dist-$$rank.log 2>&1 & \
+			pids="$$pids $$!"; \
+		done; \
+		status=0; \
+		for pid in $$pids; do wait $$pid || status=1; done; \
+		exit $$status; \
+	}
 
 unittest-paddle-gpu:
 	@FST_DIR=$(FST_DIR); \
 	TEST_FASTSAFETENSORS_FRAMEWORK=paddle COVERAGE_FILE=.coverage_11 pytest -s --cov=$(FST_DIR) tests/unit/test_fastsafetensors.py
 
 htmlcov:
-	coverage combine .coverage_* && \
+	coverage combine .coverage_* $(wildcard tests/.coverage_*) && \
 	coverage html
 
 .PHONY: builder
