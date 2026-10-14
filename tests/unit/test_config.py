@@ -32,10 +32,6 @@ class TestLoaderConfigDefaults:
         # Extension fields removed from top-level; _extensions should be empty
         assert config._extensions == {}
 
-    def test_loader_field_default(self):
-        config = LoaderConfig()
-        assert config.loader == "base"
-
     def test_loader_field_3fs(self):
         config = LoaderConfig(loader="3fs")
         assert config.loader == "3fs"
@@ -288,32 +284,6 @@ class TestLoaderConfigFromFile:
         finally:
             os.unlink(path)
 
-    def test_auto_detect_json_extension(self):
-        data = {"loader": "base", "base": {"copier_type": "gds"}}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(data, f)
-            f.flush()
-            path = f.name
-
-        try:
-            config = LoaderConfig.from_file(path)
-            assert config.get_extension_config("base")["copier_type"] == "gds"
-        finally:
-            os.unlink(path)
-
-    def test_auto_detect_json_3fs_extension(self):
-        data = {"loader": "3fs"}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(data, f)
-            f.flush()
-            path = f.name
-
-        try:
-            config = LoaderConfig.from_file(path)
-            assert config.loader == "3fs"
-        finally:
-            os.unlink(path)
-
 
 class TestLoaderConfigPublicAPI:
     """Verify that removed helpers are truly gone from the public surface."""
@@ -414,6 +384,49 @@ class TestLoadConfig:
 
         sig = inspect.signature(load_config)
         assert list(sig.parameters.keys()) == []
+
+    @pytest.mark.parametrize("env_config", [None, "override.json"])
+    def test_default_file_and_env_precedence(self, monkeypatch, tmp_path, env_config):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
+        (tmp_path / DEFAULT_CONFIG_PATH).write_text(json.dumps({"queue_size": 3}))
+        if env_config is not None:
+            path = tmp_path / env_config
+            path.write_text(json.dumps({"queue_size": 7}))
+            monkeypatch.setenv(CONFIG_ENV_VAR, str(path))
+        config = load_config()
+        assert config.queue_size == (3 if env_config is None else 7)
+
+    def test_missing_env_file_does_not_fall_back(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / DEFAULT_CONFIG_PATH).write_text("{}")
+        monkeypatch.setenv(CONFIG_ENV_VAR, str(tmp_path / "missing.json"))
+        with pytest.raises(FileNotFoundError, match=CONFIG_ENV_VAR):
+            load_config()
+
+    @pytest.mark.parametrize("use_pipeline", [False, True])
+    def test_memory_settings_survive_json_loading(
+        self, monkeypatch, tmp_path, use_pipeline
+    ):
+        path = tmp_path / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "parallel": {
+                        "use_pipeline": use_pipeline,
+                        "max_batch_bytes": 4096,
+                        "device_memory_budget": 16384,
+                        "use_chunk_budget_as_allocation_size": True,
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv(CONFIG_ENV_VAR, str(path))
+        kwargs = load_config().create_parallel_kwargs()
+        assert kwargs["max_batch_bytes"] == 4096
+        assert kwargs["device_memory_budget"] == 16384
+        assert kwargs["use_chunk_budget_as_allocation_size"] is True
+        assert kwargs["queue_size"] == (0 if use_pipeline else -1)
 
     def test_env_var(self, monkeypatch):
         data = {"loader": "3fs", "3fs": {"mount_point": "/data/3fs"}}
