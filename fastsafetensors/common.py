@@ -582,6 +582,10 @@ class TensorFrame:
     @classmethod
     def from_buffer(self, entry: OrderedDict[str, List[int]]):
         shape = entry["shape"]
+        if not isinstance(shape, list) or any(
+            type(d) is not int or d < 0 for d in shape
+        ):
+            raise ValueError(f"shape must contain nonnegative integers: {shape!r}")
         data_offsets = list(entry["data_offsets"])
         strides = []
         offsets = []
