@@ -22,43 +22,13 @@ from fastsafetensors.threefs_loader import ThreeFSLoader as RealThreeFSLoader
 class TestAutoLoaderSignature:
     """Test AutoLoader constructor signature."""
 
-    def test_signature_has_pg_files_device(self):
-        """Constructor should accept (pg, hf_weights_files, device)."""
+    def test_constructor_signature(self):
         import inspect
 
-        sig = inspect.signature(AutoLoader.__init__)
-        params = list(sig.parameters.keys())
-        assert "self" in params
-        assert "pg" in params
-        assert "hf_weights_files" in params
-        assert "device" in params
-
-    def test_signature_no_loader_param(self):
-        """Constructor should NOT have a 'loader' positional param."""
-        import inspect
-
-        sig = inspect.signature(AutoLoader.__init__)
-        params = list(sig.parameters.keys())
-        # 'loader' is now a config field, not a constructor arg
-        assert "loader" not in params
-
-    def test_signature_no_config_param(self):
-        """Constructor should NOT have 'config' or 'config_path' params."""
-        import inspect
-
-        sig = inspect.signature(AutoLoader.__init__)
-        params = list(sig.parameters.keys())
-        assert "config" not in params
-        assert "config_path" not in params
-
-    def test_signature_no_kwargs(self):
-        """Constructor should NOT accept **kwargs."""
-        import inspect
-
-        sig = inspect.signature(AutoLoader.__init__)
-        params = sig.parameters
-        for p in params.values():
-            assert p.kind != inspect.Parameter.VAR_KEYWORD
+        params = inspect.signature(AutoLoader.__init__).parameters
+        assert list(params) == ["self", "pg", "hf_weights_files", "device"]
+        assert params["device"].default == "cpu"
+        assert all(p.kind != inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 class TestLoaderRegistry:
@@ -84,8 +54,8 @@ class TestAutoLoaderBaseLoader:
         cfg._extensions["base"] = {"copier_type": copier_type}
         return cfg
 
-    def test_default_creates_base_loader(self, monkeypatch):
-        """Default config (loader='base') should create SafeTensorsFileLoader."""
+    def test_nogds_creates_base_loader(self, monkeypatch):
+        """A nogds extension selects the base loader and passes nogds=True."""
         monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
 
         with (
@@ -141,24 +111,6 @@ class TestAutoLoaderBaseLoader:
             call_kwargs = mock_stfl.call_args
             assert call_kwargs[1]["nogds"] is False
             assert call_kwargs[1]["use_fgds"] is True
-
-    def test_nogds_creates_base_loader_with_nogds_true(self, monkeypatch):
-        """loader='base' with copier_type='nogds' should pass nogds=True."""
-        monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
-
-        with (
-            patch("fastsafetensors.auto_loader.SafeTensorsFileLoader") as mock_stfl,
-            patch("fastsafetensors.auto_loader.PipelineParallel"),
-            patch("fastsafetensors.auto_loader.load_config") as mock_load,
-        ):
-            mock_load.return_value = self._make_base_config("nogds")
-            mock_stfl.process_extension_config = RealSafeLoader.process_extension_config
-            mock_stfl.return_value = MagicMock()
-
-            AutoLoader(None, ["file1.safetensors"], device="cuda:0")
-
-            call_kwargs = mock_stfl.call_args
-            assert call_kwargs[1]["nogds"] is True
 
     def test_base_no_extension_uses_defaults(self, monkeypatch):
         """loader='base' without base extension section should still work."""
@@ -521,9 +473,10 @@ class TestThreeFSProcessExtensionConfig:
                 {"mount_point": None},
                 hf_weights_files=["/inferred/3fs/model.safetensors"],
             )
-            # None is not a string, .strip() will raise AttributeError
-            # unless the code handles it. This tests the current behavior.
-            assert isinstance(result, dict)
+            assert result["mount_point"] == "/inferred/3fs"
+            mock_module.extract_mount_point.assert_called_once_with(
+                "/inferred/3fs/model.safetensors"
+            )
 
 
 class TestKwargsPassedToProcessExtensionConfig:

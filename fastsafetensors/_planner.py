@@ -99,6 +99,8 @@ def plan_chunks(
     cur_start = 0
 
     def _push(name: str, s: int, e: int) -> None:
+        if s == e:
+            return  # Keep the tensor name, but empty tensors require no I/O.
         if cur_runs and s - cur_runs[-1][1] <= merge_gap:
             cur_runs[-1][1] = max(cur_runs[-1][1], e)
         else:

@@ -29,9 +29,9 @@ def _global_rank(framework) -> int:
         import torch.distributed as dist
 
         return dist.get_rank()
-    import paddle.distributed as dist
+    import paddle.distributed as paddle_dist
 
-    return dist.get_rank()
+    return paddle_dist.get_rank()
 
 
 def _new_groups(framework, layout):
@@ -55,9 +55,12 @@ def _new_groups(framework, layout):
 def _world_barrier(framework) -> None:
     if framework.get_name() == "pytorch":
         import torch.distributed as dist
+
+        dist.barrier()
     else:
-        import paddle.distributed as dist
-    dist.barrier()
+        import paddle.distributed as paddle_dist
+
+        paddle_dist.barrier()
 
 
 def _load_file(framework, path):

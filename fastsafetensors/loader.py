@@ -246,6 +246,23 @@ class BaseSafeTensorsFileLoader:
                 self_rank = self.pg.rank() == rank
                 if self_rank:
                     copier = self.copier_constructor(meta, self.device, self.framework)
+                else:
+                    copier = None
+                factory = LazyTensorFactory(
+                    meta,
+                    self.device,
+                    rank,
+                    self_rank,
+                    factory_idx_bits,
+                    lidx,
+                    copier,
+                    self.framework,
+                    disable_cache=self.disable_cache,
+                )
+                # Register ownership before configuring the copier: set_chunk
+                # and set_byte_ranges can fail after it has opened a file.
+                factories[rank].append(factory)
+                if copier is not None:
                     chunk = self._chunk_plan.get(realpath)
                     if chunk is not None:
                         # Copiers without partial-read support refuse the chunk
@@ -261,20 +278,6 @@ class BaseSafeTensorsFileLoader:
                         copier.set_byte_ranges(
                             meta.select_byte_ranges(self._tensor_filter)
                         )
-                else:
-                    copier = None
-                factory = LazyTensorFactory(
-                    meta,
-                    self.device,
-                    rank,
-                    self_rank,
-                    factory_idx_bits,
-                    lidx,
-                    copier,
-                    self.framework,
-                    disable_cache=self.disable_cache,
-                )
-                factories[rank].append(factory)
                 factory.submit_io(
                     use_buf_register,
                     max_copy_block_size,

@@ -20,6 +20,7 @@ from fastsafetensors.copier.nogds import NoGdsFileCopier
 from fastsafetensors.copier.unified import new_unified_copier
 from fastsafetensors.ep_slice import (
     expert_parallel_filter,
+    expert_parallel_filter_from_env,
     owned_expert_range,
 )
 from fastsafetensors.st_types import Device
@@ -33,6 +34,83 @@ _requires_cuda = pytest.mark.skipif(
 
 # Reuse helpers from the main test module (tests/unit is on sys.path via conftest).
 from test_fastsafetensors import get_and_check_device, load_safetensors_file
+
+
+@pytest.fixture
+def ep_environment(monkeypatch):
+    for name in ("EP_SLICE", "EP_NUM_EXPERTS", "EP_SIZE", "EP_RANK"):
+        monkeypatch.delenv("FASTSAFETENSORS_" + name, raising=False)
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("FASTSAFETENSORS_EP_SLICE", "1")
+    monkeypatch.setenv("FASTSAFETENSORS_EP_NUM_EXPERTS", "8")
+    if torch is not None:
+        monkeypatch.setattr(torch.distributed, "is_initialized", lambda: False)
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("EP_SLICE", "0"),
+        ("EP_NUM_EXPERTS", "0"),
+        ("EP_NUM_EXPERTS", "-1"),
+        ("EP_SIZE", "1"),
+    ],
+)
+def test_ep_environment_disabled(ep_environment, monkeypatch, name, value):
+    monkeypatch.setenv("FASTSAFETENSORS_" + name, value)
+    assert expert_parallel_filter_from_env() is None
+
+
+def test_ep_environment_uses_world_fallback(ep_environment, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setenv("RANK", "1")
+    keep = expert_parallel_filter_from_env()
+    assert keep is not None
+    assert keep("model.experts.4.weight")
+    assert not keep("model.experts.3.weight")
+    assert keep("model.embed_tokens.weight")
+
+
+@pytest.mark.parametrize("override", ["none", "size", "rank", "both"])
+def test_ep_environment_preserves_overrides_with_distributed_group(
+    ep_environment, monkeypatch, override
+):
+    if torch is None:
+        pytest.skip("torch.distributed unavailable")
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 4)
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda: 1)
+    if override in ("size", "both"):
+        monkeypatch.setenv("FASTSAFETENSORS_EP_SIZE", "2")
+    if override in ("rank", "both"):
+        monkeypatch.setenv("FASTSAFETENSORS_EP_RANK", "0")
+    size = 2 if override in ("size", "both") else 4
+    rank = 0 if override in ("rank", "both") else 1
+    keep = expert_parallel_filter_from_env()
+    assert keep is not None
+    lo, hi = owned_expert_range(8, size, rank)
+    assert [i for i in range(8) if keep(f"model.experts.{i}.weight")] == list(
+        range(lo, hi)
+    )
+
+
+def test_ep_environment_handles_distributed_query_failure(ep_environment, monkeypatch):
+    if torch is None:
+        pytest.skip("torch.distributed unavailable")
+
+    def unavailable():
+        raise RuntimeError("distributed unavailable")
+
+    monkeypatch.setattr(torch.distributed, "is_available", unavailable)
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setenv("RANK", "0")
+    keep = expert_parallel_filter_from_env()
+    assert keep is not None
+    assert keep("model.experts.0.weight")
+    assert not keep("model.experts.4.weight")
+
 
 # ---- pure-Python EP range math (contiguous-block "linear" assignment) ----
 
@@ -99,7 +177,14 @@ def test_select_byte_ranges_all_equals_full(input_files, framework):
 def test_select_byte_ranges_covers_only_kept(input_files, framework):
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)
     keep = _keep_every_other(meta)
-    ranges = meta.select_byte_ranges(keep)
+    ranges = meta.select_byte_ranges(keep, merge_gap=0)
+    assert len(ranges) > 1
+    kept_bytes = sum(
+        fr.data_offsets[1] - fr.data_offsets[0]
+        for name, fr in meta.tensors.items()
+        if keep(name)
+    )
+    assert sum(end - start for start, end in ranges) == kept_bytes
     # sorted, non-overlapping
     for (a_lo, a_hi), (b_lo, b_hi) in zip(ranges, ranges[1:]):
         assert a_hi <= b_lo
@@ -116,7 +201,7 @@ def test_nogds_partial_read_byte_identical(fstcpp_log, input_files, framework):
     device, dev_is_gpu = get_and_check_device(framework)
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)
     keep = _keep_every_other(meta)
-    ranges = meta.select_byte_ranges(keep)
+    ranges = meta.select_byte_ranges(keep, merge_gap=0)
 
     reader = fstcpp.nogds_file_reader(
         False, 256 * 1024, 4, dev_is_gpu, device.index or 0
@@ -167,7 +252,7 @@ def test_unified_partial_read_byte_identical(fstcpp_log, input_files, framework)
         pytest.skip("unified copier targets a GPU device")
     meta = SafeTensorsMetadata.from_file(input_files[0], framework)
     keep = _keep_every_other(meta)
-    ranges = meta.select_byte_ranges(keep)
+    ranges = meta.select_byte_ranges(keep, merge_gap=0)
 
     # factory path loads the CUDA fn pointers (load_library_func); constructing
     # UnifiedMemCopier directly would leave memcpy_h2d_async unbound.
