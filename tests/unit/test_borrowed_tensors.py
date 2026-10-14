@@ -219,3 +219,36 @@ def test_shutdown_closes_unconsumed_queued_buffer(
         pipeline._drain_queue()
         assert fb.rank_loaders == {}
         assert framework.get_mem_used() == before
+
+
+def test_shutdown_drains_remaining_buffers_after_close_failure(
+    open_tensor_buffer, input_files, framework, monkeypatch
+):
+    before = framework.get_mem_used()
+    with closing(
+        ParallelLoader(
+            None,
+            input_files,
+            device="cpu",
+            nogds=True,
+            framework=framework.get_name(),
+            use_tqdm_on_load=False,
+            queue_size=2,
+        )
+    ) as pipeline:
+        first, second = open_tensor_buffer(), open_tensor_buffer()
+        close_first = first.close
+
+        def fail_close():
+            close_first()
+            raise RuntimeError("queued buffer close failed")
+
+        monkeypatch.setattr(first, "close", fail_close)
+        pipeline.batch_queue.put(FileBatch(first, [], 0))
+        pipeline.batch_queue.put(FileBatch(second, [], 1))
+        with pytest.raises(RuntimeError, match="queued buffer close failed"):
+            pipeline._drain_queue()
+        monkeypatch.setattr(first, "close", close_first)
+        assert first.rank_loaders == second.rank_loaders == {}
+        assert pipeline.batch_queue.empty()
+        assert framework.get_mem_used() == before
