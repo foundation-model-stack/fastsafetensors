@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["cp310", "cp311", "cp312", "cp313", "cp314"]
+        python-version: ["cp310", "cp311", "cp312", "cp313", "cp314", "cp315"]
         platform:
           - arch: x86_64
             runner: ubuntu-latest
@@ -65,7 +65,7 @@ jobs:
         if ($p.ExitCode -notin 0, 1638, 3010) { throw "$redistName exited with $($p.ExitCode)" }
 
     - name: Install cibuildwheel
-      run: python -m pip install cibuildwheel setuptools pybind11
+      run: python -m pip install "cibuildwheel>=4.2" setuptools pybind11
     - name: Build wheels with cibuildwheel
       run: |
         cibuildwheel --output-dir wheelhouse

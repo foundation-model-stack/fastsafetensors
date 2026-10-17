@@ -20,6 +20,16 @@ Signed-off-by: Your Name <your.email@example.com>
 
 This repository has CI with CPU-only mode. They automatically run when you raise a PR. We only accept changes that can pass these tests and lint checks with DCO.
 
+Python 3.15 tests use PyTorch 2.14.1 and NumPy 2.5. PyTorch 2.13 can crash
+when creating tensors on loader worker threads under Python 3.15, so the test
+and benchmark extras require PyTorch 2.14.1 or newer on Python 3.15. To set up
+CPU tests in a Python 3.15 environment:
+
+```bash
+python -m pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+python -m pip install '.[test]' 'numpy>=2.5,<2.6'
+```
+
 You can also use Makefile on your local environment.
 
 ```
