@@ -44,7 +44,10 @@ The experiments are carried on MI300X.
 
 
 
-## GPT-2 perf tests based on the script [perf/fastsafetensors_perf/perf.py](../perf/fastsafetensors_perf/perf.py)
+## GPT-2 perf tests
+
+These historical results used the [legacy perf.py script](https://github.com/foundation-model-stack/fastsafetensors/blob/219e2561a41ede2d5d8eba611c248bb0effbf580/perf/fastsafetensors_perf/perf.py), which has since been removed.
+For current loader benchmarks, see the [benchmark instructions](../benchmarks/README.md).
 
 ### Test Configuration
 

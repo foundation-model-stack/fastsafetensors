@@ -28,6 +28,10 @@ make unittest-parallel
 make test-vllm
 ```
 
+For manual loader performance measurements, see
+[the standalone benchmarks](../benchmarks/README.md). They accept local
+checkpoints and model snapshots already downloaded to the Hugging Face cache.
+
 # Pre-commit Hooks
 
 Our CI workflow checks code formatting and linting with Python 3.13. Therefore, we recommend testing your code with Python 3.13 and running the following pre-commit hooks before contributing your code.
