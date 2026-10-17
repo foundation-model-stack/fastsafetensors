@@ -115,7 +115,7 @@ def main():
         help="Staging memory budget; by default free GPU memory minus reserve",
     )
     parser.add_argument(
-        "--queue-size", type=int, help="generic: 0; fst-sweep vllm profile: 2"
+        "--queue-size", type=int, help="Pipeline queue size; default: 0"
     )
     parser.add_argument(
         "--broadcast-run-mib",

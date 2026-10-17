@@ -67,9 +67,6 @@ upload-test:
 upload:
 	python3 -m twine upload -u __token__ dist/fastsafetensors-$(shell grep version pyproject.toml | sed -e 's/version = "\([0-9.]\+\)"/\1/g')*
 
-perf/dist:
-	cd perf && pip install .
-
 .PHONY: format
 format:
 	black8 .

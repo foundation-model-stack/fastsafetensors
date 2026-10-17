@@ -85,7 +85,7 @@ def configure(args, path, entries, rank, world, device, benchmark):
     if args.reserve_mib is None:
         args.reserve_mib = 1024 if profile else 512
     if hasattr(args, "queue_size") and args.queue_size is None:
-        args.queue_size = 2 if profile else 0
+        args.queue_size = 0
     count = args.num_experts
     enabled = args.enable_expert_parallel and args.enable_ep_weight_filter and world > 1
     if enabled and count is None:

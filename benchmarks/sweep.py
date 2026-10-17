@@ -77,6 +77,10 @@ def positive(value):
     return number
 
 
+def memory_budget(value):
+    return None if value == "auto" else positive(value)
+
+
 def values(items):
     return list(
         dict.fromkeys(word for item in items for word in item.replace(",", " ").split())
@@ -109,11 +113,16 @@ def parser():
     )
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--cache", choices=["cold", "warm", "unchanged"], default="cold")
-    p.add_argument("--io", choices=["direct", "buffered", "auto"], default="direct")
+    p.add_argument("--io", choices=["direct", "buffered", "auto"], default="auto")
     p.add_argument("--threads", type=positive, default=16)
     p.add_argument("--bounce-mib", type=positive, default=16)
-    p.add_argument("--memory-budget-mib", type=positive, default=7168)
-    p.add_argument("--queue-size", type=int, default=2)
+    p.add_argument(
+        "--memory-budget-mib",
+        type=memory_budget,
+        default=None,
+        help="Staging budget in MiB, or auto (default) for free device memory minus reserve",
+    )
+    p.add_argument("--queue-size", type=int, default=0)
     p.add_argument("--verify", choices=["sample", "full", "none"], default="sample")
     p.add_argument("--timeout", type=positive, default=1800, help="Seconds per trial")
     p.add_argument(

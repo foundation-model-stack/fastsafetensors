@@ -43,6 +43,12 @@ warmup and three measured rounds. Use `--readers` to select readers,
 `--rounds` and `--warmup` to change repetitions, and `--cache cold|warm|unchanged`
 to control the page cache.
 
+`--io` defaults to `auto`, which preserves `FASTSAFETENSORS_ODIRECT` and follows
+the library default when the variable is unset. Use `--io direct` to request
+O_DIRECT explicitly or `--io buffered` to disable it. The published
+[ParallelLoader results](../docs/benchmark_parallel.md) document the I/O policy,
+memory budget and queue size for each table.
+
 For multiple GPUs, launch either script with `torchrun`:
 
 ```bash
@@ -68,3 +74,9 @@ python benchmarks/sweep.py \
 Use `--model all --loaders all` for all presets and comparison readers;
 this requires InstantTensor and up to eight visible GPUs with the default TP
 settings.
+
+The sweep defaults to the library's I/O policy (`--io auto`), an automatic
+device memory budget (`--memory-budget-mib auto`) and queue size 0, matching
+the queue and budget settings used by the [vLLM measurements](../docs/sweep_vllm.md).
+On local NVMe storage the library selects O_DIRECT by default. The planner may
+reduce the effective queue size further if required to fit the budget.

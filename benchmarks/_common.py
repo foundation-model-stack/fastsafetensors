@@ -205,8 +205,9 @@ def add_arguments(parser):
     parser.add_argument(
         "--io",
         choices=["buffered", "direct", "auto"],
-        default="buffered",
-        help="fastsafetensors I/O policy",
+        default="auto",
+        help="fastsafetensors I/O policy; auto preserves FASTSAFETENSORS_ODIRECT "
+        "and follows the library default when unset",
     )
     parser.add_argument(
         "--loader-profile",
