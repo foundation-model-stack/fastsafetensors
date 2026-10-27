@@ -108,7 +108,7 @@ def test_explicit_dstorage_configuration_error_does_not_fall_back(
         dstorage.new_dstorage_copier(Device.from_str("cuda:0"), framework="pytorch")
 
 
-# ---- O_DIRECT gating on network filesystems ----
+# ---- O_DIRECT gating by filesystem type ----
 
 
 def test_odirect_gating(monkeypatch):
@@ -122,6 +122,13 @@ def test_odirect_gating(monkeypatch):
     assert common.is_odirect_enabled("/data/f") is True
     monkeypatch.setattr(common, "get_fs_type", lambda p: "")  # unknown: allow
     assert common.is_odirect_enabled("/x") is True
+    # ZFS serves direct reads one whole record at a time without data prefetch,
+    # so the sub-record pieces of nogds reread records (#137). Only copiers
+    # that opt in read it buffered; the unified copier keeps its default.
+    monkeypatch.setattr(common, "get_fs_type", lambda p: "zfs")
+    assert common.is_odirect_enabled("/tank/f") is True
+    assert common.is_odirect_enabled("/tank/f", buffered_ram_fs=True) is True
+    assert common.is_odirect_enabled("/tank/f", buffered_record_fs=True) is False
     # RAM-backed filesystems read buffered only for copiers that opt in
     # (nogds): no gain there, and tmpfs rejects O_DIRECT before Linux 6.6.
     # The unified copier keeps its default.
@@ -167,7 +174,7 @@ def test_odirect_network_notice_is_shared(monkeypatch, caplog):
     assert caplog.text.count("using buffered reads") == 1
 
 
-@pytest.mark.parametrize("fstype", ["xfs", "nfs4", "tmpfs"])
+@pytest.mark.parametrize("fstype", ["xfs", "nfs4", "zfs", "tmpfs"])
 @pytest.mark.parametrize("shared", [None, "0", "1"])
 def test_nogds_open_uses_shared_odirect_policy(monkeypatch, tmp_path, fstype, shared):
     from fastsafetensors import common
