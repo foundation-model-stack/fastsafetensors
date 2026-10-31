@@ -83,6 +83,16 @@ _NETWORK_FS = {
     "9p",
     "virtiofs",
 }
+# Since OpenZFS 2.3 (Direct IO), a direct read is served one whole record at a
+# time and does not trigger data prefetch. A read smaller than the recordsize
+# or not aligned to it fetches every record it touches in full and demand-reads
+# the partial edge records through the ARC as well. With recordsize=1M (the
+# setting in #137; the default is 128K) the 512 KiB pieces of a 16 MiB nogds
+# bounce buffer read 3 to 4x the payload from disk and load 2 to 3x slower
+# than buffered; at 128K still 1.3x and 25% slower (OpenZFS 2.4.1). Only copiers
+# that opt in (nogds) read these buffered: the unified copier's direct reader
+# issues 16 MiB pieces and loaded twice as fast as its mmap fallback there.
+_RECORD_FS = {"zfs"}
 # RAM-backed filesystems: the page cache is the storage, so a bounce-buffer
 # reader gains nothing from O_DIRECT, and tmpfs rejects it before Linux 6.6.
 # Only copiers that opt in (nogds) read these buffered; the unified copier's
@@ -95,14 +105,18 @@ _warned_odirect_fs: Set[str] = set()
 ODIRECT_HINT = "set FASTSAFETENSORS_ODIRECT=0 to use buffered reads"
 
 
-def is_odirect_enabled(path: str, buffered_ram_fs: bool = False) -> bool:
+def is_odirect_enabled(
+    path: str, buffered_ram_fs: bool = False, buffered_record_fs: bool = False
+) -> bool:
     """Select direct I/O by default on local or unknown filesystems.
 
-    FASTSAFETENSORS_ODIRECT=1/0 overrides the filesystem policy for every
-    copier. ``buffered_ram_fs`` also reads tmpfs and ramfs buffered. Platforms
-    without O_DIRECT use buffered I/O. This is a policy check, not a probe of
-    whether this particular file accepts direct I/O; copiers that open with
-    O_DIRECT fall back to buffered reads when the filesystem rejects it.
+    Network filesystems read buffered. FASTSAFETENSORS_ODIRECT=1/0 overrides
+    the filesystem policy for every copier. ``buffered_ram_fs`` also reads
+    tmpfs and ramfs buffered; ``buffered_record_fs`` also reads ZFS buffered.
+    Platforms without O_DIRECT use buffered I/O. This is a policy check, not a
+    probe of whether this particular file accepts direct I/O; copiers that
+    open with O_DIRECT fall back to buffered reads when the filesystem rejects
+    it.
     """
     if not getattr(os, "O_DIRECT", 0):
         return False
@@ -110,7 +124,11 @@ def is_odirect_enabled(path: str, buffered_ram_fs: bool = False) -> bool:
     if override is not None:
         return override == "1"
     fstype = get_fs_type(path)
-    if fstype in _NETWORK_FS or (buffered_ram_fs and fstype in _RAM_FS):
+    if (
+        fstype in _NETWORK_FS
+        or (buffered_ram_fs and fstype in _RAM_FS)
+        or (buffered_record_fs and fstype in _RECORD_FS)
+    ):
         if fstype not in _warned_odirect_fs:
             _warned_odirect_fs.add(fstype)
             init_logger(__name__).info(

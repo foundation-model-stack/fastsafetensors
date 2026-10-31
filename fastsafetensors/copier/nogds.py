@@ -91,7 +91,9 @@ class NoGdsFileCopier(CopierInterface):
         self.fd = _open_checkpoint(
             metadata.src,
             flags,
-            is_odirect_enabled(metadata.src, buffered_ram_fs=True),
+            is_odirect_enabled(
+                metadata.src, buffered_ram_fs=True, buffered_record_fs=True
+            ),
         )
         if self.fd < 0:
             raise Exception(

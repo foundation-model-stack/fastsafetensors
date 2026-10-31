@@ -38,12 +38,23 @@ The nogds and unified-memory copiers prefer `O_DIRECT` on platforms that expose
 the flag, except on known network filesystems, where buffered I/O preserves
 kernel readahead and client caching. The nogds copier also reads RAM-backed
 filesystems (tmpfs, ramfs) buffered, since its bounce buffers gain nothing from
-bypassing a page cache that is the storage itself. Set
+bypassing a page cache that is the storage itself. It also reads ZFS buffered:
+OpenZFS 2.3 and later serve a direct read one whole record at a time without
+data prefetch, so a read smaller than the recordsize or not aligned to it
+fetches every record it touches in full and demand-reads the partial edge
+records through the ARC as well. With `recordsize=1M` the nogds copier's
+default 512 KiB pieces read 3 to 4x the payload from disk and load 2 to 3x
+slower than buffered; at the 128K default they still read 1.3x and load 25%
+slower. On OpenZFS before 2.3, or a dataset with `direct=disabled`, the two
+paths are equivalent. The unified-memory copier keeps direct reads on ZFS: its
+16 MiB pieces loaded twice as fast as its mmap fallback there. The GDS copier
+chooses `O_DIRECT` from the CUDA version; FGDS always uses it. Set
 `FASTSAFETENSORS_ODIRECT=0` to opt into buffered reads, or
-`FASTSAFETENSORS_ODIRECT=1` to force direct I/O regardless of filesystem type;
-the one switch covers both copiers. Filesystem selection follows symlinks to
-the checkpoint's actual location. The selection does not probe whether the
-file accepts `O_DIRECT`. When a filesystem rejects it with `EINVAL`, the nogds
+`FASTSAFETENSORS_ODIRECT=1` to prefer direct I/O regardless of filesystem type
+(the `EINVAL` fallback below still applies); the one switch covers the nogds
+and unified-memory copiers. Filesystem selection follows symlinks to the
+checkpoint's actual location. The selection does not probe whether the file
+accepts `O_DIRECT`. When a filesystem rejects it with `EINVAL`, the nogds
 copier warns once and continues buffered: a rejected open is retried without
 the flag, and a rejected read clears the flag on the descriptor and retries,
 so a filesystem outside the lists does not fail a load that buffered I/O
