@@ -364,6 +364,35 @@ def test_NoGdsFileCopier(fstcpp_log, input_files, framework) -> None:
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="per-worker descriptors are Linux-only"
+)
+def test_NoGdsFileCopier_fd_per_thread(
+    fstcpp_log, input_files, framework, monkeypatch
+) -> None:
+    # Workers reopen the checkpoint through /proc/self/fd so each reads through
+    # its own open file description. Small bounce buffers spread one file over
+    # many blocks so every worker takes part.
+    monkeypatch.setenv("FASTSAFETENSORS_FD_PER_THREAD", "1")
+    fds_before = len(os.listdir("/proc/self/fd"))
+    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+    device, dev_is_gpu = get_and_check_device(framework)
+    reader = fstcpp.nogds_file_reader(False, 64, 4, dev_is_gpu, device.index or 0)
+    copier = NoGdsFileCopier(meta, device, reader, framework)
+    gbuf = copier.submit_io(False, 10 * 1024 * 1024 * 1024)
+    tensors = copier.wait_io(gbuf)
+    for key, exp in load_safetensors_file(input_files[0], device, framework).items():
+        assert framework.is_equal(tensors[key], exp)
+    framework.free_tensor_memory(gbuf, device)
+    del copier
+    del reader
+    gc.collect()
+    # The private descriptors close with their request.
+    assert len(os.listdir("/proc/self/fd")) == fds_before
+    assert framework.get_mem_used() == 0
+    assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="cuFile GDS is Linux-only")
 def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
     print("test_GdsFileCopier")

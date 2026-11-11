@@ -857,10 +857,19 @@ struct nogds_file_reader::state {
         uint64_t remaining, prefix = 0;
         std::vector<uint8_t> completed;
         bool failed = false;
+#ifndef _MSC_VER
+        // Worker-private descriptors for this request (FASTSAFETENSORS_FD_PER_THREAD=1):
+        // -2 = not opened yet, -1 = reopen failed (use fd). Closed with the request.
+        std::mutex fd_mutex;
+        std::vector<int> worker_fds;
+        ~request() { for (int f : worker_fds) if (f >= 0) close(f); }
+#endif
     };
     ext_funcs_t *fns;
     int device, numa_node;
     bool use_mmap, streams;
+    bool fd_per_thread = false;
+    size_t thread_count = 0;
     static constexpr size_t buffers_per_thread = 2;
     uint64_t block_size, buffer_stride, allocation_size = 0;
     void *allocation = nullptr;
@@ -884,7 +893,27 @@ struct nogds_file_reader::state {
         if (numa_node >= 0 && fns->numa_run_on_node(numa_node) == 0)
             numa_set_preferred(numa_node);
     }
-    void read(const request &req, int64_t position, int64_t length,
+#ifndef _MSC_VER
+    // Linux NFS takes and drops a reference on a per-(open file, process) lock
+    // context for every page of an O_DIRECT read. Workers sharing the caller's
+    // descriptor all hit that one refcount and serialize on its cache line.
+    // Reopening through /proc/self/fd gives each worker its own open file
+    // description (dup() would share it) and therefore its own lock context.
+    int worker_fd(request &req, size_t index) {
+        if (!fd_per_thread || use_mmap) return req.fd;
+        std::lock_guard<std::mutex> lock(req.fd_mutex);
+        if (req.worker_fds.empty()) req.worker_fds.assign(thread_count, -2);
+        int &fd = req.worker_fds[index];
+        if (fd == -2) {
+            const int flags = fcntl(req.fd, F_GETFL);
+            char path[32];
+            std::snprintf(path, sizeof(path), "/proc/self/fd/%d", req.fd);
+            fd = flags < 0 ? -1 : open(path, (flags & (O_ACCMODE | O_DIRECT)) | O_CLOEXEC);
+        }
+        return fd >= 0 ? fd : req.fd;
+    }
+#endif
+    void read(const request &req, int fd, int64_t position, int64_t length,
               char *bounce, cudaStream_t stream) {
         const int64_t offset = req.offset + position;
         int64_t source_skip = 0;
@@ -904,7 +933,7 @@ struct nogds_file_reader::state {
             int64_t read_offset = offset, read_length = length;
             bool direct = false;
 #ifndef _MSC_VER
-            const int flags = fcntl(req.fd, F_GETFL);
+            const int flags = fcntl(fd, F_GETFL);
             direct = flags >= 0 && (flags & O_DIRECT) != 0;
             if (direct) {
                 source_skip = offset % ALIGN;
@@ -917,23 +946,26 @@ struct nogds_file_reader::state {
 #ifdef _MSC_VER
                 std::lock_guard<std::mutex> file_lock(file_mutex);
 #endif
-                got = pread(req.fd, bounce, read_length, read_offset);
+                got = pread(fd, bounce, read_length, read_offset);
             } while (got < 0 && errno == EINTR);
             int read_errno = got < 0 ? errno : 0;
 #ifndef _MSC_VER
             if (got < 0 && read_errno == EINVAL && direct
-                    && fcntl(req.fd, F_SETFL, flags & ~O_DIRECT) == 0) {
+                    && fcntl(fd, F_SETFL, flags & ~O_DIRECT) == 0) {
                 // The filesystem accepted O_DIRECT at open but refuses direct
                 // reads. Clear the flag on the shared descriptor (every worker
                 // and the Python side see the change) and retry buffered with
-                // the exact range, as a buffered load would have issued.
+                // the exact range, as a buffered load would have issued. A
+                // worker-private descriptor is cleared too; descriptors other
+                // workers already opened fall back on their own first read.
+                if (fd != req.fd) fcntl(req.fd, F_SETFL, flags & ~O_DIRECT);
                 static std::atomic<bool> warned{false};
                 if (!warned.exchange(true))
                     std::fprintf(stderr, "[WARN] filesystem rejected O_DIRECT reads: falling back to buffered reads\n");
                 direct = false;
                 source_skip = 0;
                 do {
-                    got = pread(req.fd, bounce, length, offset);
+                    got = pread(fd, bounce, length, offset);
                 } while (got < 0 && errno == EINTR);
                 read_errno = got < 0 ? errno : 0;
             }
@@ -1007,7 +1039,12 @@ struct nogds_file_reader::state {
             try {
                 check(device_error);
                 const size_t i = first_slot + slot;
-                read(*req, position, length, static_cast<char *>(allocation) + buffer_stride * i, copy_streams[i]);
+#ifndef _MSC_VER
+                const int fd = worker_fd(*req, index);
+#else
+                const int fd = req->fd;
+#endif
+                read(*req, fd, position, length, static_cast<char *>(allocation) + buffer_stride * i, copy_streams[i]);
             } catch (const std::exception &error) {
                 // Drain any queued DMA before either source or destination reuse.
                 if (streams) fns->cudaStreamSynchronize(copy_streams[first_slot + slot]);
@@ -1075,6 +1112,11 @@ nogds_file_reader::nogds_file_reader(bool use_mmap, uint64_t bbuf_size_kb,
         if (s.streams) state::check(s.fns->cudaStreamCreateWithFlags(&stream, 1));
         s.copy_streams.push_back(stream);
     }
+#ifndef _MSC_VER
+    const char *fd_per_thread = std::getenv("FASTSAFETENSORS_FD_PER_THREAD");
+    s.fd_per_thread = fd_per_thread && fd_per_thread[0] == '1';
+#endif
+    s.thread_count = max_threads;
     for (uint64_t i = 0; i < max_threads; ++i)
         s.workers.emplace_back([&s, i] { s.worker(i); });
 }

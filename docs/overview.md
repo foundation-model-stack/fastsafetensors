@@ -61,6 +61,21 @@ so a filesystem outside the lists does not fail a load that buffered I/O
 would have completed. Other read failures on an `O_DIRECT` descriptor name
 the flag and the `FASTSAFETENSORS_ODIRECT=0` switch in their error message.
 
+On Linux, `FASTSAFETENSORS_FD_PER_THREAD=1` makes each nogds worker read a
+file through its own descriptor instead of the one the copier opened. A worker
+reopens the file through `/proc/self/fd` the first time it reads a request
+(`dup()` would share the open file description) and the descriptor closes with
+the request; if the reopen fails, the worker reads through the shared
+descriptor. This matters for `O_DIRECT` reads on NFS: the Linux client takes
+and drops a reference on a lock context, kept per open file and process, for
+every page it reads, so 16 workers sharing one descriptor contend on a single
+refcount. On NFS over RDMA (200 Gb/s HDR, kernel 5.15) one process loading a
+141 GB checkpoint with the default 16 workers went from 9.6 to 14.0 GB/s and
+used half the CPU; with eight processes, which already spread the contention,
+throughput and CPU were unchanged within run-to-run noise. Local filesystems keep no such
+per-page state, so the setting is off by default. It applies when the nogds
+copier does not use mmap.
+
 On Linux with libnuma and known GPU NUMA topology, `set_numa=True` places
 nogds workers on the GPU's CPU node and prefers that node for their memory.
 Pinned host buffers are allocated on a separate thread with the same policy,
