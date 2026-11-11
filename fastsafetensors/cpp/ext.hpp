@@ -170,7 +170,8 @@ private:
     std::unique_ptr<state> _state;
 public:
     nogds_file_reader(bool use_mmap, uint64_t bbuf_size_kb, uint64_t max_threads,
-                      bool use_cuda, int device_id, int numa_node = -1);
+                      bool use_cuda, int device_id, int numa_node = -1,
+                      bool fd_per_thread = false);
     const int submit_read(int fd, const gds_device_buffer& dst, int64_t offset,
                           int64_t length, uint64_t ptr_off, bool track_progress = false);
     const uint64_t wait_read_prefix(int request_id, uint64_t length);

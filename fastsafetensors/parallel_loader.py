@@ -809,7 +809,8 @@ class ParallelLoader(PipelineParallel):
                          pipeline. Automatically reduced to fit device_memory_budget.
         use_tqdm_on_load (bool): Enable progress bar during loading.
         device (str): Target device for tensor loading (e.g., "cpu", "cuda:0").
-        bbuf_size_kb (int): Bounce buffer size for file copies in KB.
+        bbuf_size_kb (Optional[int]): Bounce buffer size for file copies in KB. None
+            picks 16 MiB, or 256 MiB for nogds O_DIRECT reads from a network filesystem.
         max_threads (int): Maximum number of threads for memory copies.
         nogds (bool): If True, turn off GDS and fallback to pread with bounce buffer.
         use_shm (bool): If True, use shared memory for file loading.
@@ -892,7 +893,7 @@ class ParallelLoader(PipelineParallel):
         queue_size: int = 0,  # Changed default to 0 for unbuffered behavior
         use_tqdm_on_load: bool = True,
         device: str = "cpu",
-        bbuf_size_kb: int = 16 * 1024,
+        bbuf_size_kb: Optional[int] = None,
         max_threads: int = 16,
         nogds: bool = False,
         set_numa: bool = True,
@@ -921,7 +922,8 @@ class ParallelLoader(PipelineParallel):
             queue_size (int): Size of the queue for buffering loaded file batches.
             use_tqdm_on_load (bool): Enable progress bar during loading.
             device (str): Target device for tensor loading.
-            bbuf_size_kb (int): Bounce buffer size for file copies in KB.
+            bbuf_size_kb (Optional[int]): Bounce buffer size for file copies in KB. None
+                picks 16 MiB, or 256 MiB for nogds O_DIRECT reads from a network filesystem.
             max_threads (int): Maximum number of threads for memory copies.
             nogds (bool): If True, turn off GDS and fallback to pread with bounce buffer.
             set_numa (bool): If True, set NUMA node for optimal memory allocation.

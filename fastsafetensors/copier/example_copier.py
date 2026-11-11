@@ -41,7 +41,7 @@ class ExampleCopier(CopierInterface):
 
 def new_gds_file_copier(
     device: Device,
-    bbuf_size_kb: int = 16 * 1024,
+    bbuf_size_kb: Optional[int] = None,
     max_threads: int = 16,
     nogds: bool = False,
 ):

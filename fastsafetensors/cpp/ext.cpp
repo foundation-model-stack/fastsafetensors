@@ -858,8 +858,9 @@ struct nogds_file_reader::state {
         std::vector<uint8_t> completed;
         bool failed = false;
 #ifndef _MSC_VER
-        // Worker-private descriptors for this request (FASTSAFETENSORS_FD_PER_THREAD=1):
-        // -2 = not opened yet, -1 = reopen failed (use fd). Closed with the request.
+        // Worker-private descriptors for this request when the reader was built with
+        // fd_per_thread: -2 = not opened yet, -1 = reopen failed (use fd). Closed with
+        // the request.
         std::mutex fd_mutex;
         std::vector<int> worker_fds;
         ~request() { for (int f : worker_fds) if (f >= 0) close(f); }
@@ -1073,7 +1074,8 @@ struct nogds_file_reader::state {
 };
 
 nogds_file_reader::nogds_file_reader(bool use_mmap, uint64_t bbuf_size_kb,
-        uint64_t max_threads, bool use_cuda, int device_id, int numa_node)
+        uint64_t max_threads, bool use_cuda, int device_id, int numa_node,
+        bool fd_per_thread)
         : _state(new state) {
     state &s = *_state;
     s.fns = use_cuda ? &cuda_fns : &cpu_fns;
@@ -1112,10 +1114,7 @@ nogds_file_reader::nogds_file_reader(bool use_mmap, uint64_t bbuf_size_kb,
         if (s.streams) state::check(s.fns->cudaStreamCreateWithFlags(&stream, 1));
         s.copy_streams.push_back(stream);
     }
-#ifndef _MSC_VER
-    const char *fd_per_thread = std::getenv("FASTSAFETENSORS_FD_PER_THREAD");
-    s.fd_per_thread = fd_per_thread && fd_per_thread[0] == '1';
-#endif
+    s.fd_per_thread = fd_per_thread;
     s.thread_count = max_threads;
     for (uint64_t i = 0; i < max_threads; ++i)
         s.workers.emplace_back([&s, i] { s.worker(i); });
@@ -1865,10 +1864,11 @@ PYBIND11_MODULE(__MOD_NAME__, m)
     };
 
     pybind11::class_<nogds_file_reader>(m, "nogds_file_reader")
-        .def(pybind11::init<bool, uint64_t, uint64_t, bool, int, int>(),
+        .def(pybind11::init<bool, uint64_t, uint64_t, bool, int, int, bool>(),
              pybind11::arg("use_mmap"), pybind11::arg("bbuf_size_kb"),
              pybind11::arg("max_threads"), pybind11::arg("use_cuda"),
-             pybind11::arg("device_id"), pybind11::arg("numa_node") = -1)
+             pybind11::arg("device_id"), pybind11::arg("numa_node") = -1,
+             pybind11::arg("fd_per_thread") = false)
         .def("submit_read", nogds_submit_read, pybind11::arg("fd"), pybind11::arg("dst"),
              pybind11::arg("offset"), pybind11::arg("length"), pybind11::arg("ptr_off"),
              pybind11::arg("track_progress") = false)

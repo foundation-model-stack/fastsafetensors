@@ -290,7 +290,7 @@ def init_fgds(framework: Optional[FrameworkOpBase] = None):
 def new_fgds_file_copier(
     device: Device,
     framework: FrameworkOpBase,
-    bbuf_size_kb: int = 16 * 1024,
+    bbuf_size_kb: Optional[int] = None,
     max_threads: int = 16,
     **kwargs,
 ) -> CopierConstructFunc:

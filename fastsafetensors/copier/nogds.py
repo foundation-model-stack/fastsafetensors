@@ -3,17 +3,21 @@
 import errno
 import os
 import sys
+import threading
 from bisect import bisect_right
 from operator import itemgetter
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 from .. import cpp as fstcpp
 from ..common import (
+    DEFAULT_BBUF_SIZE_KB,
+    NETWORK_FS_BBUF_SIZE_KB,
     ODIRECT_HINT,
     SafeTensorsMetadata,
     get_device_numa_node,
     init_logger,
     is_gpu_found,
+    is_network_fs,
     is_odirect_enabled,
     resolve_runtime_lib_name,
 )
@@ -305,10 +309,35 @@ def load_library_func(framework=None):
     _loaded_library = True
 
 
+def nogds_reader_options(
+    path: str, bbuf_size_kb: Optional[int] = None
+) -> Tuple[int, bool]:
+    """Bounce buffer size (KiB) and per-worker descriptors for reading *path*.
+
+    Both default on only for O_DIRECT reads from a network filesystem: the
+    Linux NFS client takes a reference on one lock context per open file for
+    every page of a direct read, so workers sharing a descriptor contend on it,
+    and each direct read is a round trip that larger reads amortize. Buffered
+    reads go through the page cache and keep the local defaults. An explicit
+    *bbuf_size_kb* wins; FASTSAFETENSORS_FD_PER_THREAD=1/0 forces the
+    descriptors on or off.
+    """
+    network_direct = is_odirect_enabled(
+        path, buffered_ram_fs=True, buffered_record_fs=True
+    ) and is_network_fs(path)
+    if bbuf_size_kb is None:
+        bbuf_size_kb = (
+            NETWORK_FS_BBUF_SIZE_KB if network_direct else DEFAULT_BBUF_SIZE_KB
+        )
+    override = os.environ.get("FASTSAFETENSORS_FD_PER_THREAD")
+    fd_per_thread = override == "1" if override is not None else network_direct
+    return bbuf_size_kb, fd_per_thread
+
+
 @register_copier_constructor("nogds", NoGdsFileCopier)
 def new_nogds_file_copier(
     device: Device,
-    bbuf_size_kb: int = 16 * 1024,
+    bbuf_size_kb: Optional[int] = None,
     max_threads: int = 16,
     **kwargs,
 ) -> CopierConstructFunc:
@@ -325,20 +354,32 @@ def new_nogds_file_copier(
         if device_is_not_cpu and kwargs.get("set_numa", True)
         else None
     )
-    nogds_reader = fstcpp.nogds_file_reader(
-        False,
-        bbuf_size_kb,
-        max_threads,
-        device_is_not_cpu,
-        device_id,
-        numa_node if numa_node is not None else -1,
-    )
+    # The reader (and its pinned bounce buffer) is built for the first file,
+    # whose filesystem picks the defaults in nogds_reader_options.
+    nogds_reader: Optional[fstcpp.nogds_file_reader] = None
+    reader_lock = threading.Lock()
+
+    def get_reader(path: str) -> fstcpp.nogds_file_reader:
+        nonlocal nogds_reader
+        with reader_lock:
+            if nogds_reader is None:
+                size_kb, fd_per_thread = nogds_reader_options(path, bbuf_size_kb)
+                nogds_reader = fstcpp.nogds_file_reader(
+                    False,
+                    size_kb,
+                    max_threads,
+                    device_is_not_cpu,
+                    device_id,
+                    numa_node if numa_node is not None else -1,
+                    fd_per_thread,
+                )
+            return nogds_reader
 
     def construct_nogds_copier(
         metadata: SafeTensorsMetadata,
         device: Device,
         framework: FrameworkOpBase,
     ) -> CopierInterface:
-        return NoGdsFileCopier(metadata, device, nogds_reader, framework)
+        return NoGdsFileCopier(metadata, device, get_reader(metadata.src), framework)
 
     return construct_nogds_copier
