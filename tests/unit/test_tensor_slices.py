@@ -260,7 +260,7 @@ def test_set_slice_on_cuda_device(tmp_path, framework):
     """Slices load into a bounded device buffer (unified/nogds copier)."""
     from test_fastsafetensors import get_and_check_device
 
-    device = get_and_check_device(framework)
+    device, _ = get_and_check_device(framework)
     path, reference, _ = _engram_fixture(tmp_path, framework)
     with closing(
         SafeTensorsFileLoader(
