@@ -290,17 +290,16 @@ def test_set_slice_compact_chunk_bounds_buffer(tmp_path, framework, monkeypatch)
         loader.add_filenames({0: [path]})
         loader.set_tensor_filter(lambda name: name != "other")
         loader.set_slice("engram.embed.weight", slice(0, 4))
+        # snapshot before close(): reset() clears loader.meta
+        meta = loader.meta[path][0]
         with closing(loader.copy_files_to_device()) as bufs:
             weight = bufs.get_tensor("engram.embed.weight")
             assert torch.equal(weight, reference["engram.embed.weight"][:4])
     assert len(recorded) == 1
     ranges, names, allocation_size = recorded[0]
-    meta, _ = loader.meta[path]
     # only the kept tensors' (narrowed) byte spans are requested, and the
     # allocation is left to the copier's compact default (None)
-    expected = {
-        n for n in meta.tensors if n != "other"
-    }
+    expected = {n for n in meta.tensors if n != "other"}
     assert names == expected
     assert ranges == tuple(meta.select_byte_ranges(lambda n: n != "other"))
     assert allocation_size is None
