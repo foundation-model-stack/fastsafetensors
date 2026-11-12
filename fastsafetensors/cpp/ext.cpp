@@ -859,10 +859,24 @@ struct nogds_file_reader::state {
         bool failed = false;
 #ifndef _MSC_VER
         // Worker-private descriptors for this request when the reader was built with
-        // fd_per_thread: -2 = not opened yet, -1 = reopen failed (use fd). Closed with
-        // the request.
+        // fd_per_thread: -2 = not opened yet, -1 = reopen failed (use fd). Closed as
+        // soon as the request's last block completes (see complete()), not when the
+        // request is destroyed: with allow_inflight a finished request stays in
+        // `requests` until wait_read(), so holding them that long can exhaust the
+        // process's descriptors. The destructor only covers a request that never
+        // completed.
         std::mutex fd_mutex;
         std::vector<int> worker_fds;
+        bool fds_retired = false;
+        // Hands the open descriptors to the caller to close and stops new reopens.
+        std::vector<int> retire_worker_fds() {
+            std::lock_guard<std::mutex> lock(fd_mutex);
+            fds_retired = true;
+            std::vector<int> open_fds;
+            for (int f : worker_fds) if (f >= 0) open_fds.push_back(f);
+            worker_fds.clear();
+            return open_fds;
+        }
         ~request() { for (int f : worker_fds) if (f >= 0) close(f); }
 #endif
     };
@@ -903,6 +917,7 @@ struct nogds_file_reader::state {
     int worker_fd(request &req, size_t index) {
         if (!fd_per_thread || use_mmap) return req.fd;
         std::lock_guard<std::mutex> lock(req.fd_mutex);
+        if (req.fds_retired) return req.fd;
         if (req.worker_fds.empty()) req.worker_fds.assign(thread_count, -2);
         int &fd = req.worker_fds[index];
         if (fd == -2) {
@@ -989,19 +1004,32 @@ struct nogds_file_reader::state {
         }
     }
     void complete(const std::shared_ptr<request> &req, uint64_t position, bool failed) {
-        std::lock_guard<std::mutex> lock(mutex);
-        req->failed |= failed;
-        const uint64_t old_prefix = req->prefix;
-        if (!req->completed.empty() && !failed) {
-            req->completed[position / block_size] = 1;
-            // Workers can finish out of order. Publish only a contiguous prefix
-            // whose DMA has completed, never merely scheduled bytes.
-            while (req->prefix < req->completed.size() && req->completed[req->prefix])
-                ++req->prefix;
+#ifndef _MSC_VER
+        std::vector<int> retired;
+#endif
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            req->failed |= failed;
+            const uint64_t old_prefix = req->prefix;
+            if (!req->completed.empty() && !failed) {
+                req->completed[position / block_size] = 1;
+                // Workers can finish out of order. Publish only a contiguous prefix
+                // whose DMA has completed, never merely scheduled bytes.
+                while (req->prefix < req->completed.size() && req->completed[req->prefix])
+                    ++req->prefix;
+            }
+            --req->remaining;
+#ifndef _MSC_VER
+            // Every block's read has returned, so no worker reads this request again.
+            if (req->remaining == 0 && fd_per_thread) retired = req->retire_worker_fds();
+#endif
+            if (req->remaining == 0 || req->failed || old_prefix != req->prefix)
+                done.notify_all();
         }
-        --req->remaining;
-        if (req->remaining == 0 || req->failed || old_prefix != req->prefix)
-            done.notify_all();
+#ifndef _MSC_VER
+        // Outside the reader's lock: closing an NFS file can wait on the server.
+        for (int f : retired) close(f);
+#endif
     }
     void worker(size_t index) {
         bind_numa();
