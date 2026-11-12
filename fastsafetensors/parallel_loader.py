@@ -141,6 +141,7 @@ class PipelineParallel:
         queue_size: int = 0,
         use_tqdm_on_load: bool = True,
         tensor_filter: Optional[Callable[[str], bool]] = None,
+        tensor_slices: Optional[Dict[str, slice]] = None,
         max_batch_bytes: Optional[int] = None,
         use_chunk_budget_as_allocation_size: bool = False,
         device_memory_budget: Optional[int] = None,
@@ -176,6 +177,20 @@ class PipelineParallel:
                     "tensors this rank never read"
                 )
             loader.set_tensor_filter(tensor_filter)
+        # Read only the selected dim-0 rows of the named tensors (see
+        # SafeTensorsFileLoader.set_slice). Like tensor_filter this requires a
+        # single-process loader group: a cross-rank broadcast cannot deliver
+        # per-rank row ranges.
+        if tensor_slices is not None:
+            if pg.size() > 1 or loader.pg.size() > 1:
+                raise ValueError(
+                    "tensor_slices requires a single-process loader group "
+                    "(ParallelLoader(all_local=True) or pg=None): get_tensor "
+                    "broadcasts across the loader group, which would deliver "
+                    "one rank's rows to every rank"
+                )
+            for name, selection in tensor_slices.items():
+                loader.set_slice(name, selection)
         self.hf_weights_files = hf_weights_files
         self.max_concurrent_producers = max_concurrent_producers
         self.queue_size = queue_size
@@ -307,10 +322,18 @@ class PipelineParallel:
 
         keep = self.loader._tensor_filter
         fw = self.loader.framework
+        slices = self.loader._tensor_slices
 
         # Parse each distinct shard once for planning and all later chunks.
+        # Mirror the loader's slice narrowing so chunk plans (names + byte
+        # ranges) and the memory budget match the narrowed metadata the
+        # copiers will see.
         meta_by_path = {
-            f: SafeTensorsMetadata.from_file(f, fw)
+            f: (
+                SafeTensorsMetadata.from_file(f, fw).with_tensor_slices(slices)
+                if slices
+                else SafeTensorsMetadata.from_file(f, fw)
+            )
             for f in dict.fromkeys(self.hf_weights_files)
         }
 
@@ -900,6 +923,7 @@ class ParallelLoader(PipelineParallel):
         debug_log: bool = False,
         framework="pytorch",
         tensor_filter: Optional[Callable[[str], bool]] = None,
+        tensor_slices: Optional[Dict[str, slice]] = None,
         all_local: bool = False,
         max_batch_bytes: Optional[int] = None,
         use_chunk_budget_as_allocation_size: bool = False,
@@ -958,6 +982,7 @@ class ParallelLoader(PipelineParallel):
             queue_size,
             use_tqdm_on_load,
             tensor_filter=tensor_filter,
+            tensor_slices=tensor_slices,
             max_batch_bytes=max_batch_bytes,
             use_chunk_budget_as_allocation_size=(use_chunk_budget_as_allocation_size),
             device_memory_budget=device_memory_budget,

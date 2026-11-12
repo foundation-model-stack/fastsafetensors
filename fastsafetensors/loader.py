@@ -86,6 +86,16 @@ class BaseSafeTensorsFileLoader:
         self.frames = OrderedDict[str, TensorFrame]()
         self.disable_cache = disable_cache
         self._tensor_filter: Optional[Callable[[str], bool]] = None
+        # tensor name -> dim-0 row selection, applied when the owning file is
+        # registered (and at every copy). See set_slice.
+        self._tensor_slices: Dict[str, slice] = {}
+        # realpath -> the untouched metadata a narrowed clone derives from, so
+        # re-applying slices (new copy, changed slice) never narrows twice.
+        self._pristine_meta: Dict[str, SafeTensorsMetadata] = {}
+        # realpaths whose registered metadata carries narrowed frames; those
+        # files load through a compact chunk allocation (see
+        # copy_files_to_device).
+        self._sliced_files: Set[str] = set()
         # realpath -> (chunk tensor names, byte-ranges) for the next
         # copy_files_to_device; set by PipelineParallel when max_batch_bytes is
         # active so each file loads only a sub-file chunk. Empty = whole files.
@@ -134,6 +144,8 @@ class BaseSafeTensorsFileLoader:
         self.frames = {}
         self.meta = {}
         self._chunk_plan = {}
+        self._pristine_meta = {}
+        self._sliced_files = set()
 
     def close(self):
         """Release the file registrations and copier. Safe to call more than once.
@@ -172,6 +184,82 @@ class BaseSafeTensorsFileLoader:
         """
         self._tensor_filter = keep_tensor
 
+    def set_slice(self, tensor_name: str, selection: slice) -> None:
+        """Read only the selected dim-0 rows of ``tensor_name``.
+
+        Records a row selection (``slice(start, stop)``, step 1) applied at
+        registration and at every ``copy_files_to_device``: the tensor's
+        frame is narrowed to those rows, so only their bytes are read and
+        ``get_tensor`` returns just those rows with a matching
+        ``get_shape``. Pair with ``set_tensor_filter`` to load large fused
+        tensors (e.g. Engram tables) by range instead of materializing the
+        whole tensor (issue #127)::
+
+            loader = SafeTensorsFileLoader(pg=None, device="cpu", nogds=True)
+            loader.add_filenames({0: engram_files})
+            names = {"engram.embed.weight", "engram.embed.scale"}
+            loader.set_tensor_filter(lambda name: name in names)
+            loader.set_slice("engram.embed.weight", slice(start, end))
+            loader.set_slice("engram.embed.scale", slice(start, end))
+            bufs = loader.copy_files_to_device()
+
+        The boundaries stay caller-side: engines disagree on them (vLLM
+        shards Engram tables by hash heads, sglang by even rows). Sliced
+        files load through a compact chunk allocation bounding the device
+        buffer to the selected span, so this requires a partial-read copier
+        (``gds``, ``nogds``, ``unified``). Requires a single-process loader
+        group: ``get_tensor`` would broadcast one rank's rows to every rank.
+        """
+        if not isinstance(selection, slice):
+            raise TypeError(
+                f"set_slice: selection must be a slice, got {selection!r}"
+            )
+        if selection.step not in (None, 1):
+            raise ValueError(
+                f"set_slice: '{tensor_name}': slice step must be 1 "
+                f"(got {selection.step}); a strided range is not a "
+                "contiguous byte range"
+            )
+        if self.pg.size() > 1:
+            raise ValueError(
+                "set_slice requires a single-process loader group (pg=None or "
+                "a size-1 group): get_tensor broadcasts across the loader group "
+                "and would deliver one rank's rows to every rank"
+            )
+        self._tensor_slices[tensor_name] = selection
+        self._apply_slices(tensor_name)
+
+    def _pristine_of(self, meta: SafeTensorsMetadata) -> SafeTensorsMetadata:
+        """The untouched metadata a (possibly narrowed) *meta* derives from."""
+        while getattr(meta, "_pristine_metadata", None) is not None:
+            meta = meta._pristine_metadata
+        return meta
+
+    def _apply_slices(self, only_tensor: Optional[str] = None) -> None:
+        """Re-derive the registered metadata of files hit by recorded slices.
+
+        Always derived from the pristine metadata, so re-application (a new
+        copy, a changed slice) is idempotent. With *only_tensor*, restrict to
+        files containing that tensor (set_slice on an already-registered
+        name); without it, narrow every registered file (used after
+        ``add_filenames`` caught up with a deferred slice).
+        """
+        if not self._tensor_slices:
+            return
+        for realpath, (meta, rank) in list(self.meta.items()):
+            if only_tensor is not None and only_tensor not in meta.tensors:
+                continue
+            pristine = self._pristine_meta.get(realpath)
+            if pristine is None:
+                pristine = self._pristine_of(meta)
+                self._pristine_meta[realpath] = pristine
+            narrowed = pristine.with_tensor_slices(self._tensor_slices)
+            if narrowed is not pristine:
+                self._sliced_files.add(realpath)
+            self.meta[realpath] = (narrowed, rank)
+            for name, frame in narrowed.tensors.items():
+                self.frames[name] = frame
+
     def add_filenames(self, filenames: Dict[int, List[str]]):
         """
         Register files to ranks to be copied at copy_file_to_device().
@@ -190,8 +278,21 @@ class BaseSafeTensorsFileLoader:
                         metadata = SafeTensorsMetadata.from_file(
                             realpath, self.framework
                         )
-                    self.meta[realpath] = (metadata, rank)
-                    self.frames.update(metadata.tensors)
+                    # Cache entries may already be narrowed (the pipeline's
+                    # planning mirror seeds it with derived metadata); the
+                    # pristine chain recovers untouched frames so the recorded
+                    # slices apply exactly once regardless of the cache.
+                    pristine = self._pristine_of(metadata)
+                    self._pristine_meta[realpath] = pristine
+                    narrowed = (
+                        pristine.with_tensor_slices(self._tensor_slices)
+                        if self._tensor_slices
+                        else pristine
+                    )
+                    if narrowed is not pristine:
+                        self._sliced_files.add(realpath)
+                    self.meta[realpath] = (narrowed, rank)
+                    self.frames.update(narrowed.tensors)
                     if rank == self.pg.rank():
                         logger.debug(
                             "add_filenames %d: path=%s", len(self.meta), realpath
@@ -226,6 +327,13 @@ class BaseSafeTensorsFileLoader:
         """
         if borrowed_tensors and self.pg.size() != 1:
             raise ValueError("borrowed_tensors requires a single-process loader group")
+        if self._tensor_slices:
+            unknown = [n for n in self._tensor_slices if n not in self.frames]
+            if unknown:
+                raise ValueError(
+                    f"set_slice: no registered tensor named {unknown}; call "
+                    "set_slice with a tensor present in the registered files"
+                )
         self.framework.set_device(self.device)
 
         if dtype != DType.AUTO:
@@ -274,6 +382,22 @@ class BaseSafeTensorsFileLoader:
                             copier.set_chunk(ranges, names)
                         else:
                             copier.set_chunk(ranges, names, allocation_size)
+                    elif realpath in self._sliced_files:
+                        # Recorded row ranges narrow this file: load it as a
+                        # compact chunk (buffer spanning only the selected runs)
+                        # instead of the whole data section, so a large fused
+                        # tensor does not need a full-file allocation (issue
+                        # #127). Partial-read copiers only; others refuse
+                        # (CopierInterface.set_chunk raises).
+                        keep = self._tensor_filter
+                        kept = {
+                            n for n in meta.tensors if keep is None or keep(n)
+                        }
+                        ranges = meta.select_byte_ranges(lambda n: n in kept)
+                        if ranges:
+                            copier.set_chunk(ranges, kept)
+                        else:
+                            copier.set_byte_ranges(ranges)
                     elif self._tensor_filter is not None:
                         copier.set_byte_ranges(
                             meta.select_byte_ranges(self._tensor_filter)
