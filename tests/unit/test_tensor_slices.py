@@ -33,6 +33,10 @@ from test_fastsafetensors import load_safetensors_file, save_safetensors_file
 _requires_torch = pytest.mark.skipif(
     torch is None, reason="row-slice data checks need torch tensors"
 )
+_requires_cuda = pytest.mark.skipif(
+    torch is None or not torch.cuda.is_available(),
+    reason="device slice loading requires a CUDA device",
+)
 
 
 def _pick_2d(meta, min_rows=4):
@@ -249,6 +253,28 @@ def test_set_slice_loads_selected_rows(tmp_path, framework):
             assert torch.equal(got, reference["engram.embed.weight"][3:7])
             # unsliced tensors load in full
             assert torch.equal(bufs.get_tensor("engram.embed.scale"), reference["engram.embed.scale"])
+
+
+@_requires_cuda
+def test_set_slice_on_cuda_device(tmp_path, framework):
+    """Slices load into a bounded device buffer (unified/nogds copier)."""
+    from test_fastsafetensors import get_and_check_device
+
+    device = get_and_check_device(framework)
+    path, reference, _ = _engram_fixture(tmp_path, framework)
+    with closing(
+        SafeTensorsFileLoader(
+            None, device.as_str(), nogds=True, framework=framework.get_name()
+        )
+    ) as loader:
+        loader.add_filenames({0: [path]})
+        loader.set_slice("engram.embed.weight", slice(2, 6))
+        with closing(loader.copy_files_to_device()) as bufs:
+            got = bufs.get_tensor("engram.embed.weight")
+            assert list(got.shape) == [4, 4]
+            assert torch.equal(
+                got.to("cpu"), reference["engram.embed.weight"][2:6]
+            )
 
 
 @_requires_torch
