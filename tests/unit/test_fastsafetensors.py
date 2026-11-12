@@ -364,6 +364,110 @@ def test_NoGdsFileCopier(fstcpp_log, input_files, framework) -> None:
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="per-worker descriptors are Linux-only"
+)
+def test_NoGdsFileCopier_fd_per_thread(fstcpp_log, input_files, framework) -> None:
+    # Workers reopen the checkpoint through /proc/self/fd so each reads through
+    # its own open file description. Small bounce buffers spread one file over
+    # many blocks so every worker takes part.
+    fds_before = len(os.listdir("/proc/self/fd"))
+    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+    device, dev_is_gpu = get_and_check_device(framework)
+    reader = fstcpp.nogds_file_reader(
+        False, 64, 4, dev_is_gpu, device.index or 0, fd_per_thread=True
+    )
+    copier = NoGdsFileCopier(meta, device, reader, framework)
+    gbuf = copier.submit_io(False, 10 * 1024 * 1024 * 1024)
+    tensors = copier.wait_io(gbuf)
+    for key, exp in load_safetensors_file(input_files[0], device, framework).items():
+        assert framework.is_equal(tensors[key], exp)
+    framework.free_tensor_memory(gbuf, device)
+    del copier
+    del reader
+    gc.collect()
+    # The private descriptors close with their request.
+    assert len(os.listdir("/proc/self/fd")) == fds_before
+    assert framework.get_mem_used() == 0
+    assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="per-worker descriptors are Linux-only"
+)
+def test_nogds_fd_per_thread_closes_when_request_completes(
+    fstcpp_log, input_files, framework
+) -> None:
+    # With allow_inflight, tensor access waits through wait_read_prefix() and a
+    # finished request stays registered until wait_read(). Its private
+    # descriptors must close when its last block completes, not when it is
+    # removed, or a load with many ranges runs out of descriptors (EMFILE).
+    import time
+
+    fd = os.open(input_files[0], os.O_RDONLY)
+    size = os.fstat(fd).st_size
+    device, dev_is_gpu = get_and_check_device(framework)
+    gbuf = framework.alloc_tensor_memory(size, device)
+    reader = fstcpp.nogds_file_reader(
+        False, 64, 4, dev_is_gpu, device.index or 0, fd_per_thread=True
+    )
+    open_fds = lambda: len(os.listdir("/proc/self/fd"))  # noqa: E731
+    baseline = open_fds()
+    try:
+        step = max(1, size // 64)
+        reqs = []
+        for off in range(0, size, step):
+            length = min(step, size - off)
+            reqs.append((reader.submit_read(fd, gbuf, off, length, off, True), length))
+        for req, length in reqs:
+            assert reader.wait_read_prefix(req, length) == length
+        # Closing happens just after the last block is published.
+        deadline = time.monotonic() + 5
+        while open_fds() > baseline and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert open_fds() == baseline, "completed requests still hold descriptors"
+        for req, _ in reqs:
+            assert reader.wait_read(req) > 0
+    finally:
+        del reader
+        os.close(fd)
+        framework.free_tensor_memory(gbuf, device)
+
+
+@pytest.mark.skipif(not hasattr(os, "O_DIRECT"), reason="needs O_DIRECT")
+@pytest.mark.parametrize(
+    "fstype, odirect, bbuf, fd_env, expected",
+    [
+        # direct reads from a network filesystem: large buffer + private fds
+        ("nfs4", "1", None, None, (256 * 1024, True)),
+        ("lustre", "1", None, None, (256 * 1024, True)),
+        # network filesystem read buffered (the default policy): unchanged
+        ("nfs4", None, None, None, (16 * 1024, False)),
+        # local filesystem: unchanged
+        ("ext4", None, None, None, (16 * 1024, False)),
+        ("xfs", "1", None, None, (16 * 1024, False)),
+        # an explicit buffer size wins; the env var forces the descriptors
+        ("nfs4", "1", 1024, None, (1024, True)),
+        ("nfs4", "1", None, "0", (256 * 1024, False)),
+        ("ext4", None, None, "1", (16 * 1024, True)),
+    ],
+)
+def test_nogds_reader_options(monkeypatch, fstype, odirect, bbuf, fd_env, expected):
+    import fastsafetensors.common as common
+    from fastsafetensors.copier.nogds import nogds_reader_options
+
+    monkeypatch.setattr(common, "get_fs_type", lambda path, *a, **k: fstype)
+    for name, value in (
+        ("FASTSAFETENSORS_ODIRECT", odirect),
+        ("FASTSAFETENSORS_FD_PER_THREAD", fd_env),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    assert nogds_reader_options("/ckpt/model.safetensors", bbuf) == expected
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="cuFile GDS is Linux-only")
 def test_GdsFileCopier(fstcpp_log, input_files, framework) -> None:
     print("test_GdsFileCopier")
@@ -1951,7 +2055,7 @@ def test_nogds_reused_device_buffer_waits_for_pending_clone(tmp_path):
 
 
 @pytest.mark.parametrize("set_numa", [True, False])
-def test_nogds_reader_numa_opt_out(monkeypatch, set_numa):
+def test_nogds_reader_numa_opt_out(monkeypatch, set_numa, input_files):
     """The existing loader switch controls per-reader NUMA placement."""
     import torch
 
@@ -1977,7 +2081,10 @@ def test_nogds_reader_numa_opt_out(monkeypatch, set_numa):
         max_threads=2,
     )
     try:
-        assert calls[-1][-1] == (0 if set_numa else -1)
+        # The reader is built for the first file the loader reads.
+        loader.add_filenames({0: [input_files[0]]})
+        loader.copy_files_to_device().close()
+        assert calls[-1][5] == (0 if set_numa else -1)
     finally:
         loader.close()
 
@@ -2059,7 +2166,7 @@ def test_nogds_numa_worker_affinity_and_caller_policy(placement):
         os.sched_setaffinity(0, original_affinity)
 
 
-def test_nogds_first_loader_resolves_numa_after_runtime_init():
+def test_nogds_first_loader_resolves_numa_after_runtime_init(input_files):
     """A fresh process must resolve topology before constructing its first reader."""
     import subprocess
     import sys
@@ -2085,13 +2192,16 @@ def test_nogds_first_loader_resolves_numa_after_runtime_init():
         loader = SafeTensorsFileLoader(None, 'cuda:0', nogds=True,
                                       bbuf_size_kb=1024, max_threads=2)
         try:
+            # The reader is built for the first file the loader reads.
+            loader.add_filenames({0: [CHECKPOINT]})
+            loader.copy_files_to_device().close()
             node = get_device_numa_node(0)
             assert node is not None
-            assert calls[-1][-1] == node, (calls, node)
+            assert calls[-1][5] == node, (calls, node)
         finally:
             loader.close()
         """
-    )
+    ).replace("CHECKPOINT", repr(input_files[0]))
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
     )

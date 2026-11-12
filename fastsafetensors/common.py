@@ -100,6 +100,19 @@ _RECORD_FS = {"zfs"}
 _RAM_FS = {"tmpfs", "ramfs"}
 _warned_odirect_fs: Set[str] = set()
 
+# Bounce buffer for the nogds reader, split into 2 slots per worker thread, so
+# the default 16 MiB with 16 workers issues 512 KiB reads. Direct reads from a
+# network filesystem are round trips that larger reads amortize: on NFS over
+# RDMA one process went from 15.7 GB/s at 512 KiB to 22 GB/s at 8-16 MiB.
+DEFAULT_BBUF_SIZE_KB = 16 * 1024
+NETWORK_FS_BBUF_SIZE_KB = 256 * 1024
+
+
+def is_network_fs(path: str) -> bool:
+    """Whether *path* lives on a filesystem listed in ``_NETWORK_FS``."""
+    return get_fs_type(path) in _NETWORK_FS
+
+
 # Appended to read failures on an O_DIRECT descriptor, so the user can tell a
 # direct-I/O rejection from a truncated or unreadable file.
 ODIRECT_HINT = "set FASTSAFETENSORS_ODIRECT=0 to use buffered reads"

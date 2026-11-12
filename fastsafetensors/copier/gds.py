@@ -444,7 +444,7 @@ def init_gds(framework: Optional[FrameworkOpBase] = None):
 @register_copier_constructor("gds", GdsFileCopier)
 def new_gds_file_copier(
     device: Device,
-    bbuf_size_kb: int = 16 * 1024,
+    bbuf_size_kb: Optional[int] = None,
     max_threads: int = 16,
     device_memory_budget: Optional[int] = None,
     **kwargs,

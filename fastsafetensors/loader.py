@@ -321,7 +321,8 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
     Args:
         devcie (str): target device.
         pg (Optional[Any]): process group-like objects for distributed. None for single GPU use-cases.
-        bbuf_size_kb (int): bounce buffer size for file copies.
+        bbuf_size_kb (Optional[int]): bounce buffer size for file copies in KB. None
+            picks 16 MiB, or 256 MiB for nogds O_DIRECT reads from a network filesystem.
         max_threads (int): maximum number of threads for memory copies.
         nogds (bool): if True, trun off GDS and fallback to pread with bounce buffer.
         debug_log (bool): enable debug logs.
@@ -355,7 +356,7 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
         self,
         pg: Optional[Any],
         device: str = "cpu",
-        bbuf_size_kb: int = 16 * 1024,
+        bbuf_size_kb: Optional[int] = None,
         max_threads: int = 16,
         nogds: bool = False,
         set_numa: bool = True,

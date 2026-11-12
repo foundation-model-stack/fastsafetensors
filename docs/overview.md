@@ -61,6 +61,29 @@ so a filesystem outside the lists does not fail a load that buffered I/O
 would have completed. Other read failures on an `O_DIRECT` descriptor name
 the flag and the `FASTSAFETENSORS_ODIRECT=0` switch in their error message.
 
+When the nogds copier reads a checkpoint on a network filesystem with
+`O_DIRECT` (so only with `FASTSAFETENSORS_ODIRECT=1`, since network
+filesystems read buffered by default), it changes two defaults, chosen from
+the first file it opens. Each worker reads through its own descriptor: the
+Linux NFS client takes and drops a reference on a lock context, kept per open
+file and process, for every page of a direct read, so 16 workers sharing the
+copier's descriptor contend on one refcount. A worker reopens the file through
+`/proc/self/fd` the first time it reads a request (`dup()` would share the
+open file description); the descriptor closes with the request, and a failed
+reopen falls back to the shared one. The bounce buffer also grows from 16 MiB
+to 256 MiB of pinned host memory, so with 16 workers each read is 8 MiB
+instead of 512 KiB and fewer round trips are needed. On NFS over RDMA
+(200 Gb/s HDR, kernel 5.15), one process loading a 141 GB checkpoint through
+`ParallelLoader` with its default arguments went from 9.6-10.2 GB/s to
+19.5-21.4 GB/s and used about a quarter of the CPU; eight processes went from
+21.8 to 23.7 GB/s. Each change alone stops short: per-worker descriptors with
+512 KiB reads reached about 16 GB/s, and 8-16 MiB reads through a shared
+descriptor 10-12 GB/s. An explicit `bbuf_size_kb` is kept, and
+`FASTSAFETENSORS_FD_PER_THREAD=1` or `=0` forces the descriptors on or off for
+any filesystem. Local filesystems keep no per-page lock context and keep the
+previous defaults. The descriptors apply when the nogds copier does not use
+mmap and are not available on Windows.
+
 On Linux with libnuma and known GPU NUMA topology, `set_numa=True` places
 nogds workers on the GPU's CPU node and prefers that node for their memory.
 Pinned host buffers are allocated on a separate thread with the same policy,
