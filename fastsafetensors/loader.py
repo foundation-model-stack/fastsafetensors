@@ -184,7 +184,7 @@ class BaseSafeTensorsFileLoader:
         """
         self._tensor_filter = keep_tensor
 
-    def set_slice(self, tensor_name: str, selection: slice) -> None:
+    def set_slice(self, tensor_name: str, selection: Optional[slice]) -> None:
         """Read only the selected dim-0 rows of ``tensor_name``.
 
         Records a row selection (``slice(start, stop)``, step 1) applied at
@@ -209,7 +209,14 @@ class BaseSafeTensorsFileLoader:
         buffer to the selected span, so this requires a partial-read copier
         (``gds``, ``nogds``, ``unified``). Requires a single-process loader
         group: ``get_tensor`` would broadcast one rank's rows to every rank.
+
+        ``selection`` of ``None`` clears a previously recorded slice (like
+        ``set_tensor_filter(None)``), restoring the tensor's full frame.
         """
+        if selection is None:
+            if self._tensor_slices.pop(tensor_name, None) is not None:
+                self._apply_slices()
+            return
         if not isinstance(selection, slice):
             raise TypeError(
                 f"set_slice: selection must be a slice, got {selection!r}"
@@ -227,11 +234,18 @@ class BaseSafeTensorsFileLoader:
                 "and would deliver one rank's rows to every rank"
             )
         self._tensor_slices[tensor_name] = selection
-        self._apply_slices(tensor_name)
+        try:
+            self._apply_slices(tensor_name)
+        except BaseException:
+            # A rejected slice (scalar tensor, rows not byte-addressable)
+            # must not stay recorded: it would fail every later set_slice,
+            # add_filenames, or copy on the same file.
+            del self._tensor_slices[tensor_name]
+            raise
 
     def _pristine_of(self, meta: SafeTensorsMetadata) -> SafeTensorsMetadata:
         """The untouched metadata a (possibly narrowed) *meta* derives from."""
-        while getattr(meta, "_pristine_metadata", None) is not None:
+        while meta._pristine_metadata is not None:
             meta = meta._pristine_metadata
         return meta
 
@@ -244,7 +258,7 @@ class BaseSafeTensorsFileLoader:
         name); without it, narrow every registered file (used after
         ``add_filenames`` caught up with a deferred slice).
         """
-        if not self._tensor_slices:
+        if not self._tensor_slices and not self._sliced_files:
             return
         for realpath, (meta, rank) in list(self.meta.items()):
             if only_tensor is not None and only_tensor not in meta.tensors:
@@ -256,6 +270,8 @@ class BaseSafeTensorsFileLoader:
             narrowed = pristine.with_tensor_slices(self._tensor_slices)
             if narrowed is not pristine:
                 self._sliced_files.add(realpath)
+            else:
+                self._sliced_files.discard(realpath)
             self.meta[realpath] = (narrowed, rank)
             for name, frame in narrowed.tensors.items():
                 self.frames[name] = frame
@@ -328,11 +344,18 @@ class BaseSafeTensorsFileLoader:
         if borrowed_tensors and self.pg.size() != 1:
             raise ValueError("borrowed_tensors requires a single-process loader group")
         if self._tensor_slices:
-            unknown = [n for n in self._tensor_slices if n not in self.frames]
+            # Names may live in shards not registered for this batch:
+            # ParallelLoader registers one file at a time and pre-seeds the
+            # metadata cache with every shard's metadata, so validate against
+            # both the current registration and the cache.
+            known = set(self.frames)
+            for meta in self._metadata_cache.values():
+                known.update(meta.tensors)
+            unknown = [n for n in self._tensor_slices if n not in known]
             if unknown:
                 raise ValueError(
                     f"set_slice: no registered tensor named {unknown}; call "
-                    "set_slice with a tensor present in the registered files"
+                    "set_slice with a tensor present in the input files"
                 )
         self.framework.set_device(self.device)
 
@@ -387,17 +410,22 @@ class BaseSafeTensorsFileLoader:
                         # compact chunk (buffer spanning only the selected runs)
                         # instead of the whole data section, so a large fused
                         # tensor does not need a full-file allocation (issue
-                        # #127). Partial-read copiers only; others refuse
-                        # (CopierInterface.set_chunk raises).
+                        # #127). The buffer spans min_start..max_end of the
+                        # kept runs: unselected rows between two sliced
+                        # tensors of the same file are allocated but not read
+                        # (e.g. weight+scale of one Engram layer at TP4 leaves
+                        # ~3/4 of the table's span between them). Partial-
+                        # read copiers only; others refuse
+                        # (CopierInterface.set_chunk raises). An empty range
+                        # set allocates nothing (set_chunk), unlike
+                        # set_byte_ranges which would keep the whole data
+                        # section.
                         keep = self._tensor_filter
                         kept = {
                             n for n in meta.tensors if keep is None or keep(n)
                         }
                         ranges = meta.select_byte_ranges(lambda n: n in kept)
-                        if ranges:
-                            copier.set_chunk(ranges, kept)
-                        else:
-                            copier.set_byte_ranges(ranges)
+                        copier.set_chunk(ranges, kept)
                     elif self._tensor_filter is not None:
                         copier.set_byte_ranges(
                             meta.select_byte_ranges(self._tensor_filter)

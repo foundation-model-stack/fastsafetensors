@@ -97,6 +97,11 @@ def test_with_tensor_slices_bounds(input_files, framework):
     d = meta.with_tensor_slices({name: slice(2, 2)})
     assert d.tensors[name].shape[0] == 0
     assert d.tensors[name].data_offsets == [s + 2 * row_bytes] * 2
+    # a reversed range (stop < start) is empty too, not a negative
+    # dimension with reversed byte offsets
+    d = meta.with_tensor_slices({name: slice(5, 2)})
+    assert d.tensors[name].shape[0] == 0
+    assert d.tensors[name].data_offsets == [s + 5 * row_bytes] * 2
 
 
 def test_with_tensor_slices_passthrough(input_files, framework):
@@ -149,6 +154,137 @@ def test_set_slice_before_and_after_registration(input_files, framework):
             frame.data_offsets[1] - row_bytes,
         ]
         loader.close()
+
+
+def test_set_slice_clear_restores_full_frame(input_files, framework):
+    # set_slice(name, None) clears a recorded slice (mirrors
+    # set_tensor_filter(None)): the pristine frame comes back and the file
+    # loads through the normal path again.
+    meta = SafeTensorsMetadata.from_file(input_files[0], framework)
+    name, frame = _pick_2d(meta)
+    loader = SafeTensorsFileLoader(
+        None, "cpu", nogds=True, framework=framework.get_name()
+    )
+    loader.add_filenames({0: input_files})
+    loader.set_slice(name, slice(0, 2))
+    assert loader.get_shape(name)[0] == 2
+    loader.set_slice(name, None)
+    assert loader.get_shape(name) == frame.shape
+    with closing(loader.copy_files_to_device()) as bufs:
+        assert list(bufs.get_tensor(name).shape) == frame.shape
+    loader.close()
+
+
+@_requires_torch
+def test_set_slice_rejected_selection_not_recorded(tmp_path, framework):
+    """A slice that cannot be applied is not remembered.
+
+    Without the cleanup, one rejected set_slice (scalar tensor, packed
+    rows) poisons every later set_slice, add_filenames, or copy on the
+    same file.
+    """
+    scalar = torch.tensor(1.0)
+    weight = torch.arange(8 * 4, dtype=torch.float32).reshape(8, 4)
+    path = str(tmp_path / "scalar.safetensors")
+    save_safetensors_file(
+        {"scalar": scalar, "engram.embed.weight": weight},
+        path,
+        {"format": "pt"},
+        framework,
+    )
+    with closing(
+        SafeTensorsFileLoader(None, "cpu", nogds=True, framework=framework.get_name())
+    ) as loader:
+        loader.add_filenames({0: [path]})
+        with pytest.raises(ValueError, match="scalar"):
+            loader.set_slice("scalar", slice(0, 1))
+        # the rejected slice did not stay recorded: a valid slice and a
+        # copy on the same file work
+        loader.set_slice("engram.embed.weight", slice(1, 5))
+        with closing(loader.copy_files_to_device()) as bufs:
+            assert torch.equal(bufs.get_tensor("engram.embed.weight"), weight[1:5])
+
+
+@_requires_torch
+def test_set_slice_compact_span_and_multi_runs(tmp_path, framework, monkeypatch):
+    """Two sliced tensors split by a >merge_gap hole load as two runs into
+    one compact buffer spanning them (the documented allocation cost:
+    unselected rows between kept runs are allocated, not read)."""
+    weight = torch.arange(8 * 4, dtype=torch.float32).reshape(8, 4)  # 128 B
+    scale = torch.arange(8, dtype=torch.float32)  # 32 B
+    filler = torch.zeros(16 * 1024, dtype=torch.float32)  # 64 KiB hole
+    path = str(tmp_path / "engram-gap.safetensors")
+    save_safetensors_file(
+        {
+            "engram.embed.weight": weight,
+            "filler": filler,
+            "engram.embed.scale": scale,
+        },
+        path,
+        {"format": "pt"},
+        framework,
+    )
+    recorded = []
+    original = NoGdsFileCopier.set_chunk
+
+    def chunk_spy(self, byte_ranges, names, allocation_size=None):
+        recorded.append((tuple(byte_ranges), set(names), allocation_size))
+        return original(self, byte_ranges, names, allocation_size)
+
+    monkeypatch.setattr(NoGdsFileCopier, "set_chunk", chunk_spy)
+    allocs = []
+    orig_alloc = framework.alloc_tensor_memory
+
+    def alloc_spy(length, device):
+        allocs.append(length)
+        return orig_alloc(length, device)
+
+    monkeypatch.setattr(framework, "alloc_tensor_memory", alloc_spy)
+    with closing(
+        SafeTensorsFileLoader(None, "cpu", nogds=True, framework=framework.get_name())
+    ) as loader:
+        loader.add_filenames({0: [path]})
+        loader.set_tensor_filter(lambda name: name != "filler")
+        loader.set_slice("engram.embed.weight", slice(0, 2))
+        with closing(loader.copy_files_to_device()) as bufs:
+            assert torch.equal(bufs.get_tensor("engram.embed.weight"), weight[:2])
+    assert len(recorded) == 1
+    ranges, names, allocation_size = recorded[0]
+    assert names == {"engram.embed.weight", "engram.embed.scale"}
+    # the 64 KiB filtered hole exceeds merge_gap: the runs stay split
+    assert len(ranges) == 2
+    # the compact buffer spans min_start..max_end of the kept runs, hole
+    # included, and the allocation size is left to the copier's default
+    assert allocs and max(allocs) == ranges[-1][1] - ranges[0][0]
+    assert allocation_size is None
+
+
+@_requires_torch
+def test_parallel_loader_tensor_slices_across_shards(tmp_path, framework):
+    """A slice target living in a later shard is not rejected while an
+    earlier shard's batch copies: name validation covers all input files
+    (the pipeline pre-seeds the loader's metadata cache)."""
+    a = torch.arange(8 * 4, dtype=torch.float32).reshape(8, 4)
+    b = torch.arange(8 * 4, dtype=torch.float32).reshape(8, 4)
+    f1 = str(tmp_path / "shard-1.safetensors")
+    f2 = str(tmp_path / "shard-2.safetensors")
+    save_safetensors_file({"a": a}, f1, {"format": "pt"}, framework)
+    save_safetensors_file({"b": b}, f2, {"format": "pt"}, framework)
+    with closing(
+        ParallelLoader(
+            None,
+            [f1, f2],
+            device="cpu",
+            framework=framework.get_name(),
+            nogds=True,
+            tensor_slices={"b": slice(2, 6)},
+            use_tqdm_on_load=False,
+        )
+    ) as loader:
+        with closing(loader.iterate_weights()) as weights:
+            actual = dict(weights)
+    assert torch.equal(actual["a"], a)
+    assert torch.equal(actual["b"], b[2:6])
 
 
 def test_set_slice_reapplication_is_idempotent(input_files, framework):

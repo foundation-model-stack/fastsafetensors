@@ -385,6 +385,10 @@ class SafeTensorsMetadata:
                     f"validate(tensor {k}): TensorInvalidInfo, e-s={e-s}, nbytes={nbytes}, src={src}"
                 )
         self.size_bytes = size_bytes
+        # Set by with_tensor_slices on derived metadata: the untouched object
+        # a narrowed clone derives from. Declared here so static checkers see
+        # the attribute on every instance.
+        self._pristine_metadata: Optional["SafeTensorsMetadata"] = None
         if start + header_length > size_bytes:
             raise Exception(
                 f"MetadataIncompleteBuffer, src={src}, start={start}, header_length={header_length}, size_bytes={size_bytes}"
@@ -664,6 +668,11 @@ class SafeTensorsMetadata:
                 f"set_slice: '{name}': slice step must be 1 (got {step}); a "
                 "strided range is not a contiguous byte range"
             )
+        if stop < start:
+            # A reversed range (e.g. slice(5, 2)) selects no rows for a
+            # forward stride: normalize like Python slicing instead of
+            # producing a negative dimension and reversed byte offsets.
+            stop = start
         s, e = frame.data_offsets
         nbytes = e - s
         if nbytes % rows != 0:

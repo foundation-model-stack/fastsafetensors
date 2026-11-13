@@ -141,7 +141,6 @@ class PipelineParallel:
         queue_size: int = 0,
         use_tqdm_on_load: bool = True,
         tensor_filter: Optional[Callable[[str], bool]] = None,
-        tensor_slices: Optional[Dict[str, slice]] = None,
         max_batch_bytes: Optional[int] = None,
         use_chunk_budget_as_allocation_size: bool = False,
         device_memory_budget: Optional[int] = None,
@@ -151,6 +150,9 @@ class PipelineParallel:
         broadcast_run_tensors: int = 64,
         overlap_io: bool = True,
         borrowed_tensors: bool = False,
+        # Appended after the existing explicit parameters so callers using
+        # positional arguments keep working.
+        tensor_slices: Optional[Dict[str, slice]] = None,
         **kwargs,
     ):
 
@@ -317,12 +319,16 @@ class PipelineParallel:
             self.hf_weights_files[i : i + batch_size]
             for i in range(0, len(self.hf_weights_files), batch_size)
         ]
-        if self.max_batch_bytes is None and self.device_memory_budget is None:
+        slices = self.loader._tensor_slices
+        if (
+            self.max_batch_bytes is None
+            and self.device_memory_budget is None
+            and not slices
+        ):
             return file_batches
 
         keep = self.loader._tensor_filter
         fw = self.loader.framework
-        slices = self.loader._tensor_slices
 
         # Parse each distinct shard once for planning and all later chunks.
         # Mirror the loader's slice narrowing so chunk plans (names + byte
@@ -430,6 +436,14 @@ class PipelineParallel:
                     f"device overhead)"
                 ) from e
             per_file_budget = {f: b for (f, _), b in zip(metas, budgets)}
+
+        if self.max_batch_bytes is None and per_file_budget is None:
+            # No chunking (slices only): seed the loader's metadata cache --
+            # copy_files_to_device validates slice names against it, and the
+            # cached headers keep later add_filenames calls slice-aware --
+            # and load whole files per batch.
+            self.loader._set_metadata_cache(meta_by_path)
+            return file_batches
 
         # Expand each file-batch (one file per rank) into aligned chunk-batches.
         # Chunk-batch j holds rank r's j-th chunk (or None once that rank's file
@@ -923,7 +937,6 @@ class ParallelLoader(PipelineParallel):
         debug_log: bool = False,
         framework="pytorch",
         tensor_filter: Optional[Callable[[str], bool]] = None,
-        tensor_slices: Optional[Dict[str, slice]] = None,
         all_local: bool = False,
         max_batch_bytes: Optional[int] = None,
         use_chunk_budget_as_allocation_size: bool = False,
@@ -935,6 +948,9 @@ class ParallelLoader(PipelineParallel):
         broadcast_run_tensors: int = 64,
         overlap_io: bool = True,
         borrowed_tensors: bool = False,
+        # Appended after the existing explicit parameters so callers using
+        # positional arguments keep working.
+        tensor_slices: Optional[Dict[str, slice]] = None,
         **kwargs,
     ):
         """Initialize PipelineParallelLoader with a pre-configured SafeTensorsFileLoader.
