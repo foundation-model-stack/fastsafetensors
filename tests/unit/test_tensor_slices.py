@@ -247,7 +247,7 @@ def test_set_slice_compact_span_and_multi_runs(tmp_path, framework, monkeypatch)
         SafeTensorsFileLoader(None, "cpu", nogds=True, framework=framework.get_name())
     ) as loader:
         loader.add_filenames({0: [path]})
-        loader.set_tensor_filter(lambda name: name != "filler")
+        loader.set_tensor_filter(lambda name: name != "engram.filler")
         loader.set_slice("engram.embed.weight", slice(0, 2))
         with closing(loader.copy_files_to_device()) as bufs:
             assert torch.equal(bufs.get_tensor("engram.embed.weight"), weight[:2])
