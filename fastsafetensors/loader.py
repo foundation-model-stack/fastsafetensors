@@ -218,9 +218,7 @@ class BaseSafeTensorsFileLoader:
                 self._apply_slices()
             return
         if not isinstance(selection, slice):
-            raise TypeError(
-                f"set_slice: selection must be a slice, got {selection!r}"
-            )
+            raise TypeError(f"set_slice: selection must be a slice, got {selection!r}")
         if selection.step not in (None, 1):
             raise ValueError(
                 f"set_slice: '{tensor_name}': slice step must be 1 "
@@ -421,9 +419,7 @@ class BaseSafeTensorsFileLoader:
                         # set_byte_ranges which would keep the whole data
                         # section.
                         keep = self._tensor_filter
-                        kept = {
-                            n for n in meta.tensors if keep is None or keep(n)
-                        }
+                        kept = {n for n in meta.tensors if keep is None or keep(n)}
                         ranges = meta.select_byte_ranges(lambda n: n in kept)
                         copier.set_chunk(ranges, kept)
                     elif self._tensor_filter is not None:

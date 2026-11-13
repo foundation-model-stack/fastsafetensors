@@ -17,6 +17,9 @@ try:
 except ImportError:  # paddle CI: torch-only tests self-skip below
     torch = None  # type: ignore[assignment]
 
+# Reuse helpers from the main test module (tests/unit is on sys.path via conftest).
+from test_fastsafetensors import load_safetensors_file, save_safetensors_file
+
 from fastsafetensors import (
     SafeTensorsFileLoader,
     SafeTensorsMetadata,
@@ -26,9 +29,6 @@ from fastsafetensors import (
 from fastsafetensors.copier.nogds import NoGdsFileCopier
 from fastsafetensors.parallel_loader import ParallelLoader, PipelineParallel
 from fastsafetensors.st_types import DType
-
-# Reuse helpers from the main test module (tests/unit is on sys.path via conftest).
-from test_fastsafetensors import load_safetensors_file, save_safetensors_file
 
 _requires_torch = pytest.mark.skipif(
     torch is None, reason="row-slice data checks need torch tensors"
@@ -341,9 +341,7 @@ def test_set_slice_validation(input_files, framework):
     loader.close()
 
 
-def test_parallel_loader_tensor_slices_requires_single_process(
-    input_files, framework
-):
+def test_parallel_loader_tensor_slices_requires_single_process(input_files, framework):
     loader = SafeTensorsFileLoader(
         None, "cpu", nogds=True, framework=framework.get_name()
     )
@@ -391,7 +389,9 @@ def test_set_slice_loads_selected_rows(tmp_path, framework):
             assert list(got.shape) == [4, 4]
             assert torch.equal(got, reference["engram.embed.weight"][3:7])
             # unsliced tensors load in full
-            assert torch.equal(bufs.get_tensor("engram.embed.scale"), reference["engram.embed.scale"])
+            assert torch.equal(
+                bufs.get_tensor("engram.embed.scale"), reference["engram.embed.scale"]
+            )
 
 
 @_requires_cuda
@@ -411,9 +411,7 @@ def test_set_slice_on_cuda_device(tmp_path, framework):
         with closing(loader.copy_files_to_device()) as bufs:
             got = bufs.get_tensor("engram.embed.weight")
             assert list(got.shape) == [4, 4]
-            assert torch.equal(
-                got.to("cpu"), reference["engram.embed.weight"][2:6]
-            )
+            assert torch.equal(got.to("cpu"), reference["engram.embed.weight"][2:6])
 
 
 @_requires_torch
@@ -487,7 +485,9 @@ def test_parallel_loader_tensor_slices(tmp_path, framework):
         with closing(loader.iterate_weights()) as weights:
             actual = dict(weights)
     assert set(actual) == {"engram.embed.weight", "engram.embed.scale", "other"}
-    assert torch.equal(actual["engram.embed.weight"], reference["engram.embed.weight"][1:6])
+    assert torch.equal(
+        actual["engram.embed.weight"], reference["engram.embed.weight"][1:6]
+    )
     assert torch.equal(actual["engram.embed.scale"], reference["engram.embed.scale"])
 
 
@@ -511,4 +511,6 @@ def test_parallel_loader_tensor_slices_through_chunk_planning(tmp_path, framewor
     ) as loader:
         with closing(loader.iterate_weights()) as weights:
             actual = dict(weights)
-    assert torch.equal(actual["engram.embed.weight"], reference["engram.embed.weight"][:2])
+    assert torch.equal(
+        actual["engram.embed.weight"], reference["engram.embed.weight"][:2]
+    )
