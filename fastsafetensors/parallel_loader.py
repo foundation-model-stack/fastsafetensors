@@ -319,7 +319,12 @@ class PipelineParallel:
             self.hf_weights_files[i : i + batch_size]
             for i in range(0, len(self.hf_weights_files), batch_size)
         ]
+        # The loader's recorded slices. Anything that is not a populated dict
+        # (None, an empty dict, a test double) means "no slices": normalize
+        # once so the guards below see plain truthiness.
         slices = self.loader._tensor_slices
+        if not isinstance(slices, dict) or not slices:
+            slices = {}
         if (
             self.max_batch_bytes is None
             and self.device_memory_budget is None
