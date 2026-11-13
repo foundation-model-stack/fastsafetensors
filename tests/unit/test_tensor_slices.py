@@ -214,11 +214,14 @@ def test_set_slice_compact_span_and_multi_runs(tmp_path, framework, monkeypatch)
     scale = torch.arange(8, dtype=torch.float32)  # 32 B
     filler = torch.zeros(16 * 1024, dtype=torch.float32)  # 64 KiB hole
     path = str(tmp_path / "engram-gap.safetensors")
+    # safetensors writes tensors sorted by name: "engram.embed.weight" <
+    # "engram.filler" < "engram.scale" puts the filtered hole between the
+    # two kept tensors.
     save_safetensors_file(
         {
             "engram.embed.weight": weight,
-            "filler": filler,
-            "engram.embed.scale": scale,
+            "engram.filler": filler,
+            "engram.scale": scale,
         },
         path,
         {"format": "pt"},
@@ -250,7 +253,7 @@ def test_set_slice_compact_span_and_multi_runs(tmp_path, framework, monkeypatch)
             assert torch.equal(bufs.get_tensor("engram.embed.weight"), weight[:2])
     assert len(recorded) == 1
     ranges, names, allocation_size = recorded[0]
-    assert names == {"engram.embed.weight", "engram.embed.scale"}
+    assert names == {"engram.embed.weight", "engram.scale"}
     # the 64 KiB filtered hole exceeds merge_gap: the runs stay split
     assert len(ranges) == 2
     # the compact buffer spans min_start..max_end of the kept runs, hole
