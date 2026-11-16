@@ -150,6 +150,9 @@ class PipelineParallel:
         broadcast_run_tensors: int = 64,
         overlap_io: bool = True,
         borrowed_tensors: bool = False,
+        # Appended after the existing explicit parameters so callers using
+        # positional arguments keep working.
+        tensor_slices: Optional[Dict[str, slice]] = None,
         **kwargs,
     ):
 
@@ -176,6 +179,20 @@ class PipelineParallel:
                     "tensors this rank never read"
                 )
             loader.set_tensor_filter(tensor_filter)
+        # Read only the selected dim-0 rows of the named tensors (see
+        # SafeTensorsFileLoader.set_slice). Like tensor_filter this requires a
+        # single-process loader group: a cross-rank broadcast cannot deliver
+        # per-rank row ranges.
+        if tensor_slices is not None:
+            if pg.size() > 1 or loader.pg.size() > 1:
+                raise ValueError(
+                    "tensor_slices requires a single-process loader group "
+                    "(ParallelLoader(all_local=True) or pg=None): get_tensor "
+                    "broadcasts across the loader group, which would deliver "
+                    "one rank's rows to every rank"
+                )
+            for name, selection in tensor_slices.items():
+                loader.set_slice(name, selection)
         self.hf_weights_files = hf_weights_files
         self.max_concurrent_producers = max_concurrent_producers
         self.queue_size = queue_size
@@ -302,15 +319,32 @@ class PipelineParallel:
             self.hf_weights_files[i : i + batch_size]
             for i in range(0, len(self.hf_weights_files), batch_size)
         ]
-        if self.max_batch_bytes is None and self.device_memory_budget is None:
+        # The loader's recorded slices. Anything that is not a populated dict
+        # (None, an empty dict, a test double) means "no slices": normalize
+        # once so the guards below see plain truthiness.
+        slices = self.loader._tensor_slices
+        if not isinstance(slices, dict) or not slices:
+            slices = {}
+        if (
+            self.max_batch_bytes is None
+            and self.device_memory_budget is None
+            and not slices
+        ):
             return file_batches
 
         keep = self.loader._tensor_filter
         fw = self.loader.framework
 
         # Parse each distinct shard once for planning and all later chunks.
+        # Mirror the loader's slice narrowing so chunk plans (names + byte
+        # ranges) and the memory budget match the narrowed metadata the
+        # copiers will see.
         meta_by_path = {
-            f: SafeTensorsMetadata.from_file(f, fw)
+            f: (
+                SafeTensorsMetadata.from_file(f, fw).with_tensor_slices(slices)
+                if slices
+                else SafeTensorsMetadata.from_file(f, fw)
+            )
             for f in dict.fromkeys(self.hf_weights_files)
         }
 
@@ -407,6 +441,14 @@ class PipelineParallel:
                     f"device overhead)"
                 ) from e
             per_file_budget = {f: b for (f, _), b in zip(metas, budgets)}
+
+        if self.max_batch_bytes is None and per_file_budget is None:
+            # No chunking (slices only): seed the loader's metadata cache --
+            # copy_files_to_device validates slice names against it, and the
+            # cached headers keep later add_filenames calls slice-aware --
+            # and load whole files per batch.
+            self.loader._set_metadata_cache(meta_by_path)
+            return file_batches
 
         # Expand each file-batch (one file per rank) into aligned chunk-batches.
         # Chunk-batch j holds rank r's j-th chunk (or None once that rank's file
@@ -911,6 +953,9 @@ class ParallelLoader(PipelineParallel):
         broadcast_run_tensors: int = 64,
         overlap_io: bool = True,
         borrowed_tensors: bool = False,
+        # Appended after the existing explicit parameters so callers using
+        # positional arguments keep working.
+        tensor_slices: Optional[Dict[str, slice]] = None,
         **kwargs,
     ):
         """Initialize PipelineParallelLoader with a pre-configured SafeTensorsFileLoader.
@@ -958,6 +1003,7 @@ class ParallelLoader(PipelineParallel):
             queue_size,
             use_tqdm_on_load,
             tensor_filter=tensor_filter,
+            tensor_slices=tensor_slices,
             max_batch_bytes=max_batch_bytes,
             use_chunk_budget_as_allocation_size=(use_chunk_budget_as_allocation_size),
             device_memory_budget=device_memory_budget,

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import json
 import logging
 import os
@@ -384,6 +385,10 @@ class SafeTensorsMetadata:
                     f"validate(tensor {k}): TensorInvalidInfo, e-s={e-s}, nbytes={nbytes}, src={src}"
                 )
         self.size_bytes = size_bytes
+        # Set by with_tensor_slices on derived metadata: the untouched object
+        # a narrowed clone derives from. Declared here so static checkers see
+        # the attribute on every instance.
+        self._pristine_metadata: Optional["SafeTensorsMetadata"] = None
         if start + header_length > size_bytes:
             raise Exception(
                 f"MetadataIncompleteBuffer, src={src}, start={start}, header_length={header_length}, size_bytes={size_bytes}"
@@ -609,6 +614,88 @@ class SafeTensorsMetadata:
             else:
                 merged.append([s, e])
         return [(s, e) for s, e in merged]
+
+    def with_tensor_slices(self, slices: Dict[str, slice]) -> "SafeTensorsMetadata":
+        """Derived metadata narrowing the named tensors to dim-0 row ranges.
+
+        ``slices`` maps tensor names to a dim-0 ``slice(start, stop)`` (step
+        1). A dim-0 row range of a row-major tensor is one contiguous byte
+        range, so the frame is rewritten to that range with ``shape[0]``
+        narrowed: every downstream consumer (byte-range selection, chunk
+        planning, copiers, tensor materialization) is offset-driven and then
+        reads and materializes only the selected rows. The boundaries stay
+        caller-side because engines disagree on them -- vLLM shards Engram
+        tables by hash heads and sglang by even rows, differing by ~1k rows
+        at TP4 (issue #127).
+
+        Names absent from this metadata are ignored (the tensor lives in
+        another file); a tensor that cannot be narrowed (scalar, non-unit
+        step, rows not byte-addressable) raises ``ValueError``. The result is
+        a shallow copy sharing the untouched frames; the original metadata
+        object is never modified.
+        """
+        if not any(n in self.tensors for n in slices):
+            return self
+        tensors: OrderedDict[str, TensorFrame] = OrderedDict()
+        for name, frame in self.tensors.items():
+            selection = slices.get(name)
+            if selection is None:
+                tensors[name] = frame
+                continue
+            tensors[name] = self._narrow_tensor_frame(name, frame, selection)
+        derived = copy.copy(self)
+        derived.tensors = tensors
+        # Let a later re-derivation recover the untouched frames even when a
+        # derived metadata lands in a loader's metadata cache.
+        derived._pristine_metadata = self
+        return derived
+
+    @staticmethod
+    def _narrow_tensor_frame(
+        name: str, frame: "TensorFrame", selection: slice
+    ) -> "TensorFrame":
+        """Rewrite *frame* to the ``selection`` dim-0 rows (contiguous span)."""
+        if not frame.shape:
+            raise ValueError(
+                f"set_slice: '{name}' is a scalar; row slicing requires shape[0]"
+            )
+        rows = frame.shape[0]
+        if rows == 0:
+            return frame  # nothing to narrow
+        start, stop, step = selection.indices(rows)
+        if step != 1:
+            raise ValueError(
+                f"set_slice: '{name}': slice step must be 1 (got {step}); a "
+                "strided range is not a contiguous byte range"
+            )
+        if stop < start:
+            # A reversed range (e.g. slice(5, 2)) selects no rows for a
+            # forward stride: normalize like Python slicing instead of
+            # producing a negative dimension and reversed byte offsets.
+            stop = start
+        s, e = frame.data_offsets
+        nbytes = e - s
+        if nbytes % rows != 0:
+            raise ValueError(
+                f"set_slice: '{name}': rows are not byte-addressable "
+                f"({nbytes} bytes over {rows} rows; packed sub-byte dtype?)"
+            )
+        row_bytes = nbytes // rows
+        shape = [stop - start] + list(frame.shape[1:])
+        strides = []
+        for i in range(len(shape)):
+            stride = 1
+            for j in range(i + 1, len(shape)):
+                stride *= shape[j]
+            strides.append(stride)
+        return TensorFrame(
+            frame.dtype,
+            shape,
+            [s + start * row_bytes, s + stop * row_bytes],
+            strides,
+            [0] * len(shape),
+            True,
+        )
 
     def __repr__(self) -> str:
         return str({"__metadata__": self.metadata, "tensors": self.tensors})
