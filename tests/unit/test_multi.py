@@ -255,6 +255,75 @@ def test_float4_shuffle_last_dim(fstcpp_log, tmp_dir, pg, framework):
     assert fstcpp.get_cpp_metrics().bounce_buffer_bytes == 0
 
 
+def test_shuffle_uneven_dims(fstcpp_log, tmp_dir, pg, framework):
+    """get_sharded/get_multi_cols on dims that the world size does not divide.
+
+    Ranks get ceil-div blocks, so the last ranks receive shorter or empty
+    shards (e.g. a 49155-row vocab, or 6 rows at 4 ranks -> 2, 2, 2, 0).
+    """
+    if framework.get_name() != "pytorch":
+        pytest.skip("PyTorch subgroup with a short timeout")
+        return
+
+    from datetime import timedelta
+
+    import torch
+    import torch.distributed as dist
+    from safetensors.torch import load_file, save_file
+
+    rank = pg.rank()
+    world_size = pg.size()
+    device = f"cuda:{rank}" if is_gpu_found() else "cpu"
+    filename = os.path.join(tmp_dir, f"multi_uneven_{world_size}.safetensors")
+    if rank == 0:
+        g = torch.Generator().manual_seed(0)
+        save_file(
+            {
+                "vocab": torch.randn(49155, 4, generator=g).to(torch.bfloat16),
+                "rows6": torch.randn(6, 8, generator=g),
+                "rows7": torch.randn(7, 8, generator=g),
+                "cols6": torch.randn(8, 6, generator=g),
+                "multi6": torch.randn(6, 8, generator=g),
+                "multi7": torch.randn(7, 8, generator=g),
+            },
+            filename,
+        )
+    group = pg
+    if world_size > 1:
+        dist.barrier(group=pg)
+        # Without the fix the source rank raises in scatter and the other
+        # ranks block in it: bound that wait instead of the default timeout.
+        group = dist.new_group(list(range(world_size)), timeout=timedelta(seconds=60))
+
+    refs = load_file(filename, device=device)
+
+    def shard(t, dim):
+        block = (t.shape[dim] + world_size - 1) // world_size
+        return t[(slice(None),) * dim + (slice(rank * block, (rank + 1) * block),)]
+
+    loader = SafeTensorsFileLoader(
+        pg=group, device=device, nogds=True, framework=framework.get_name()
+    )
+    loader.add_filenames({0: [filename]})
+    bufs = loader.copy_files_to_device()
+    try:
+        for name, dim in (("vocab", 0), ("rows6", 0), ("rows7", 0), ("cols6", 1)):
+            actual = bufs.get_sharded(name, dim)
+            want = shard(refs[name], dim)
+            assert actual.shape == want.shape, (name, dim)
+            assert torch.equal(actual, want), (name, dim)
+        # get_sharded releases each tensor; get_multi_cols uses fresh ones.
+        actual = bufs.get_multi_cols(["multi6", "multi7"], dim=0).get_raw()
+        want = torch.cat([shard(refs["multi6"], 0), shard(refs["multi7"], 0)], dim=0)
+        assert actual.shape == want.shape
+        assert torch.equal(actual, want)
+    finally:
+        bufs.close()
+        loader.close()
+        if world_size > 1:
+            dist.barrier(group=pg)
+
+
 def test_float4_float8_e8m0_collectives(fstcpp_log, tmp_dir, pg, framework):
     if framework.get_name() != "pytorch":
         pytest.skip("F4 and F8_E8M0 are only available in PyTorch")
