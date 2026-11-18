@@ -12,6 +12,15 @@ from .st_types import Device, DType
 logger = init_logger(__name__)
 
 
+def _shard_sizes(size: int, block_size: int, world: int) -> List[int]:
+    """Length of each rank's ``[rank * block_size, (rank + 1) * block_size)``
+    block of a dimension of ``size``, clamped to the dimension."""
+    return [
+        max(min(size, (rank + 1) * block_size) - rank * block_size, 0)
+        for rank in range(world)
+    ]
+
+
 class LazyTensorFactory:
     def __init__(
         self,
@@ -199,11 +208,12 @@ class LazyTensorFactory:
                             slice(rank * block_size, (rank + 1) * block_size, 1),
                         )
                         break
+            # When size is not a multiple of pg.size(), the last ranks get
+            # shorter (or empty) blocks.
+            shard_sizes = _shard_sizes(size, block_size, pg.size())
+            new_shape = list(frame.shape)
+            new_shape[dim] = shard_sizes[pg.rank()]
             scatter_list: List[TensorBase] = []
-            new_frame = frame[rank_slices[pg.rank()]]
-            dst = self.framework.get_empty_tensor(
-                new_frame.shape, new_frame.dtype, self.device
-            )
             if self.rank == pg.rank():
                 if tensor_name not in self.tensors:
                     raise Exception(
@@ -222,13 +232,15 @@ class LazyTensorFactory:
                 "shuffle: scatter, tensor_name=%s, shape=%s->%s, self.rank=%d, pg.rank()=%d, rank_slices=%s, len(scatter_list)=%s",
                 tensor_name,
                 frame.shape,
-                new_frame.shape,
+                new_shape,
                 self.rank,
                 pg.rank(),
                 rank_slices,
                 len(scatter_list),
             )
-            pg.scatter(dst, scatter_list=scatter_list, src=self.rank)
+            dst = self._scatter_shards(
+                pg, scatter_list, new_shape, frame.dtype, dim, shard_sizes
+            )
         if not self.disable_cache:
             # Cache tensor for reuse within the same batch to improve performance.
             # Note: This requires additional (GPU) memory to store the cached tensors.
@@ -241,6 +253,7 @@ class LazyTensorFactory:
     ) -> TensorBase:
         rank_tensors: List[List[TensorBase]] = [[] for i in range(0, pg.size())]
         new_shape: List[int] = []
+        rank_sizes = [0] * pg.size()
         for tensor_name in tensor_names:
             if self.wait_tensor is not None:
                 self.wait_tensor(tensor_name)
@@ -260,6 +273,8 @@ class LazyTensorFactory:
                             f"dim {dim2} mismatch: tensor {tensor_name} has {frame.shape} vs. {new_shape} (dim={dim})"
                         )
             new_shape[dim] += shard_size
+            for rank, n in enumerate(_shard_sizes(total_size, block_size, pg.size())):
+                rank_sizes[rank] += n
             if self.rank == pg.rank():
                 if tensor_name not in self.tensors:
                     raise Exception(
@@ -301,9 +316,51 @@ class LazyTensorFactory:
             pg.rank(),
             len(scatter_list),
         )
-        dst = self.framework.get_empty_tensor(new_shape, frame.dtype, self.device)
-        pg.scatter(dst, scatter_list=scatter_list, src=self.rank)
-        return dst
+        return self._scatter_shards(
+            pg, scatter_list, new_shape, frame.dtype, dim, rank_sizes
+        )
+
+    def _scatter_shards(
+        self,
+        pg: ProcessGroupBase,
+        scatter_list: List[TensorBase],
+        shape: List[int],
+        dtype: DType,
+        dim: int,
+        sizes: List[int],
+    ) -> TensorBase:
+        """Scatter per-rank shards whose length along ``dim`` is ``sizes[rank]``.
+
+        ``shape`` is this rank's result shape. Collective scatter (gloo and
+        NCCL) requires every entry to match the output shape, so unequal
+        shards are padded to the largest one for the collective and each rank
+        keeps its leading ``sizes[pg.rank()]`` entries.
+        """
+        longest = max(sizes)
+        if all(n == longest for n in sizes):
+            dst = self.framework.get_empty_tensor(shape, dtype, self.device)
+            pg.scatter(dst, scatter_list=scatter_list, src=self.rank)
+            return dst
+
+        def with_len(n: int) -> List[int]:
+            s = list(shape)
+            s[dim] = n
+            return s
+
+        padded: List[TensorBase] = []
+        for rank, part in enumerate(scatter_list):
+            if sizes[rank] < longest:
+                pad = self.framework.get_empty_tensor(
+                    with_len(longest - sizes[rank]), dtype, self.device
+                )
+                part = self.framework.concat_tensors([part, pad], dim=dim)
+            padded.append(part)
+        dst = self.framework.get_empty_tensor(with_len(longest), dtype, self.device)
+        pg.scatter(dst, scatter_list=padded, src=self.rank)
+        keep = tuple(slice(None) for _ in range(dim)) + (slice(0, shape[dim]),)
+        return dst[
+            self.framework.get_native_slices(dtype, with_len(longest), keep)
+        ].contiguous()
 
     def free_dev_ptrs(self):
         """Release this factory's reference to the backing allocation.
