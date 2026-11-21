@@ -956,6 +956,7 @@ class ParallelLoader(PipelineParallel):
         # Appended after the existing explicit parameters so callers using
         # positional arguments keep working.
         tensor_slices: Optional[Dict[str, slice]] = None,
+        copier_type: Optional[str] = None,
         **kwargs,
     ):
         """Initialize PipelineParallelLoader with a pre-configured SafeTensorsFileLoader.
@@ -975,6 +976,7 @@ class ParallelLoader(PipelineParallel):
             debug_log (bool): Enable debug logs.
             framework (str): Framework to use for tensor operations.
             use_fgds (bool): If True, use FGDS instead of cuFile GDS.
+            copier_type (Optional[str]): Explicit copier name; overrides legacy flags.
         """
         # all_local: load with a single-process group so each rank reads its
         # files independently (no cross-rank broadcast in get_tensor). This is
@@ -993,6 +995,7 @@ class ParallelLoader(PipelineParallel):
             framework=framework,
             use_fgds=use_fgds,
             device_memory_budget=device_memory_budget,
+            copier_type=copier_type,
             **kwargs,
         )
         super().__init__(

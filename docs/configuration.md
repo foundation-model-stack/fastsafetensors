@@ -32,7 +32,8 @@ When no config file is found, `AutoLoader` uses these defaults:
 }
 ```
 
-The base loader extension defaults to `copier_type: "gds"` (GPU Direct Storage).
+When `base.copier_type` is omitted, the base loader uses the platform default
+(`"dstorage"` on Windows, `"gds"` elsewhere).
 
 Available `copier_type` values:
 
@@ -41,7 +42,7 @@ Available `copier_type` values:
 | `"gds"`      | NVIDIA GPUDirect Storage via cuFile (default on Linux when available)                                                                               |
 | `"fgds"`     | Alternative GPU Direct Storage implementation via [FGDS](https://github.com/Storage-and-OS-for-AI/fgds)                                                                                            |
 | `"nogds"`    | Bounce-buffer pread path (no GPU Direct); fallback when GDS is unavailable                                                                          |
-| `"unified"`  | Unified-memory copier for shared CPU/GPU memory systems (e.g., DGX Spark); automatically selected on unified-memory hosts when `nogds` is requested |
+| `"unified"`  | Unified-memory copier for shared CPU/GPU memory systems (e.g., DGX Spark) |
 | `"dstorage"` | DirectStorage backend (Windows only)                                                                                                                |
 
 ## queue_size Semantics
