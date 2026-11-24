@@ -55,7 +55,7 @@ class TestAutoLoaderBaseLoader:
         return cfg
 
     def test_nogds_creates_base_loader(self, monkeypatch):
-        """A nogds extension selects the base loader and passes nogds=True."""
+        """An explicit copier name reaches the base loader unchanged."""
         monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
 
         with (
@@ -71,11 +71,11 @@ class TestAutoLoaderBaseLoader:
 
             mock_stfl.assert_called_once()
             call_kwargs = mock_stfl.call_args
-            assert call_kwargs[1]["nogds"] is True
+            assert call_kwargs[1]["copier_type"] == "nogds"
             assert unified.config.loader == "base"
 
-    def test_gds_creates_base_loader_with_nogds_false(self, monkeypatch):
-        """loader='base' with copier_type='gds' should pass nogds=False."""
+    def test_gds_creates_base_loader(self, monkeypatch):
+        """loader='base' preserves copier_type='gds'."""
         monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
 
         with (
@@ -90,11 +90,10 @@ class TestAutoLoaderBaseLoader:
             AutoLoader(None, ["file1.safetensors"], device="cuda:0")
 
             call_kwargs = mock_stfl.call_args
-            assert call_kwargs[1]["nogds"] is False
-            assert call_kwargs[1].get("use_fgds", False) is False
+            assert call_kwargs[1]["copier_type"] == "gds"
 
-    def test_fgds_creates_base_loader_with_use_fgds_true(self, monkeypatch):
-        """loader='base' with copier_type='fgds' should pass use_fgds=True, nogds=False."""
+    def test_fgds_creates_base_loader(self, monkeypatch):
+        """loader='base' preserves copier_type='fgds'."""
         monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
 
         with (
@@ -109,8 +108,7 @@ class TestAutoLoaderBaseLoader:
             AutoLoader(None, ["file1.safetensors"], device="cuda:0")
 
             call_kwargs = mock_stfl.call_args
-            assert call_kwargs[1]["nogds"] is False
-            assert call_kwargs[1]["use_fgds"] is True
+            assert call_kwargs[1]["copier_type"] == "fgds"
 
     def test_base_no_extension_uses_defaults(self, monkeypatch):
         """loader='base' without base extension section should still work."""
@@ -130,8 +128,8 @@ class TestAutoLoaderBaseLoader:
 
             mock_stfl.assert_called_once()
             call_kwargs = mock_stfl.call_args
-            # process_extension_config with {} -> nogds=False (default copier_type="gds")
-            assert call_kwargs[1]["nogds"] is False
+            # An absent name leaves runtime default selection to the loader.
+            assert "copier_type" not in call_kwargs[1]
 
 
 class TestAutoLoader3FSLoader:
@@ -376,10 +374,8 @@ class TestProcessExtensionConfig:
             AutoLoader(None, ["file1.safetensors"], device="cpu")
 
             call_kwargs = mock_stfl.call_args[1]
-            # process_extension_config should have mapped copier_type -> nogds
-            assert call_kwargs["nogds"] is False
+            assert call_kwargs["copier_type"] == "gds"
             assert call_kwargs["bbuf_size_kb"] == 8192
-            assert "copier_type" not in call_kwargs
 
 
 class TestThreeFSProcessExtensionConfig:
@@ -574,43 +570,22 @@ class TestBaseProcessExtensionConfigKwargs:
 
 
 class TestSafeTensorsProcessExtensionConfigCopierType:
-    """Verify SafeTensorsFileLoader.process_extension_config maps copier_type correctly."""
+    """Config preserves user intent instead of translating names back to flags."""
 
-    def test_default_copier_type_is_gds(self):
-        """No copier_type -> nogds=False, use_fgds=False."""
-        result = RealSafeLoader.process_extension_config({})
-        assert result["nogds"] is False
-        assert result["use_fgds"] is False
-
-    def test_copier_type_gds(self):
-        result = RealSafeLoader.process_extension_config({"copier_type": "gds"})
-        assert result["nogds"] is False
-        assert result["use_fgds"] is False
-        assert "copier_type" not in result
-
-    def test_copier_type_nogds(self):
-        result = RealSafeLoader.process_extension_config({"copier_type": "nogds"})
-        assert result["nogds"] is True
-        assert result["use_fgds"] is False
-        assert "copier_type" not in result
-
-    def test_copier_type_unified(self):
-        """unified is a nogds variant (selected by loader at runtime)."""
-        result = RealSafeLoader.process_extension_config({"copier_type": "unified"})
-        assert result["nogds"] is True
-        assert result["use_fgds"] is False
-
-    def test_copier_type_fgds(self):
-        result = RealSafeLoader.process_extension_config({"copier_type": "fgds"})
-        assert result["nogds"] is False
-        assert result["use_fgds"] is True
-        assert "copier_type" not in result
-
-    def test_other_fields_preserved(self):
-        result = RealSafeLoader.process_extension_config(
-            {"copier_type": "fgds", "bbuf_size_kb": 8192, "max_threads": 8}
-        )
-        assert result["nogds"] is False
-        assert result["use_fgds"] is True
-        assert result["bbuf_size_kb"] == 8192
-        assert result["max_threads"] == 8
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {},
+            {"copier_type": "unified"},
+            {
+                "copier_type": "custom",
+                "nogds": True,
+                "use_fgds": True,
+                "max_threads": 8,
+            },
+        ],
+    )
+    def test_config_is_preserved(self, config):
+        result = RealSafeLoader.process_extension_config(config)
+        assert result == config
+        assert result is not config

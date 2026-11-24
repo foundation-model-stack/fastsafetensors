@@ -631,31 +631,43 @@ def test_is_unified_memory_system(
 
 
 @pytest.mark.parametrize(
-    "device_str,nogds,use_fgds,unified_env,expected_type",
+    "device_str,nogds,use_fgds,unified_env,copier_type,expected_type",
     [
-        ("cuda:0", True, False, "1", "unified"),  # opt-in on GPU
-        ("cuda:0", True, False, "0", "nogds"),  # opt-out on GPU
-        ("cpu", True, False, "1", "nogds"),  # CPU device skips unified even with env
+        ("cuda:0", True, False, "1", None, "unified"),  # opt-in on GPU
+        ("cuda:0", True, False, "0", None, "nogds"),  # opt-out on GPU
+        ("cpu", True, False, "1", None, "nogds"),  # CPU skips unified even with env
         (
             "cuda:0",
             False,
             False,
             "1",
+            None,
             "dstorage" if sys.platform == "win32" else "gds",
         ),  # Windows uses DirectStorage; other platforms use GDS
-        ("cuda:0", False, True, "0", "fgds"),  # use_fgds=True picks fgds
-        ("cpu", False, True, "0", "fgds"),  # use_fgds=True on CPU still selects fgds
+        ("cuda:0", False, True, "0", None, "fgds"),  # use_fgds=True picks fgds
+        ("cpu", False, True, "0", None, "fgds"),  # use_fgds=True on CPU selects fgds
         (
             "cuda:0",
             True,
             True,
             "0",
+            None,
             "nogds",
         ),  # nogds=True takes precedence over use_fgds
+        ("cuda:0", True, True, "1", "nogds", "nogds"),
+        ("cuda:0", True, True, "0", "unified", "unified"),
+        ("cuda:0", True, True, "1", "custom", "custom"),
     ],
 )
 def test_SafeTensorsFileLoader_copier_selection(
-    framework, monkeypatch, device_str, nogds, use_fgds, unified_env, expected_type
+    framework,
+    monkeypatch,
+    device_str,
+    nogds,
+    use_fgds,
+    unified_env,
+    copier_type,
+    expected_type,
 ) -> None:
     _skip_if_not_pytorch(framework)
     import fastsafetensors.loader as loader_mod
@@ -678,6 +690,7 @@ def test_SafeTensorsFileLoader_copier_selection(
         framework=framework.get_name(),
         nogds=nogds,
         use_fgds=use_fgds,
+        copier_type=copier_type,
     )
     assert captured["copier_type"] == expected_type
 

@@ -485,21 +485,6 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
         >> loader.close()
     """
 
-    @classmethod
-    def process_extension_config(
-        cls, ext_config: Mapping[str, Any], **kwargs: Any
-    ) -> Dict[str, Any]:
-        """Map ``copier_type`` to ``nogds``/``use_fgds`` flags; pass rest through."""
-        out = dict(ext_config)
-        copier_type = out.pop("copier_type", "gds")
-        if copier_type == "fgds":
-            out["nogds"] = False
-            out["use_fgds"] = True
-        else:
-            out["nogds"] = copier_type != "gds"
-            out.setdefault("use_fgds", False)
-        return out
-
     def __init__(
         self,
         pg: Optional[Any],
@@ -512,6 +497,7 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
         debug_log: bool = False,
         framework="pytorch",
         use_fgds: bool = False,
+        copier_type: Optional[CopierType] = None,
         **kwargs,
     ):
         self.framework = get_framework_op(framework)
@@ -519,22 +505,23 @@ class SafeTensorsFileLoader(BaseSafeTensorsFileLoader):
         self.device = self.framework.get_device(device, self.pg)
 
         fstcpp.set_debug_log(debug_log)
-        if nogds:
-            if self.device.type != DeviceType.CPU and is_unified_memory_system(
-                self.framework
-            ):
-                # When GDS is unavailable, prefer the unified copier on systems
-                # with shared CPU/GPU memory (e.g., DGX Spark) over the
-                # bounce-buffer nogds path.
-                copier_type = "unified"
+        if copier_type is None:
+            if nogds:
+                if self.device.type != DeviceType.CPU and is_unified_memory_system(
+                    self.framework
+                ):
+                    # When GDS is unavailable, prefer the unified copier on systems
+                    # with shared CPU/GPU memory (e.g., DGX Spark) over the
+                    # bounce-buffer nogds path.
+                    copier_type = "unified"
+                else:
+                    copier_type = "nogds"
+            elif use_fgds:
+                copier_type = "fgds"
+            elif platform.system() == "Windows":
+                copier_type = "dstorage"
             else:
-                copier_type = "nogds"
-        elif use_fgds:
-            copier_type = "fgds"
-        elif platform.system() == "Windows":
-            copier_type = "dstorage"
-        else:
-            copier_type = "gds"
+                copier_type = "gds"
         super().__init__(
             pg,
             self.device,
@@ -572,6 +559,7 @@ class fastsafe_open:
         debug_log: bool = False,
         max_copy_block_size: int = 16 * 1024 * 1024 * 1024,
         use_fgds: bool = False,
+        copier_type: Optional[CopierType] = None,
     ):
         self.loader = SafeTensorsFileLoader(
             pg,
@@ -580,6 +568,7 @@ class fastsafe_open:
             debug_log=debug_log,
             framework=framework,
             use_fgds=use_fgds,
+            copier_type=copier_type,
         )
         file_dict: Dict[int, List[str]] = {}
         if isinstance(filenames, str):
