@@ -13,10 +13,11 @@ from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import (
     CopierInterface,
+    load_library_func,
     validated_byte_ranges,
     validated_chunk_allocation_size,
 )
-from .nogds import load_library_func, new_nogds_file_copier
+from .nogds import new_nogds_file_copier
 from .registry import CopierConstructFunc, register_copier_constructor
 
 if TYPE_CHECKING:

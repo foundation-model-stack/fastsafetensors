@@ -395,7 +395,7 @@ def new_unified_copier(device: Device, **kwargs) -> CopierConstructFunc:
 
     Returns a constructor that creates UnifiedMemCopier instances.
     """
-    from .nogds import load_library_func
+    from .base import load_library_func
 
     load_library_func(kwargs.get("framework"))
     dma_gate = threading.Lock()
