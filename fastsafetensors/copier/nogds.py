@@ -19,12 +19,12 @@ from ..common import (
     is_gpu_found,
     is_network_fs,
     is_odirect_enabled,
-    resolve_runtime_lib_name,
 )
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import (
     CopierInterface,
+    load_library_func,
     validated_byte_ranges,
     validated_chunk_allocation_size,
 )
@@ -285,28 +285,6 @@ class NoGdsFileCopier(CopierInterface):
         if len(failed) > 0:
             hint = f" (reads used O_DIRECT; {ODIRECT_HINT})" if direct else ""
             raise Exception(f"wait_io: wait_nogds_read failed, reqs={failed}{hint}")
-
-
-_loaded_library = False
-
-
-def load_library_func(framework=None):
-    global _loaded_library
-    if _loaded_library:
-        return
-
-    lib = resolve_runtime_lib_name(framework)
-    fstcpp.load_library_functions(lib)
-    if lib and not is_gpu_found():
-        # The framework hinted a specific vendor's runtime but loading it found
-        # no GPU. A GPU-built framework only reports a vendor when it sees a
-        # device, so this is a real mismatch (wrong/missing runtime for that
-        # vendor).
-        raise Exception(
-            f"[FAIL] framework hinted GPU runtime '{lib}' but no GPU was found "
-            "after loading it (runtime/devices for that vendor not present)"
-        )
-    _loaded_library = True
 
 
 def nogds_reader_options(

@@ -114,7 +114,7 @@ def load_dstorage_dlls() -> None:
 def init_dstorage(device_id: int = 0, framework: FrameworkOpBase | None = None) -> None:
     global _inited_ds
     if not _inited_ds:
-        from .nogds import load_library_func
+        from .base import load_library_func
 
         load_dstorage_dlls()
         load_library_func(framework)

@@ -12,8 +12,8 @@ from .. import cpp as _cpp
 from ..common import SafeTensorsMetadata, init_logger, is_gpu_found
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
-from .base import CopierInterface
-from .nogds import load_library_func, new_nogds_file_copier
+from .base import CopierInterface, load_library_func
+from .nogds import new_nogds_file_copier
 from .registry import CopierConstructFunc, register_copier_constructor
 
 # FGDS symbols are resolved on demand by load_fgds_library() (called from

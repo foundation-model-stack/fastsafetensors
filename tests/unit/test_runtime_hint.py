@@ -140,7 +140,7 @@ def test_windows_explicit_cudart_takes_precedence(monkeypatch):
 def test_dstorage_initialization_uses_framework_bundled_cudart(monkeypatch):
     import ctypes
 
-    from fastsafetensors.copier import dstorage, nogds
+    from fastsafetensors.copier import base, dstorage
     from fastsafetensors.st_types import Device
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -174,10 +174,10 @@ def test_dstorage_initialization_uses_framework_bundled_cudart(monkeypatch):
             dstorage.os, "add_dll_directory", lambda path: object(), raising=False
         )
         monkeypatch.setattr(
-            nogds.fstcpp, "load_library_functions", loaded_runtimes.append
+            base.fstcpp, "load_library_functions", loaded_runtimes.append
         )
-        monkeypatch.setattr(nogds, "is_gpu_found", lambda: True)
-        monkeypatch.setattr(nogds, "_loaded_library", False)
+        monkeypatch.setattr(base, "is_gpu_found", lambda: True)
+        monkeypatch.setattr(base, "_loaded_library", False)
         monkeypatch.setattr(dstorage, "is_gpu_found", lambda: True)
         monkeypatch.setattr(dstorage, "_inited_ds", False)
         monkeypatch.setattr(dstorage, "_dstorage_dll_dir", None)
@@ -207,43 +207,43 @@ def test_dstorage_initialization_uses_framework_bundled_cudart(monkeypatch):
 
 def test_load_library_func_hint_with_no_gpu_raises(monkeypatch):
     """A hint that finds no GPU is a hard failure"""
-    from fastsafetensors.copier import nogds
+    from fastsafetensors.copier import base
 
     calls = []
 
     def fake_load(lib):
         calls.append(lib)
 
-    monkeypatch.setattr(nogds.fstcpp, "load_library_functions", fake_load)
+    monkeypatch.setattr(base.fstcpp, "load_library_functions", fake_load)
     monkeypatch.setattr(
-        nogds, "resolve_runtime_lib_name", lambda fw=None: "libamdhip64.so"
+        base, "resolve_runtime_lib_name", lambda fw=None: "libamdhip64.so"
     )
 
-    monkeypatch.setattr(nogds, "is_gpu_found", lambda: False)
-    monkeypatch.setattr(nogds, "_loaded_library", False)
+    monkeypatch.setattr(base, "is_gpu_found", lambda: False)
+    monkeypatch.setattr(base, "_loaded_library", False)
 
     with pytest.raises(Exception, match="libamdhip64.so"):
-        nogds.load_library_func(_FakeFramework("hip-7.2.0"))
+        base.load_library_func(_FakeFramework("hip-7.2.0"))
 
     assert calls == ["libamdhip64.so"]
-    assert nogds._loaded_library is False
+    assert base._loaded_library is False
 
 
 def test_load_library_func_hint_succeeds_no_fallback(monkeypatch):
-    from fastsafetensors.copier import nogds
+    from fastsafetensors.copier import base
 
     calls = []
     monkeypatch.setattr(
-        nogds.fstcpp, "load_library_functions", lambda lib: calls.append(lib)
+        base.fstcpp, "load_library_functions", lambda lib: calls.append(lib)
     )
     monkeypatch.setattr(
-        nogds,
+        base,
         "resolve_runtime_lib_name",
         lambda fw=None: "libamdhip64.so" if fw is not None else "",
     )
-    monkeypatch.setattr(nogds, "is_gpu_found", lambda: True)
-    monkeypatch.setattr(nogds, "_loaded_library", False)
+    monkeypatch.setattr(base, "is_gpu_found", lambda: True)
+    monkeypatch.setattr(base, "_loaded_library", False)
 
-    nogds.load_library_func(_FakeFramework("hip-7.2.0"))
+    base.load_library_func(_FakeFramework("hip-7.2.0"))
 
     assert calls == ["libamdhip64.so"]
