@@ -683,6 +683,7 @@ def test_SafeTensorsFileLoader_copier_selection(
     monkeypatch.setattr(
         loader_mod, "create_copier_constructor", spy_create_copier_constructor
     )
+    monkeypatch.setattr(loader_mod, "select_copier", lambda name, *a, **kw: name)
 
     SafeTensorsFileLoader(
         pg=SingleGroup(),
@@ -695,10 +696,305 @@ def test_SafeTensorsFileLoader_copier_selection(
     assert captured["copier_type"] == expected_type
 
 
-def test_new_gds_file_copier_skips_init_when_device_node_missing(
-    framework, monkeypatch
-) -> None:
-    """When /dev/nvidia-fs0 is absent (Linux), new_gds_file_copier must not
+@pytest.mark.parametrize(
+    "requested,device_name,gds_choice,expected",
+    [
+        ("nogds", "cpu", None, "nogds"),
+        ("nogds", "cuda:0", None, "nogds"),
+        ("gds", "cpu", "nogds", "nogds"),
+        ("gds", "cuda:0", "nogds", "nogds"),
+        ("gds", "cuda:0", "unified", "unified"),
+        ("gds", "cuda:0", "gds", "gds"),
+    ],
+)
+def test_selection_invokes_only_resolved_factory(
+    monkeypatch, requested, device_name, gds_choice, expected
+):
+    from fastsafetensors import loader
+    from fastsafetensors.copier import registry
+
+    device = Device.from_str(device_name)
+    options = dict(
+        framework=object(),
+        max_threads=3,
+        bbuf_size_kb=321,
+        device_memory_budget=12345,
+        custom=True,
+    )
+    selections = []
+    factories = []
+    result = object()
+
+    def select(actual_device, **kwargs):
+        assert actual_device is device
+        assert kwargs == options
+        selections.append("gds")
+        return gds_choice == "gds"
+
+    def factory(name):
+        def make(device, **kwargs):
+            assert device == Device.from_str(device_name)
+            assert kwargs == options
+            factories.append(name)
+            return result
+
+        return make
+
+    monkeypatch.setitem(registry._copier_init_checks, "gds", select)
+    monkeypatch.setitem(registry._copier_init_checks, "nogds", lambda *a, **kw: True)
+    monkeypatch.setattr(
+        "fastsafetensors.copier.unified.is_unified_memory_system",
+        lambda framework: gds_choice == "unified",
+    )
+    for name in ("nogds", "gds", "unified"):
+        monkeypatch.setitem(registry._copier_registry, name, factory(name))
+        monkeypatch.setitem(
+            registry._copier_library_loaders, name, lambda *a, **kw: None
+        )
+        monkeypatch.setitem(
+            registry._copier_init_checks,
+            name,
+            select if name == "gds" else lambda *a, **kw: True,
+        )
+    selected = loader.select_copier(requested, device, **options)
+    assert registry.create_copier_constructor(selected, device, **options) is result
+    assert factories == [expected]
+    assert selections == (["gds"] if requested == "gds" else [])
+
+
+@pytest.mark.parametrize("requested", ["gds", "fgds", "dstorage", "custom"])
+@pytest.mark.parametrize("available", [False, True])
+def test_loader_resolves_backend_before_constructing(
+    framework, monkeypatch, requested, available
+):
+    import fastsafetensors.loader as loader
+
+    calls = []
+    result = lambda metadata, device, framework: None
+
+    def check(name, device, **options):
+        calls.append(("check", name))
+        assert options["framework"] is framework
+        assert options["device_memory_budget"] == 12345
+        return available if name == requested else True
+
+    def construct(copier_type, device, **options):
+        calls.append(("factory", copier_type))
+        assert options["device_memory_budget"] == 12345
+        return result
+
+    monkeypatch.setattr(
+        "fastsafetensors.copier.registry.load_and_init_and_check_copier", check
+    )
+    monkeypatch.setattr(loader, "create_copier_constructor", construct)
+    if not available and requested == "custom":
+        with pytest.raises(RuntimeError, match="custom.*unavailable"):
+            loader.BaseSafeTensorsFileLoader(
+                None,
+                Device(),
+                requested,
+                framework=framework.get_name(),
+                device_memory_budget=12345,
+                set_numa=False,
+            )
+        assert calls == [("check", requested)]
+    else:
+        instance = loader.BaseSafeTensorsFileLoader(
+            None,
+            Device(),
+            requested,
+            framework=framework.get_name(),
+            device_memory_budget=12345,
+            set_numa=False,
+        )
+        expected = requested if available else "nogds"
+        assert instance.copier_constructor is result
+        assert calls == [("check", requested)] + (
+            [] if available else [("check", "nogds")]
+        ) + [("factory", expected)]
+
+
+def test_loader_does_not_fallback_on_initialization_error(monkeypatch):
+    import fastsafetensors.loader as loader
+
+    def invalid(*args, **kwargs):
+        raise ValueError("invalid configuration")
+
+    monkeypatch.setattr(
+        "fastsafetensors.copier.registry.load_and_init_and_check_copier", invalid
+    )
+    with pytest.raises(ValueError, match="invalid configuration"):
+        loader.select_copier("gds", Device())
+
+
+def test_copier_availability_does_not_construct_and_errors_propagate(monkeypatch):
+    from fastsafetensors.copier import registry
+
+    calls = []
+
+    def probe(device, **kwargs):
+        calls.append("probe")
+        return False
+
+    def forbidden(device, **kwargs):
+        pytest.fail("unavailable backend must not be constructed")
+
+    monkeypatch.setitem(registry._copier_registry, "_unavailable", forbidden)
+    monkeypatch.setitem(registry._copier_init_checks, "_unavailable", probe)
+    assert not registry.load_and_init_and_check_copier("_unavailable", Device())
+    assert calls == ["probe"]
+
+    def invalid(*args, **kwargs):
+        raise ValueError("invalid configuration")
+
+    monkeypatch.setitem(registry._copier_init_checks, "_unavailable", invalid)
+    with pytest.raises(ValueError, match="invalid configuration"):
+        registry.load_and_init_and_check_copier("_unavailable", Device())
+
+
+def test_nogds_availability_initializes_runtime_before_gpu_check(monkeypatch):
+    from fastsafetensors.copier import nogds, registry
+
+    calls = []
+    monkeypatch.setattr(
+        "fastsafetensors.copier.base.load_library_func", lambda fw: calls.append("load")
+    )
+
+    def gpu_missing():
+        assert calls == ["load"]
+        calls.append("gpu")
+        return False
+
+    monkeypatch.setattr(nogds, "is_gpu_found", gpu_missing)
+    with pytest.raises(Exception, match="GPU runtime library not found"):
+        registry.load_and_init_and_check_copier("nogds", Device.from_str("cuda:0"))
+    assert calls == ["load", "gpu"]
+    calls.clear()
+    assert registry.load_and_init_and_check_copier("nogds", Device())
+    assert calls == ["load"]
+
+
+def test_unified_init_and_check_loads_runtime_without_constructing(monkeypatch):
+    from fastsafetensors.copier import registry
+
+    calls = []
+    monkeypatch.setattr(
+        "fastsafetensors.copier.base.load_library_func", lambda fw: calls.append(fw)
+    )
+    monkeypatch.setitem(
+        registry._copier_registry,
+        "unified",
+        lambda *a, **kw: pytest.fail("check must not construct a factory"),
+    )
+    framework = object()
+    assert registry.load_and_init_and_check_copier(
+        "unified", Device(), framework=framework
+    )
+    assert calls == [framework]
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+def test_copier_library_load_precedes_check_and_factory(monkeypatch, loaded):
+    from fastsafetensors.copier import registry
+
+    calls = []
+    result = object()
+    monkeypatch.setitem(
+        registry._copier_library_loaders,
+        "_ordered",
+        lambda *a, **kw: calls.append("load") or loaded,
+    )
+    monkeypatch.setitem(
+        registry._copier_init_checks,
+        "_ordered",
+        lambda *a, **kw: calls.append("check") or True,
+    )
+    monkeypatch.setitem(
+        registry._copier_registry,
+        "_ordered",
+        lambda *a, **kw: calls.append("factory") or result,
+    )
+    if loaded:
+
+        def make(device, **kwargs):
+            calls.append("factory")
+            return result
+
+        wrapper = registry.register_copier_constructor(
+            "_ordered",
+            load_library=registry._copier_library_loaders["_ordered"],
+            init_and_check=registry._copier_init_checks["_ordered"],
+        )(make)
+        assert registry.load_and_init_and_check_copier("_ordered", Device())
+        assert wrapper(Device()) is result
+        assert calls == ["load", "check", "factory"]
+        calls.clear()
+        assert registry.load_and_init_and_check_copier("_ordered", Device())
+        assert registry.create_copier_constructor("_ordered", Device()) is result
+        assert calls == ["load", "check", "factory"]
+    else:
+        assert not registry.load_and_init_and_check_copier("_ordered", Device())
+        assert calls == ["load"]
+
+
+def test_copier_factory_errors_do_not_trigger_fallback(monkeypatch):
+    from fastsafetensors.copier import registry
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("factory failed")
+
+    monkeypatch.setitem(registry._copier_registry, "_available", fail)
+    assert registry.load_and_init_and_check_copier("_available", Device())
+    with pytest.raises(RuntimeError, match="factory failed"):
+        registry.create_copier_constructor("_available", Device())
+
+
+@pytest.mark.parametrize("entry", ["direct", "registry"])
+def test_registered_factory_does_not_repeat_checks(monkeypatch, entry):
+    from fastsafetensors.copier import registry
+
+    for name in ("_copier_registry", "_copier_library_loaders", "_copier_init_checks"):
+        monkeypatch.setattr(registry, name, dict(getattr(registry, name)))
+    calls = []
+    framework = object()
+    device = Device.from_str("cuda:0")
+    result = object()
+
+    def load(device, **options):
+        calls.append(("load", options))
+        return False
+
+    def check(device, **options):
+        pytest.fail("failed load must skip check")
+
+    def construct(device, framework, bbuf_size_kb=None, max_threads=16, **kwargs):
+        options = dict(
+            framework=framework,
+            bbuf_size_kb=bbuf_size_kb,
+            max_threads=max_threads,
+            **kwargs,
+        )
+        calls.append(("factory", options))
+        return result
+
+    @registry.register_copier_constructor(
+        "_selected", load_library=load, init_and_check=check
+    )
+    def make(device, framework, bbuf_size_kb=None, max_threads=16, **kwargs):
+        return construct(device, framework, bbuf_size_kb, max_threads, **kwargs)
+
+    options = dict(framework=framework, bbuf_size_kb=321, max_threads=7, custom=True)
+    if entry == "direct":
+        assert make(device, framework, 321, 7, custom=True) is result
+    else:
+        assert (
+            registry.create_copier_constructor("_selected", device, **options) is result
+        )
+    assert calls == [("factory", options)]
+
+
+def test_loader_skips_gds_init_when_device_node_missing(framework, monkeypatch) -> None:
+    """When /dev/nvidia-fs0 is absent (Linux), loader selection must not
     call init_gds() (which invokes cuFileDriverOpen()), to avoid the libcufile
     bug that closes fd 0 in its error path. Instead it should fall back to the
     nogds copier without ever calling init_gds.
@@ -731,7 +1027,12 @@ def test_new_gds_file_copier_skips_init_when_device_node_missing(
 
     monkeypatch.setattr(gds_mod, "init_gds", spy_init_gds)
 
-    construct = gds_mod.new_gds_file_copier(device, framework=framework)
+    from fastsafetensors.loader import select_copier
+
+    assert select_copier("gds", device, framework=framework) == "nogds"
+    from fastsafetensors.copier.registry import create_copier_constructor
+
+    construct = create_copier_constructor("nogds", device, framework=framework)
 
     assert len(init_gds_called) == 0, (
         "init_gds() was called despite /dev/nvidia-fs0 missing — "
@@ -740,10 +1041,8 @@ def test_new_gds_file_copier_skips_init_when_device_node_missing(
     assert construct is not None
 
 
-def test_new_gds_file_copier_inits_when_device_node_present(
-    framework, monkeypatch
-) -> None:
-    """When /dev/nvidia-fs0 exists, new_gds_file_copier should call
+def test_loader_inits_gds_when_device_node_present(framework, monkeypatch) -> None:
+    """When /dev/nvidia-fs0 exists, loader selection should call
     init_gds() as before (no behavior change for working GDS hosts).
     """
     _skip_if_not_pytorch(framework)
@@ -775,13 +1074,16 @@ def test_new_gds_file_copier_inits_when_device_node_present(
     # being initialised (init_gds is spied, not called).
     monkeypatch.setattr(gds_mod.fstcpp, "gds_file_reader", lambda *a, **kw: object())
 
+    from fastsafetensors.loader import select_copier
+
+    assert select_copier("gds", device, framework=framework) == "gds"
     gds_mod.new_gds_file_copier(device, framework=framework)
     assert (
         len(init_gds_called) == 1
     ), "init_gds() was not called despite /dev/nvidia-fs0 existing"
 
 
-def test_new_gds_file_copier_loads_library_before_capability_checks(
+def test_loader_loads_gds_library_before_capability_checks(
     framework, monkeypatch
 ) -> None:
     _skip_if_not_pytorch(framework)
@@ -817,9 +1119,35 @@ def test_new_gds_file_copier_loads_library_before_capability_checks(
     monkeypatch.setattr(gds_mod.fstcpp, "gds_file_reader", lambda *args: object())
 
     device = Device(DeviceType.CUDA, 0)
+    from fastsafetensors.loader import select_copier
+
+    assert select_copier("gds", device, framework=framework) == "gds"
     gds_mod.new_gds_file_copier(device, framework=framework)
 
     assert calls == ["load", "gpu", "gds", "cufile", "init"]
+
+
+def test_gds_init_and_check_retries_failure_and_initializes_once(monkeypatch):
+    from fastsafetensors.copier import gds
+
+    results = iter([1, 0])
+    calls = []
+
+    def initialize():
+        calls.append("init")
+        return next(results)
+
+    monkeypatch.setattr(gds, "_inited_gds", False)
+    monkeypatch.setattr(gds, "load_library_func", lambda framework: None)
+    monkeypatch.setattr(gds.fstcpp, "is_hip_found", lambda: True)
+    monkeypatch.setattr(gds.fstcpp, "init_gds", initialize)
+    with pytest.raises(Exception, match=r"\[FAIL\] init_gds\(\)"):
+        gds.init_and_check_gds(Device())
+    assert not gds._inited_gds
+    assert gds.init_and_check_gds(Device())
+    assert gds._inited_gds
+    assert gds.init_and_check_gds(Device())
+    assert calls == ["init", "init"]
 
 
 def test_SafeTensorsFileLoader(fstcpp_log, input_files, framework) -> None:

@@ -401,6 +401,9 @@ def test_factory_initializes_each_physical_device_once(
     monkeypatch.setattr(fgds, "is_gpu_found", lambda: True)
     for index in (0, 0, 1):
         device = Device.from_str(f"cuda:{index}")
+        from fastsafetensors.loader import select_copier
+
+        assert select_copier("fgds", device, framework=framework) == "fgds"
         construct = fgds.new_fgds_file_copier(device, framework, max_threads=3)
         assert copier_class_of(construct) is fgds.FgdsFileCopier
         copier = construct(metadata, device, framework)
@@ -440,15 +443,33 @@ def test_factory_fallback_preserves_options(mock_fgds, monkeypatch, failure):
     construct = Mock()
     construct.copier_class = NoGdsFileCopier
     fallback = Mock(return_value=construct)
-    monkeypatch.setattr(fgds, "new_nogds_file_copier", fallback)
+    from fastsafetensors import loader
+    from fastsafetensors.copier import nogds
+
+    monkeypatch.setattr(nogds, "is_gpu_found", lambda: True)
+    monkeypatch.setattr(loader, "create_copier_constructor", fallback)
     with pytest.warns(UserWarning, match="[Ff]alling back to NoGDS"):
+        selected = loader.select_copier("fgds", device, framework=framework)
+        assert selected == "nogds"
         assert (
-            fgds.new_fgds_file_copier(
-                device, framework, bbuf_size_kb=321, max_threads=7, custom=True
+            loader.create_copier_constructor(
+                selected,
+                device,
+                framework=framework,
+                bbuf_size_kb=321,
+                max_threads=7,
+                custom=True,
             )
             is construct
         )
-    fallback.assert_called_once_with(device, 321, 7, framework=framework, custom=True)
+    fallback.assert_called_once_with(
+        selected,
+        device,
+        framework=framework,
+        bbuf_size_kb=321,
+        max_threads=7,
+        custom=True,
+    )
     assert copier_class_of(construct) is NoGdsFileCopier
     assert fgds._fgds_opened_devices == set()
     assert runtime.readers == []
@@ -463,6 +484,9 @@ def test_loader_tensor_survives_close_with_mock_fgds(
     runtime, framework = mock_fgds
     metadata, expected = checkpoint()
     # Use the real FGDS factory and copier, substituting only CPU allocation.
+    from fastsafetensors.loader import select_copier
+
+    assert select_copier("fgds", Device(), framework=framework) == "fgds"
     construct = fgds.new_fgds_file_copier(Device(), framework)
     monkeypatch.setattr(
         "fastsafetensors.loader.create_copier_constructor", lambda **kw: construct

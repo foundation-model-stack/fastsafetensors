@@ -13,7 +13,6 @@ from ..common import SafeTensorsMetadata, init_logger, is_gpu_found
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface, load_library_func
-from .nogds import new_nogds_file_copier
 from .registry import CopierConstructFunc, register_copier_constructor
 
 # FGDS symbols are resolved on demand by load_fgds_library() (called from
@@ -278,6 +277,7 @@ _fgds_opened_devices: set = set()
 
 
 def init_fgds(framework: Optional[FrameworkOpBase] = None):
+    # TOFIX: Refactor this helper into the load/init callbacks in a follow-up.
     # Ensure the GPU runtime (and cuFile/hipFile) is resolved first: FGDS is
     # only loaded when a GPU is present, and load_fgds_library() requires
     # load_library_func() to have run. Then resolve libfgds.so on demand, so
@@ -286,36 +286,29 @@ def init_fgds(framework: Optional[FrameworkOpBase] = None):
     _cpp.load_fgds_library()
 
 
-@register_copier_constructor("fgds", FgdsFileCopier)
-def new_fgds_file_copier(
-    device: Device,
-    framework: FrameworkOpBase,
-    bbuf_size_kb: Optional[int] = None,
-    max_threads: int = 16,
-    **kwargs,
-) -> CopierConstructFunc:
-    # FGDS (libfgds.so) is Linux-only; bail out early on other platforms.
+def load_library_fgds(device: Device, **kwargs) -> bool:
     if platform.system() != "Linux":
         warnings.warn(
             "FGDS is not available on this platform. Falling back to NoGDS.",
             UserWarning,
         )
-        return new_nogds_file_copier(
-            device, bbuf_size_kb, max_threads, framework=framework, **kwargs
-        )
+        return False
+    init_fgds(kwargs.get("framework"))
+    return True
 
-    # Load the GPU runtime library first (like GDS does) so that
-    # is_gpu_found() can detect CUDA/HIP devices correctly.
-    init_fgds(framework)
 
+def init_and_check_fgds(
+    device: Device,
+    framework: FrameworkOpBase,
+    **kwargs,
+) -> bool:
+    """Probe FGDS, including its test open and idempotent driver initialization."""
     if not _cpp.is_fgds_found():
         warnings.warn(
             "FGDS (libfgds.so) is not available. Falling back to NoGDS.",
             UserWarning,
         )
-        return new_nogds_file_copier(
-            device, bbuf_size_kb, max_threads, framework=framework, **kwargs
-        )
+        return False
 
     device_is_not_cpu = device.type != DeviceType.CPU
     if device_is_not_cpu and not is_gpu_found():
@@ -324,9 +317,7 @@ def new_fgds_file_copier(
             "FGDS requires GPU runtime; falling back to NoGDS.",
             UserWarning,
         )
-        return new_nogds_file_copier(
-            device, bbuf_size_kb, max_threads, framework=framework, **kwargs
-        )
+        return False
 
     device_id = get_fgds_device_id(device)
 
@@ -345,9 +336,7 @@ def new_fgds_file_copier(
         warnings.warn(
             f"FGDS is not available: {e}. Falling back to NoGDS.", UserWarning
         )
-        return new_nogds_file_copier(
-            device, bbuf_size_kb, max_threads, framework=framework, **kwargs
-        )
+        return False
 
     # Open the FGDS device exactly once per device_id (idempotent), and pair
     # it with close_fgds() at process exit. This mirrors init_gds(): the
@@ -360,11 +349,25 @@ def new_fgds_file_copier(
                 "Falling back to NoGDS.",
                 UserWarning,
             )
-            return new_nogds_file_copier(
-                device, bbuf_size_kb, max_threads, framework=framework, **kwargs
-            )
+            return False
         _fgds_opened_devices.add(device_id)
+    return True
 
+
+@register_copier_constructor(
+    "fgds",
+    FgdsFileCopier,
+    load_library=load_library_fgds,
+    init_and_check=init_and_check_fgds,
+)
+def new_fgds_file_copier(
+    device: Device,
+    framework: FrameworkOpBase,
+    bbuf_size_kb: Optional[int] = None,
+    max_threads: int = 16,
+    **kwargs,
+) -> CopierConstructFunc:
+    device_id = get_fgds_device_id(device)
     reader = _cpp.fgds_file_reader(max_threads, device_id)
 
     def construct_copier(

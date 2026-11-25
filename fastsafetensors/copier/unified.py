@@ -389,15 +389,27 @@ def is_unified_memory_system(framework: Optional[FrameworkOpBase] = None) -> boo
     return "gb10" in framework.get_device_name(0).lower()
 
 
-@register_copier_constructor("unified", UnifiedMemCopier)
+def load_library_unified(device: Device, **kwargs):
+    from .base import load_library_func
+
+    load_library_func(kwargs.get("framework"))
+
+
+def init_and_check_unified(device: Device, **kwargs) -> bool:
+    return True
+
+
+@register_copier_constructor(
+    "unified",
+    UnifiedMemCopier,
+    load_library=load_library_unified,
+    init_and_check=init_and_check_unified,
+)
 def new_unified_copier(device: Device, **kwargs) -> CopierConstructFunc:
     """Factory function for UnifiedMemCopier.
 
     Returns a constructor that creates UnifiedMemCopier instances.
     """
-    from .base import load_library_func
-
-    load_library_func(kwargs.get("framework"))
     dma_gate = threading.Lock()
 
     def construct_unified_copier(

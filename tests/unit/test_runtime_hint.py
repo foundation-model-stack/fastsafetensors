@@ -195,6 +195,12 @@ def test_dstorage_initialization_uses_framework_bundled_cudart(monkeypatch):
             raising=False,
         )
 
+        from fastsafetensors.loader import select_copier
+
+        assert (
+            select_copier("dstorage", Device.from_str("cuda:0"), framework=framework)
+            == "dstorage"
+        )
         constructor = dstorage.new_dstorage_copier(
             Device.from_str("cuda:0"), framework=framework
         )

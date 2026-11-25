@@ -52,13 +52,15 @@ def test_get_fs_type_unreadable_mounts(tmp_path):
 def test_missing_dstorage_dlls_fall_back_to_nogds(monkeypatch, caplog, tmp_path):
     import logging
 
-    from fastsafetensors.copier import dstorage
+    from fastsafetensors import loader
+    from fastsafetensors.copier import dstorage, nogds
     from fastsafetensors.st_types import Device
 
     fallback_constructor = object()
     fallback_calls = []
 
-    def make_fallback(device, **kwargs):
+    def make_fallback(copier_type, device, **kwargs):
+        assert copier_type == "nogds"
         fallback_calls.append((device, kwargs))
         return fallback_constructor
 
@@ -69,15 +71,17 @@ def test_missing_dstorage_dlls_fall_back_to_nogds(monkeypatch, caplog, tmp_path)
         dstorage, "_get_dstorage_cache_dir", lambda: tmp_path / "missing"
     )
     monkeypatch.setattr(dstorage, "_inited_ds", False)
-    monkeypatch.setattr(dstorage, "new_nogds_file_copier", make_fallback)
+    monkeypatch.setattr(loader, "create_copier_constructor", make_fallback)
+    monkeypatch.setattr(nogds, "is_gpu_found", lambda: True)
     monkeypatch.setattr(dstorage, "_warned_dstorage_fallback", False)
     device = Device.from_str("cuda:0")
 
     with caplog.at_level(logging.WARNING, logger="fastsafetensors.copier.dstorage"):
-        result = dstorage.new_dstorage_copier(
-            device, framework="pytorch", bbuf_size_kb=4096, max_threads=4
+        selected = loader.select_copier("dstorage", device, framework="pytorch")
+        result = loader.create_copier_constructor(
+            selected, device, framework="pytorch", bbuf_size_kb=4096, max_threads=4
         )
-        dstorage.new_dstorage_copier(device, framework="pytorch")
+        assert loader.select_copier("dstorage", device, framework="pytorch") == "nogds"
 
     assert result is fallback_constructor
     assert fallback_calls[0] == (
@@ -90,6 +94,7 @@ def test_missing_dstorage_dlls_fall_back_to_nogds(monkeypatch, caplog, tmp_path)
 def test_explicit_dstorage_configuration_error_does_not_fall_back(
     monkeypatch, tmp_path
 ):
+    from fastsafetensors import loader
     from fastsafetensors.copier import dstorage
     from fastsafetensors.st_types import Device
 
@@ -99,13 +104,13 @@ def test_explicit_dstorage_configuration_error_does_not_fall_back(
     monkeypatch.delenv(dstorage._LEGACY_DSTORAGE_DOWNLOAD_ENV_VAR, raising=False)
     monkeypatch.setattr(dstorage, "_inited_ds", False)
     monkeypatch.setattr(
-        dstorage,
-        "new_nogds_file_copier",
+        loader,
+        "create_copier_constructor",
         lambda *args, **kwargs: pytest.fail("unexpected nogds fallback"),
     )
 
     with pytest.raises(FileNotFoundError, match="FASTSAFETENSORS_DSTORAGE_DLL_DIR"):
-        dstorage.new_dstorage_copier(Device.from_str("cuda:0"), framework="pytorch")
+        loader.select_copier("dstorage", Device.from_str("cuda:0"), framework="pytorch")
 
 
 # ---- O_DIRECT gating by filesystem type ----

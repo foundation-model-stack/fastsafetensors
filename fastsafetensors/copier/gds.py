@@ -18,7 +18,11 @@ from .base import (
     validated_chunk_allocation_size,
 )
 from .nogds import new_nogds_file_copier
-from .registry import CopierConstructFunc, register_copier_constructor
+from .registry import (
+    CopierConstructFunc,
+    load_and_init_and_check_copier,
+    register_copier_constructor,
+)
 
 if TYPE_CHECKING:
     from ..allocation import SharedDeviceAllocation
@@ -221,6 +225,11 @@ class GdsFileCopier(CopierInterface):
                     "falling back to the nogds copier",
                     str(e),
                 )
+            if not self._fallback_cache:
+                if not load_and_init_and_check_copier(
+                    "nogds", self.device, framework=self.framework
+                ):
+                    raise RuntimeError("Copier 'nogds' is unavailable")
             if self._fallback_cache is not None:
                 if not self._fallback_cache:
                     self._fallback_cache.append(
@@ -434,6 +443,7 @@ _inited_gds = False
 
 
 def init_gds(framework: Optional[FrameworkOpBase] = None):
+    # TOFIX: Refactor this helper into the load/init callbacks in a follow-up.
     load_library_func(framework)
     global _inited_gds
     if not _inited_gds:
@@ -442,17 +452,18 @@ def init_gds(framework: Optional[FrameworkOpBase] = None):
         _inited_gds = True
 
 
-@register_copier_constructor("gds", GdsFileCopier)
-def new_gds_file_copier(
+def load_library_gds(device: Device, **kwargs):
+    load_library_func(kwargs.get("framework"))
+
+
+def init_and_check_gds(
     device: Device,
-    bbuf_size_kb: Optional[int] = None,
-    max_threads: int = 16,
     device_memory_budget: Optional[int] = None,
     **kwargs,
-) -> CopierConstructFunc:
+) -> bool:
+    """Check GDS support and initialize its driver only when supported."""
     framework = kwargs.get("framework")
-    # Capability checks depend on symbols resolved by load_library_func().
-    load_library_func(framework)
+    # The common entry point resolves runtime symbols before capability checks.
     is_hip = fstcpp.is_hip_found()
 
     # On NVIDIA Linux hosts, check for GDS device nodes before init_gds(), which
@@ -522,20 +533,28 @@ def new_gds_file_copier(
         )
         nogds = True
 
-    if gds_device_available and not nogds:
-        init_gds(framework)
-
-    device_id = device.index if device.index is not None else 0
     if nogds:
-        # Prefer unified copier on systems with shared CPU/GPU memory
-        from .unified import is_unified_memory_system, new_unified_copier
+        return False
+    init_gds(framework)
+    return True
 
-        if device_is_not_cpu and is_unified_memory_system(framework):
-            return new_unified_copier(device, framework=framework)
-        return new_nogds_file_copier(
-            device, bbuf_size_kb, max_threads, framework=framework
-        )
 
+@register_copier_constructor(
+    "gds",
+    GdsFileCopier,
+    load_library=load_library_gds,
+    init_and_check=init_and_check_gds,
+)
+def new_gds_file_copier(
+    device: Device,
+    bbuf_size_kb: Optional[int] = None,
+    max_threads: int = 16,
+    device_memory_budget: Optional[int] = None,
+    **kwargs,
+) -> CopierConstructFunc:
+    """Build GDS resources after selection and initialization."""
+    device_is_not_cpu = device.type != DeviceType.CPU
+    device_id = device.index if device.index is not None else 0
     reader = fstcpp.gds_file_reader(max_threads, device_is_not_cpu, device_id)
 
     fallback_cache: List[CopierConstructFunc] = []

@@ -29,6 +29,7 @@ from .copier import (
     CopierType,
     copier_class_of,
     create_copier_constructor,
+    select_copier,
 )
 from .copier.unified import is_unified_memory_system
 from .file_buffer import FilesBufferOnDevice
@@ -105,6 +106,9 @@ class BaseSafeTensorsFileLoader:
         kwargs["set_numa"] = set_numa
         if copier_type != "nogds":
             self.init_numa(set_numa)
+        copier_type = select_copier(
+            copier_type, device, framework=self.framework, **kwargs
+        )
         self.copier_constructor: CopierConstructFunc = create_copier_constructor(
             copier_type=copier_type,
             device=device,
