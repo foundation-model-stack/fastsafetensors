@@ -5,8 +5,9 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from .. import cpp as fstcpp
 from ..common import SafeTensorsMetadata
 from ..frameworks import FrameworkOpBase, TensorBase
-from ..st_types import Device, DeviceType, DType
+from ..st_types import Device, DType
 from .base import CopierInterface, DummyDeviceBuffer
+from .registry import CopierConstructFunc, register_copier_constructor
 
 if TYPE_CHECKING:
     from ..allocation import SharedDeviceAllocation
@@ -39,12 +40,26 @@ class ExampleCopier(CopierInterface):
         return res
 
 
-def new_gds_file_copier(
+def load_library_example(device: Device, **kwargs):
+    pass
+
+
+def init_and_check_example(device: Device, **kwargs) -> bool:
+    return True
+
+
+@register_copier_constructor(
+    "example",
+    ExampleCopier,
+    load_library=load_library_example,
+    init_and_check=init_and_check_example,
+)
+def new_example_file_copier(
     device: Device,
     bbuf_size_kb: Optional[int] = None,
     max_threads: int = 16,
-    nogds: bool = False,
-):
+    **kwargs,
+) -> CopierConstructFunc:
     # reader = example_reader()
     reader: Any = {}
 

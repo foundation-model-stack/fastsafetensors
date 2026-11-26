@@ -483,6 +483,9 @@ def test_unsupported_hip_budget_falls_back_and_keeps_the_plan(
 def test_hip_budget_policy_preserves_unbudgeted_and_supported_gds(
     framework, monkeypatch, budget, supported
 ):
+    from fastsafetensors.copier.registry import create_copier_constructor
+    from fastsafetensors.loader import select_copier
+
     monkeypatch.setattr(gds, "load_library_func", lambda framework: None)
     monkeypatch.setattr(gds.platform, "system", lambda: "Linux")
     monkeypatch.setattr(gds.os.path, "exists", lambda path: False)
@@ -495,19 +498,25 @@ def test_hip_budget_policy_preserves_unbudgeted_and_supported_gds(
     # the other cases must keep HIP direct I/O despite lacking nvidia-fs.
     if budget is not None and not supported:
         with pytest.warns(UserWarning, match="preserving device_memory_budget"):
-            construct = gds.new_gds_file_copier(
+            selected = select_copier(
+                "gds",
                 Device.from_str("cpu"),
                 framework=framework,
                 device_memory_budget=budget,
             )
+            construct = create_copier_constructor(
+                selected, Device(), framework=framework
+            )
         assert construct.copier_class is not gds.GdsFileCopier
         assert not calls
     else:
-        construct = gds.new_gds_file_copier(
+        selected = select_copier(
+            "gds",
             Device.from_str("cpu"),
             framework=framework,
             device_memory_budget=budget,
         )
+        construct = create_copier_constructor(selected, Device(), framework=framework)
         assert construct.copier_class is gds.GdsFileCopier
         assert calls == ["init"]
 
@@ -515,8 +524,12 @@ def test_hip_budget_policy_preserves_unbudgeted_and_supported_gds(
 def test_unsupported_hip_budget_prefers_unified_on_shared_memory(
     framework, monkeypatch
 ):
+    from fastsafetensors import loader
     from fastsafetensors.copier import unified
-    from fastsafetensors.copier.registry import copier_class_of
+    from fastsafetensors.copier.registry import (
+        copier_class_of,
+        create_copier_constructor,
+    )
 
     monkeypatch.setattr(gds, "load_library_func", lambda framework: None)
     monkeypatch.setattr(gds, "is_gpu_found", lambda: True)
@@ -531,10 +544,14 @@ def test_unsupported_hip_budget_prefers_unified_on_shared_memory(
 
     monkeypatch.setattr(gds, "init_gds", forbidden)
     with pytest.warns(UserWarning, match="preserving device_memory_budget"):
-        construct = gds.new_gds_file_copier(
+        selected = loader.select_copier(
+            "gds",
             Device.from_str("cuda:0"),
             framework=framework,
             device_memory_budget=1 << 20,
+        )
+        construct = create_copier_constructor(
+            selected, Device.from_str("cuda:0"), framework=framework
         )
     assert copier_class_of(construct) is unified.UnifiedMemCopier
 

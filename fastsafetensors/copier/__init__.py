@@ -15,7 +15,9 @@ from .registry import (
     copier_class_of,
     create_copier_constructor,
     get_copier_class,
+    load_and_init_and_check_copier,
     register_copier_constructor,
+    select_copier,
 )
 from .threefs import ThreeFSFileCopier
 from .unified import UnifiedMemCopier

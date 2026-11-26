@@ -16,7 +16,6 @@ from ..common import (
 from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import CopierInterface
-from .nogds import new_nogds_file_copier
 from .registry import CopierConstructFunc, register_copier_constructor
 
 logger = init_logger(__name__)
@@ -183,14 +182,12 @@ class DStorageFileCopier(CopierInterface):
         )
 
 
-@register_copier_constructor("dstorage", DStorageFileCopier)
-def new_dstorage_copier(device: Device, **kwargs) -> CopierConstructFunc:
-    """Factory for DirectStorage file copier."""
+def load_library_dstorage(device: Device, **kwargs) -> bool:
+    """Load DirectStorage DLLs before the runtime, preserving the original order."""
+    if _inited_ds:
+        return True
     try:
-        init_dstorage(
-            device.index if device.index is not None else 0,
-            kwargs.get("framework"),
-        )
+        load_dstorage_dlls()
     except DirectStorageUnavailableError as e:
         global _warned_dstorage_fallback
         if not _warned_dstorage_fallback:
@@ -199,8 +196,29 @@ def new_dstorage_copier(device: Device, **kwargs) -> CopierConstructFunc:
                 "DirectStorage is unavailable (%s); falling back to the nogds copier",
                 str(e),
             )
-        return new_nogds_file_copier(device, **kwargs)
+        return False
+    from .base import load_library_func
 
+    load_library_func(kwargs.get("framework"))
+    return True
+
+
+def init_and_check_dstorage(device: Device, **kwargs) -> bool:
+    init_dstorage(
+        device.index if device.index is not None else 0,
+        kwargs.get("framework"),
+    )
+    return True
+
+
+@register_copier_constructor(
+    "dstorage",
+    DStorageFileCopier,
+    load_library=load_library_dstorage,
+    init_and_check=init_and_check_dstorage,
+)
+def new_dstorage_copier(device: Device, **kwargs) -> CopierConstructFunc:
+    """Build the DirectStorage reader after availability has been checked."""
     stream_reader = fstcpp.dstorage_stream_reader()
     if not stream_reader.is_ready():
         raise RuntimeError("dstorage_stream_reader failed to initialize")

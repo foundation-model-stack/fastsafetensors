@@ -24,7 +24,6 @@ from ..frameworks import FrameworkOpBase, TensorBase
 from ..st_types import Device, DeviceType, DType
 from .base import (
     CopierInterface,
-    load_library_func,
     validated_byte_ranges,
     validated_chunk_allocation_size,
 )
@@ -312,19 +311,33 @@ def nogds_reader_options(
     return bbuf_size_kb, fd_per_thread
 
 
-@register_copier_constructor("nogds", NoGdsFileCopier)
+def load_library_nogds(device: Device, **kwargs):
+    from .base import load_library_func
+
+    load_library_func(kwargs.get("framework"))
+
+
+def init_and_check_nogds(device: Device, **kwargs) -> bool:
+    if device.type != DeviceType.CPU and not is_gpu_found():
+        raise Exception(
+            "[FAIL] GPU runtime library not found (expected libcudart.so, libamdhip64.so, or cudart64_XX.dll)"
+        )
+    return True
+
+
+@register_copier_constructor(
+    "nogds",
+    NoGdsFileCopier,
+    load_library=load_library_nogds,
+    init_and_check=init_and_check_nogds,
+)
 def new_nogds_file_copier(
     device: Device,
     bbuf_size_kb: Optional[int] = None,
     max_threads: int = 16,
     **kwargs,
 ) -> CopierConstructFunc:
-    load_library_func(kwargs.get("framework"))
     device_is_not_cpu = device.type != DeviceType.CPU
-    if device_is_not_cpu and not is_gpu_found():
-        raise Exception(
-            "[FAIL] GPU runtime library not found (expected libcudart.so, libamdhip64.so, or cudart64_XX.dll)"
-        )
 
     device_id = device.index if device.index is not None else 0
     numa_node = (
