@@ -197,6 +197,47 @@ def test_invalid_alignment(tmp_path, header_align):
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("header_align", [8, 16, 64, 4096])
+def test_header_alignment_aligns_data_start(tmp_path, framework, header_align):
+    from safetensors import safe_open
+
+    tensors = _tensors()
+    entries = [plain_entry(n, t) for n, t in tensors.items()]
+    plans = plan_shards(
+        entries,
+        shard_paths(str(tmp_path / "planned"), 2),
+        header_align=header_align,
+    )
+    for plan in plans:
+        assert len(plan.header) % header_align == 0
+        header_len = int.from_bytes(plan.header[:8], "little")
+        assert header_len == len(plan.header) - 8
+        assert header_len % 8 == 0
+        if plan.entries:
+            first_start = min(b for b, _ in plan.offsets.values())
+            assert first_start == len(plan.header)
+            assert first_start % header_align == 0
+
+    paths = save_sharded(
+        entries,
+        str(tmp_path / "model"),
+        num_shards=2,
+        header_align=header_align,
+    )
+    got = {}
+    for path in paths:
+        meta = SafeTensorsMetadata.from_file(path, framework)
+        assert meta.header_length % header_align == 0
+        if header_align % framework.get_device_ptr_align() == 0:
+            assert meta.aligned
+        with safe_open(path, framework="pt") as f:
+            for k in f.keys():
+                got[k] = f.get_tensor(k)
+    assert got.keys() == tensors.keys()
+    for name, t in tensors.items():
+        assert torch.equal(got[name], t.contiguous()), name
+
+
 def test_empty_or_duplicate_paths(tmp_path):
     path = str(tmp_path / "m.safetensors")
     for paths in ([], [path, path], [path, str(tmp_path / "." / "m.safetensors")]):

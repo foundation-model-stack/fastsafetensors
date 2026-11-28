@@ -147,6 +147,9 @@ def plan_shards(
     ``metadata`` goes into every shard, ``shard0_metadata`` into the first only
     (e.g. an index too large to repeat). ``shard_metadata`` adds metadata
     computed from each shard's entries, before any files are created.
+    ``header_align`` pads the JSON header with spaces so tensor data starts at a
+    multiple of ``header_align`` bytes from the beginning of the file (including
+    the 8-byte header-length prefix).
     """
     if not paths or len(set(map(os.path.abspath, paths))) != len(paths):
         raise ValueError("paths must be nonempty and unique")
@@ -202,7 +205,7 @@ def plan_shards(
             md.update(extra)
         header["__metadata__"] = md
         header_bytes = json.dumps(header, separators=(",", ":")).encode()
-        header_bytes += b" " * (-len(header_bytes) % header_align)
+        header_bytes += b" " * (-(8 + len(header_bytes)) % header_align)
         data_start = 8 + len(header_bytes)
         plan = ShardPlan(
             path=path,
